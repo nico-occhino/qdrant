@@ -102,6 +102,7 @@ impl<S: UniversalReadExt + 'static> VectorIndexReadEnum<S> {
             Indexes::Hnsw(hnsw_config) => {
                 ReadOnlyHNSWIndex::<S>::preopen(fs, path, hnsw_config, populate_override)
             }
+            Indexes::Lmi {} => Ok(()),
         }
     }
 
@@ -217,6 +218,12 @@ impl<S: UniversalReadExt + 'static> VectorIndexReadEnum<S> {
                 payload_index,
                 *hnsw_config,
                 populate_override,
+            )?)),
+            Indexes::Lmi {} => Self::Plain(Box::new(ReadOnlyPlainVectorIndex::open(
+                id_tracker,
+                vector_storage,
+                quantized_vectors,
+                payload_index,
             )?)),
         })
     }

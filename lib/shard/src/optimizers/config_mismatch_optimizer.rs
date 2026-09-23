@@ -86,6 +86,8 @@ impl ConfigMismatchOptimizer {
                     // Check HNSW mismatch
                     match &vector_data.index {
                         Indexes::Plain {} => {}
+                        // LMI has no HNSW configuration to compare.
+                        Indexes::Lmi {} => {}
                         Indexes::Hnsw(effective_hnsw) => {
                             // Select segment if we have an HNSW mismatch that requires rebuild
                             let target_hnsw = self

@@ -13,6 +13,7 @@ use crate::id_tracker::IdTrackerEnum;
 use crate::index::VectorIndexEnum;
 use crate::index::hnsw_index::gpu::gpu_devices_manager::LockedGpuDevice;
 use crate::index::hnsw_index::hnsw::{HNSWIndex, HnswIndexOpenArgs};
+use crate::index::lmi_index::LmiIndex;
 use crate::index::plain_vector_index::PlainVectorIndex;
 use crate::index::struct_payload_index::StructPayloadIndex;
 use crate::types::{HnswGlobalConfig, Indexes, VectorDataConfig};
@@ -58,6 +59,12 @@ pub(crate) fn open_vector_index(
             quantized_vectors,
             payload_index,
         )),
+        Indexes::Lmi {} => VectorIndexEnum::Lmi(LmiIndex::new(
+            id_tracker,
+            vector_storage,
+            quantized_vectors,
+            payload_index,
+        )),
         Indexes::Hnsw(hnsw_config) => VectorIndexEnum::Hnsw(HNSWIndex::open(HnswIndexOpenArgs {
             path,
             id_tracker,
@@ -83,6 +90,12 @@ pub(crate) fn build_vector_index<R: Rng + ?Sized>(
     } = open_args;
     Ok(match &vector_config.index {
         Indexes::Plain {} => VectorIndexEnum::Plain(PlainVectorIndex::new(
+            id_tracker,
+            vector_storage,
+            quantized_vectors,
+            payload_index,
+        )),
+        Indexes::Lmi {} => VectorIndexEnum::Lmi(LmiIndex::new(
             id_tracker,
             vector_storage,
             quantized_vectors,

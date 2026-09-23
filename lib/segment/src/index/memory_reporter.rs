@@ -7,6 +7,10 @@ impl MemoryReporter for VectorIndexEnum {
             // Plain index: no files, no extra memory (searches storage directly)
             VectorIndexEnum::Plain(_) => ComponentMemoryUsage::empty(),
 
+            // LMI memory accounting is not implemented yet.
+            // Phase D routing state may own model parameters and postings.
+            VectorIndexEnum::Lmi(_) => ComponentMemoryUsage::empty(),
+
             // HNSW: graph files, intent depends on how the links are actually held
             VectorIndexEnum::Hnsw(index) => {
                 let links_heap_bytes = index.links_heap_size_bytes() as u64;

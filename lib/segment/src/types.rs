@@ -787,6 +787,13 @@ pub enum Indexes {
     /// Use filterable HNSW index for approximate search. Is very fast even on a very huge collections,
     /// but require additional space to store index and additional time to build it.
     Hnsw(HnswConfig),
+
+    /// Experimental Learned Metric Index integration.
+    ///
+    /// Phase B initially uses a dummy implementation to validate the
+    /// Qdrant vector-index integration contract before introducing
+    /// learned routing.
+    Lmi {},
 }
 
 impl Indexes {
@@ -794,6 +801,7 @@ impl Indexes {
         match self {
             Indexes::Plain {} => false,
             Indexes::Hnsw(_) => true,
+            Indexes::Lmi {} => true,
         }
     }
 
@@ -801,6 +809,7 @@ impl Indexes {
         match self {
             Indexes::Plain {} => false,
             Indexes::Hnsw(config) => config.memory_placement().is_on_disk(),
+            Indexes::Lmi {} => false,
         }
     }
 }
@@ -2177,6 +2186,7 @@ impl VectorDataConfig {
         let is_index_appendable = match self.index {
             Indexes::Plain {} => true,
             Indexes::Hnsw(_) => false,
+            Indexes::Lmi {} => false,
         };
         let is_storage_appendable = match self.storage_type {
             VectorStorageType::Memory => true,
