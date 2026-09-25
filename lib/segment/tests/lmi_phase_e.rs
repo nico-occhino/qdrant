@@ -211,12 +211,56 @@ fn invalid_persisted_model_and_offsets_are_rejected() {
         "sample",
         "model",
         "dropped_model",
+        "malformed_json",
+        "truncated_json",
+        "configuration",
+        "dimension",
+        "distance",
+        "vector_count",
+        "duplicate",
+        "bucket_count",
     ] {
         let (_root, _plain, lmi) = fixture(Distance::Dot, config(1), 8);
         let (path, mut json) = state(&lmi);
         let directory = lmi.segment_path.clone();
         drop(lmi);
         match kind {
+            "configuration" => {
+                json["config"]["seed"] = 999.into();
+            }
+            "dimension" => {
+                json["dimension"] = 3.into();
+            }
+            "distance" => {
+                json["distance"] = "Cosine".into();
+            }
+            "vector_count" => {
+                json["total_vectors"] = 9.into();
+            }
+            "duplicate" => {
+                // Preserve coverage while putting one offset in two buckets.
+                let id = json["postings"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .flat_map(|bucket| bucket.as_array().unwrap())
+                    .next()
+                    .unwrap()
+                    .clone();
+                for bucket in json["postings"].as_array_mut().unwrap() {
+                    if !bucket.as_array().unwrap().contains(&id) {
+                        bucket.as_array_mut().unwrap().push(id.clone());
+                        break;
+                    }
+                }
+            }
+            "bucket_count" => {
+                // Keep every offset but introduce an extra empty bucket.
+                json["postings"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!([]));
+            }
             "version" => {
                 json["version"] = 999.into();
             }
@@ -241,12 +285,19 @@ fn invalid_persisted_model_and_offsets_are_rejected() {
         }
         if kind == "missing" {
             std::fs::remove_file(&path).unwrap();
+        } else if kind == "malformed_json" {
+            std::fs::write(&path, b"not JSON").unwrap();
+        } else if kind == "truncated_json" {
+            let bytes = serde_json::to_vec(&json).unwrap();
+            std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
         } else {
             std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
         }
         assert!(
-            load_segment(&directory, uuid::Uuid::nil(), None, &AtomicBool::new(false)).is_err()
+            load_segment(&directory, uuid::Uuid::nil(), None, &AtomicBool::new(false)).is_err(),
+            "corruption case {kind} must fail native open, never become Plain"
         );
+        println!("Phase E2: native open rejected {kind}");
     }
 }
 

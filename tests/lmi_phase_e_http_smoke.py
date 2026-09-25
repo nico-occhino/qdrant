@@ -1,5 +1,6 @@
-"""Isolated Phase E REST/optimizer/restart smoke test (Python is only the test driver)."""
+"""Isolated Phase E REST/optimizer/restart/fresh-snapshot-restore smoke test (Python is only the test driver)."""
 import argparse, hashlib, json, os, signal, subprocess, tempfile, time
+from collections import Counter
 from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
@@ -37,14 +38,15 @@ telemetry_disabled: true
             return json.load(response)
     # Refuse to use a port already serving another process.
     import socket
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', args.port))
+    for port in (args.port, args.port + 1):
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1', port))
     proc = None
     logfile = None
-    def start(number):
+    def start(number, extra_args=()):
         nonlocal proc, logfile
         logfile = (out / f'server-{number}.log').open('w')
-        proc = subprocess.Popen([str(Path(args.binary).resolve()), '--config-path', str(config), '--disable-telemetry'], stdout=logfile, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen([str(Path(args.binary).resolve()), '--config-path', str(config), '--disable-telemetry', *extra_args], stdout=logfile, stderr=subprocess.STDOUT)
         for _ in range(120):
             if proc.poll() is not None:
                 raise RuntimeError(f'server exited: {proc.returncode}; see server-{number}.log')
@@ -117,6 +119,41 @@ telemetry_disabled: true
         stop()
         assert 'LMI build: training' not in (out/'server-2.log').read_text()
         evidence.update(restart_same_results=True,restart_same_state=True,restart_did_not_train=True)
+        # The source process is stopped. Restore the actual snapshot into a new
+        # directory; no source collection/storage directory is copied or reused.
+        source_root = root
+        snapshot_path = source_root / 'snapshots' / 'phase_e' / snapshot['name']
+        assert snapshot_path.is_file(), snapshot_path
+        root = Path(tempfile.mkdtemp(prefix='qdrant-lmi-phase-e2-restored-'))
+        restored_config = root / 'config.yaml'
+        restored_config.write_text(config.read_text().replace(str(source_root), str(root)))
+        config = restored_config
+        assert not (root / 'storage').exists()
+        start(3, ['--snapshot', f'{snapshot_path}:phase_e'])
+        assert request('GET', '/collections/phase_e')['result']['config'] == before_config
+        restored_files = list((root / 'storage').rglob('lmi_state.json'))
+        restored_hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in restored_files}
+        assert Counter(restored_hashes.values()) == Counter(hashes.values())
+        # Compare IDs AND scores, but also require pruned results and the native
+        # StaticLearned serving marker below: equality alone is insufficient.
+        assert query([3,.1]) == a
+        assert query([-3,.1]) == b
+        assert query([3,.1], params={}) == default
+        assert query([3,.1], params={'exact':True}) == exact
+        assert query([3,.1], filter={'must':[{'key':'group','match':{'value':'all'}}]}) == filtered
+        stop()
+        restore_log = (out / 'server-3.log').read_text()
+        assert 'LMI build:' not in restore_log, 'restore must not build or train LMI'
+        assert 'LMI open: mode=StaticLearned; no training' in restore_log
+        assert 'candidate_source=StaticLearned' in restore_log
+        evidence.update(
+            restored_storage=str(root), restored_model_hashes=restored_hashes,
+            restore_source_stopped=True, restore_fresh_storage=True,
+            restore_preserved_configuration=True, restore_same_state=True,
+            restore_same_ids_and_scores=True, restore_did_not_build_or_train=True,
+            restore_static_learned_open=True, restore_static_learned_search=True,
+            restore_exact_and_filter_fallbacks=True,
+        )
         (out/'result.json').write_text(json.dumps(evidence,indent=2))
         print(json.dumps(evidence,indent=2))
     finally:
