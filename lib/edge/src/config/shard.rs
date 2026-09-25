@@ -179,7 +179,10 @@ impl EdgeConfig {
         let hnsw_configs: Vec<HnswConfig> = vector_data
             .values()
             .filter_map(|v| match &v.index {
-                segment::types::Indexes::Plain {} => None,
+                // Only actual HNSW indexes contribute to inferred HNSW settings.
+                segment::types::Indexes::Plain {}
+                | segment::types::Indexes::Lmi {}
+                | segment::types::Indexes::LmiTrained(_) => None,
                 segment::types::Indexes::Hnsw(h) => Some(*h),
             })
             .collect();

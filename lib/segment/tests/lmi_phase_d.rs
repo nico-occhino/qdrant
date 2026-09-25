@@ -71,7 +71,7 @@ fn mode(segment: &Segment, mode: LmiCandidateMode) {
     let VectorIndexEnum::Lmi(lmi) = &mut *index else {
         panic!("expected LMI")
     };
-    lmi.set_candidate_mode(mode);
+    lmi.set_candidate_mode(mode).unwrap();
 }
 
 fn search(

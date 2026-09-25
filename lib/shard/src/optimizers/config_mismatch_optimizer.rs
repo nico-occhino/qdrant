@@ -88,7 +88,27 @@ impl ConfigMismatchOptimizer {
                         Indexes::Plain {} => {}
                         // LMI has no HNSW configuration to compare.
                         Indexes::Lmi {} => {}
+                        Indexes::LmiTrained(config) => {
+                            if self
+                                .segment_optimizer_config
+                                .dense_vector
+                                .get(vector_name)
+                                .and_then(|c| c.lmi_config)
+                                .as_ref()
+                                != Some(config)
+                            {
+                                return true;
+                            }
+                        }
                         Indexes::Hnsw(effective_hnsw) => {
+                            if self
+                                .segment_optimizer_config
+                                .dense_vector
+                                .get(vector_name)
+                                .is_some_and(|c| c.lmi_config.is_some())
+                            {
+                                return true;
+                            }
                             // Select segment if we have an HNSW mismatch that requires rebuild
                             let target_hnsw = self
                                 .segment_optimizer_config

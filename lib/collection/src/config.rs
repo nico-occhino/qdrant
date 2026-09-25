@@ -584,6 +584,19 @@ impl CollectionParams {
         &mut self,
         update_vectors_diff: &VectorsConfigDiff,
     ) -> CollectionResult<()> {
+        // Validate every vector before changing any of them. A conflict in a later
+        // entry must not leave an earlier vector partially updated.
+        for (vector_name, update_params) in &update_vectors_diff.0 {
+            let vector_params = self
+                .vectors
+                .get_params(vector_name)
+                .ok_or_else(|| self.missing_vector_error(vector_name))?;
+            if vector_params.lmi_config.is_some() && update_params.hnsw_config.is_some() {
+                return Err(CollectionError::bad_input(
+                    "lmi_config and per-vector hnsw_config are mutually exclusive",
+                ));
+            }
+        }
         for (vector_name, update_params) in update_vectors_diff.0.iter() {
             let vector_params = self.get_vector_params_mut(vector_name)?;
             let VectorParamsDiff {
@@ -672,6 +685,7 @@ impl CollectionParams {
             .params_iter()
             .map(|(name, params)| {
                 let VectorParams {
+                    lmi_config: _,
                     size,
                     distance,
                     hnsw_config: _,
@@ -780,6 +794,45 @@ mod tests {
         let mut params = CollectionParams::empty();
         params.vectors = VectorsConfig::Single(builder.build());
         params
+    }
+
+    #[test]
+    fn lmi_config_rejects_conflicting_update_without_partial_mutation() {
+        let plain = VectorParamsBuilder::new(4, Distance::Dot).build();
+        let mut lmi = plain.clone();
+        lmi.lmi_config = Some(segment::index::lmi_index::LmiConfig::default());
+        let mut params = CollectionParams::empty();
+        params.vectors = VectorsConfig::Multi(BTreeMap::from([
+            ("a_plain".into(), plain),
+            ("z_lmi".into(), lmi),
+        ]));
+        let before = serde_json::to_value(&params).unwrap();
+        let update: VectorsConfigDiff = serde_json::from_value(serde_json::json!({
+            "a_plain": {"on_disk": true},
+            "z_lmi": {"hnsw_config": {"m": 8}}
+        }))
+        .unwrap();
+        let error = params.update_vectors_from_diff(&update).unwrap_err();
+        assert!(error.to_string().contains("mutually exclusive"));
+        assert_eq!(serde_json::to_value(&params).unwrap(), before);
+        // Empty HNSW objects also introduce per-vector HNSW configuration.
+        let empty: VectorsConfigDiff = serde_json::from_value(serde_json::json!({
+            "z_lmi": {"hnsw_config": {}}
+        }))
+        .unwrap();
+        assert!(params.update_vectors_from_diff(&empty).is_err());
+        assert_eq!(serde_json::to_value(&params).unwrap(), before);
+    }
+
+    #[test]
+    fn lmi_config_cannot_be_combined_with_existing_hnsw_settings() {
+        let mut params = VectorParamsBuilder::new(4, Distance::Dot).build();
+        params.hnsw_config = Some(crate::operations::config_diff::HnswConfigDiff {
+            m: Some(8),
+            ..Default::default()
+        });
+        params.lmi_config = Some(segment::index::lmi_index::LmiConfig::default());
+        assert!(validator::Validate::validate(&params).is_err());
     }
 
     #[test]

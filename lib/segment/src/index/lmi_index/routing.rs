@@ -70,7 +70,7 @@ pub(super) fn fake_route(query: &QueryVector) -> Option<usize> {
 // Phase D3 native learned router
 // ============================================================
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LinearLayer {
     pub in_features: usize,
     pub out_features: usize,
@@ -83,14 +83,14 @@ pub struct LinearLayer {
     pub bias: Vec<f32>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RouterLayer {
     Linear(LinearLayer),
 
     ReLU,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MlpRouter {
     pub layers: Vec<RouterLayer>,
 }
@@ -197,7 +197,7 @@ impl MlpRouter {
         self.top_buckets_with_stop(query, nprobe, &AtomicBool::new(false))
     }
 
-    fn top_buckets_with_stop(
+    pub(super) fn top_buckets_with_stop(
         &self,
         query: &[f32],
         nprobe: usize,

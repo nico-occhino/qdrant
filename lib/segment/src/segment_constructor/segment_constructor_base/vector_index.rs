@@ -45,6 +45,13 @@ pub(crate) fn open_vector_index(
     vector_config: &VectorDataConfig,
     open_args: VectorIndexOpenArgs,
 ) -> OperationResult<VectorIndexEnum> {
+    if let Indexes::LmiTrained(config) = &vector_config.index {
+        return Ok(VectorIndexEnum::Lmi(LmiIndex::open_trained(
+            open_args,
+            vector_config,
+            *config,
+        )?));
+    }
     let VectorIndexOpenArgs {
         path,
         id_tracker,
@@ -53,6 +60,7 @@ pub(crate) fn open_vector_index(
         quantized_vectors,
     } = open_args;
     Ok(match &vector_config.index {
+        Indexes::LmiTrained(_) => unreachable!("handled above"),
         Indexes::Plain {} => VectorIndexEnum::Plain(PlainVectorIndex::new(
             id_tracker,
             vector_storage,
@@ -81,6 +89,14 @@ pub(crate) fn build_vector_index<R: Rng + ?Sized>(
     open_args: VectorIndexOpenArgs,
     build_args: VectorIndexBuildArgs<R>,
 ) -> OperationResult<VectorIndexEnum> {
+    if let Indexes::LmiTrained(config) = &vector_config.index {
+        return Ok(VectorIndexEnum::Lmi(LmiIndex::build_trained(
+            open_args,
+            vector_config,
+            *config,
+            build_args,
+        )?));
+    }
     let VectorIndexOpenArgs {
         path,
         id_tracker,
@@ -89,6 +105,7 @@ pub(crate) fn build_vector_index<R: Rng + ?Sized>(
         quantized_vectors,
     } = open_args;
     Ok(match &vector_config.index {
+        Indexes::LmiTrained(_) => unreachable!("handled above"),
         Indexes::Plain {} => VectorIndexEnum::Plain(PlainVectorIndex::new(
             id_tracker,
             vector_storage,

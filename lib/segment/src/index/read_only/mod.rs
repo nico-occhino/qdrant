@@ -103,6 +103,9 @@ impl<S: UniversalReadExt + 'static> VectorIndexReadEnum<S> {
                 ReadOnlyHNSWIndex::<S>::preopen(fs, path, hnsw_config, populate_override)
             }
             Indexes::Lmi {} => Ok(()),
+            Indexes::LmiTrained(_) => Err(OperationError::service_error(
+                "Trained LMI is not supported by the universal read-only backend yet",
+            )),
         }
     }
 
@@ -219,6 +222,11 @@ impl<S: UniversalReadExt + 'static> VectorIndexReadEnum<S> {
                 *hnsw_config,
                 populate_override,
             )?)),
+            Indexes::LmiTrained(_) => {
+                return Err(OperationError::service_error(
+                    "Trained LMI is not supported by the universal read-only backend yet",
+                ));
+            }
             Indexes::Lmi {} => Self::Plain(Box::new(ReadOnlyPlainVectorIndex::open(
                 id_tracker,
                 vector_storage,

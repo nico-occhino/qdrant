@@ -1410,7 +1410,12 @@ impl From<Datatype> for VectorStorageDatatype {
 )]
 #[serde(rename_all = "snake_case")]
 #[anonymize(false)]
+#[validate(schema(function = "validate_lmi_vector_params"))]
 pub struct VectorParams {
+    /// Experimental CPU-trained LMI, built during segment optimization instead of HNSW.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[validate(nested)]
+    pub lmi_config: Option<segment::index::lmi_index::LmiConfig>,
     /// Size of a vectors used
     #[validate(custom(function = "validate_nonzerou64_range_min_1_max_65536"))]
     pub size: NonZeroU64,
@@ -1458,6 +1463,28 @@ pub struct VectorParams {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multivector_config: Option<MultiVectorConfig>,
+}
+
+fn validate_lmi_vector_params(params: &VectorParams) -> Result<(), ValidationError> {
+    if params.lmi_config.is_some() {
+        let message = if !segment::index::lmi_index::training_available() {
+            Some("LMI construction requires a server built with lmi-training")
+        } else if params.multivector_config.is_some()
+            || params.datatype.is_some_and(|d| d != Datatype::Float32)
+        {
+            Some("LMI supports dense float32 vectors only")
+        } else if params.hnsw_config.is_some() {
+            Some("lmi_config and per-vector hnsw_config are mutually exclusive")
+        } else {
+            None
+        };
+        if let Some(message) = message {
+            let mut err = ValidationError::new("unsupported_lmi_configuration");
+            err.message = Some(message.into());
+            return Err(err);
+        }
+    }
+    Ok(())
 }
 
 /// Validate the value is in `[1, 65536]` or `None`.
@@ -1772,6 +1799,7 @@ impl VectorParamsBase {
 impl From<&VectorParams> for VectorParamsBase {
     fn from(params: &VectorParams) -> Self {
         let &VectorParams {
+            lmi_config: _,
             size,
             distance,
             hnsw_config: _,

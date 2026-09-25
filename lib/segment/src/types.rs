@@ -794,6 +794,8 @@ pub enum Indexes {
     /// Qdrant vector-index integration contract before introducing
     /// learned routing.
     Lmi {},
+    /// Experimental CPU-trained, persisted LMI.
+    LmiTrained(crate::index::lmi_index::LmiConfig),
 }
 
 impl Indexes {
@@ -801,7 +803,7 @@ impl Indexes {
         match self {
             Indexes::Plain {} => false,
             Indexes::Hnsw(_) => true,
-            Indexes::Lmi {} => true,
+            Indexes::Lmi {} | Indexes::LmiTrained(_) => true,
         }
     }
 
@@ -809,7 +811,7 @@ impl Indexes {
         match self {
             Indexes::Plain {} => false,
             Indexes::Hnsw(config) => config.memory_placement().is_on_disk(),
-            Indexes::Lmi {} => false,
+            Indexes::Lmi {} | Indexes::LmiTrained(_) => false,
         }
     }
 }
@@ -2186,7 +2188,7 @@ impl VectorDataConfig {
         let is_index_appendable = match self.index {
             Indexes::Plain {} => true,
             Indexes::Hnsw(_) => false,
-            Indexes::Lmi {} => false,
+            Indexes::Lmi {} | Indexes::LmiTrained(_) => false,
         };
         let is_storage_appendable = match self.storage_type {
             VectorStorageType::Memory => true,

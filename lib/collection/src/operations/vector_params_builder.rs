@@ -17,6 +17,7 @@ impl VectorParamsBuilder {
     pub fn new(size: u64, distance: Distance) -> Self {
         VectorParamsBuilder {
             vector_params: VectorParams {
+                lmi_config: None,
                 size: NonZeroU64::new(size).unwrap(),
                 distance,
                 hnsw_config: None,

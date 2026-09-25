@@ -759,6 +759,7 @@ impl TryFrom<api::grpc::qdrant::VectorParams> for VectorParams {
 
     fn try_from(vector_params: api::grpc::qdrant::VectorParams) -> Result<Self, Self::Error> {
         let api::grpc::qdrant::VectorParams {
+            lmi_config,
             size,
             distance,
             hnsw_config,
@@ -768,11 +769,12 @@ impl TryFrom<api::grpc::qdrant::VectorParams> for VectorParams {
             datatype,
             multivector_config,
         } = vector_params;
-        Ok(Self {
+        let params = Self {
             size: NonZeroU64::new(size).ok_or_else(|| {
                 Status::invalid_argument("VectorParams size must be greater than zero")
             })?,
             distance: from_grpc_dist(distance)?,
+            lmi_config: lmi_config.map(TryInto::try_into).transpose()?,
             hnsw_config: hnsw_config.map(Into::into),
             quantization_config: quantization_config
                 .map(grpc_to_segment_quantization_config)
@@ -783,7 +785,12 @@ impl TryFrom<api::grpc::qdrant::VectorParams> for VectorParams {
             multivector_config: multivector_config
                 .map(MultiVectorConfig::try_from)
                 .transpose()?,
-        })
+        };
+        if params.lmi_config.is_some() {
+            validator::Validate::validate(&params)
+                .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        }
+        Ok(params)
     }
 }
 
@@ -1438,6 +1445,7 @@ impl TryFrom<GroupsResult> for api::grpc::qdrant::GroupsResult {
 impl From<VectorParams> for api::grpc::qdrant::VectorParams {
     fn from(value: VectorParams) -> Self {
         let VectorParams {
+            lmi_config,
             size,
             distance,
             hnsw_config,
@@ -1448,6 +1456,7 @@ impl From<VectorParams> for api::grpc::qdrant::VectorParams {
             multivector_config,
         } = value;
         api::grpc::qdrant::VectorParams {
+            lmi_config: lmi_config.map(Into::into),
             size: size.get(),
             distance: match distance {
                 Distance::Cosine => api::grpc::qdrant::Distance::Cosine,

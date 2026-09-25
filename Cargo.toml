@@ -19,6 +19,7 @@ workspace = true
 
 [features]
 default = []
+lmi-training = ["segment/lmi-training"]
 service_debug = ["parking_lot/deadlock_detection", "collection/testing"]
 tracing = [
     "api/tracing",

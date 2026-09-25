@@ -792,7 +792,7 @@ fn get_hnsw_ef_construct(config: &SegmentConfig, vector_name: &VectorName) -> Op
         .get(vector_name)
         .and_then(|config| match &config.index {
             Indexes::Plain {} => None,
-            Indexes::Lmi {} => None,
+            Indexes::Lmi {} | Indexes::LmiTrained(_) => None,
             Indexes::Hnsw(hnsw) => Some(hnsw),
         })
         .map(|hnsw| hnsw.ef_construct)

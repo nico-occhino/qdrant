@@ -59,6 +59,7 @@ mod tests {
             dense_vector.insert(
                 vector_name.clone(),
                 DenseVectorOptimizerConfig {
+                    lmi_config: None,
                     memory: None,
                     on_disk: None,
                     hnsw_config: HnswConfig::default(),

@@ -239,6 +239,7 @@ mod tests {
             vectors: VectorsConfig::Multi(BTreeMap::from([(
                 VECTOR_NAME.to_owned(),
                 VectorParams {
+                    lmi_config: None,
                     memory: None,
                     size: NonZeroU64::new(DIM as u64).unwrap(),
                     distance: Distance::Dot,

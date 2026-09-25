@@ -87,6 +87,7 @@ impl EdgeVectorParams {
             hnsw_config,
         } = self;
         DenseVectorOptimizerConfig {
+            lmi_config: None,
             on_disk: *on_disk,
             memory: None,
             hnsw_config: hnsw_config.unwrap_or(*global_hnsw_config),
@@ -114,7 +115,8 @@ impl EdgeVectorParams {
             datatype: *datatype,
             quantization_config: quantization_config.clone(),
             hnsw_config: match index {
-                Indexes::Plain {} => None,
+                // LMI has no HNSW settings to expose; this does not enable edge LMI serving.
+                Indexes::Plain {} | Indexes::Lmi {} | Indexes::LmiTrained(_) => None,
                 Indexes::Hnsw(hnsw_config) => Some(*hnsw_config),
             },
         }

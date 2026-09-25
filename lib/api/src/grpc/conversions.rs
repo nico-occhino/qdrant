@@ -3825,3 +3825,104 @@ fn datatype_to_grpc(dt: VectorStorageDatatype) -> grpc::Datatype {
         VectorStorageDatatype::Turbo4 => grpc::Datatype::Turbo4,
     }
 }
+
+impl TryFrom<crate::grpc::qdrant::LmiConfig> for segment::index::lmi_index::LmiConfig {
+    type Error = Status;
+    fn try_from(value: crate::grpc::qdrant::LmiConfig) -> Result<Self, Status> {
+        let defaults = Self::default();
+        let config = Self {
+            n_buckets: value
+                .n_buckets
+                .map(usize::try_from)
+                .transpose()
+                .map_err(|_| Status::invalid_argument("LMI integer out of range"))?
+                .unwrap_or(defaults.n_buckets),
+            sample_size: value
+                .sample_size
+                .map(usize::try_from)
+                .transpose()
+                .map_err(|_| Status::invalid_argument("LMI integer out of range"))?
+                .unwrap_or(defaults.sample_size),
+            hidden_dim: value
+                .hidden_dim
+                .map(usize::try_from)
+                .transpose()
+                .map_err(|_| Status::invalid_argument("LMI integer out of range"))?
+                .unwrap_or(defaults.hidden_dim),
+            epochs: value
+                .epochs
+                .map(usize::try_from)
+                .transpose()
+                .map_err(|_| Status::invalid_argument("LMI integer out of range"))?
+                .unwrap_or(defaults.epochs),
+            batch_size: value
+                .batch_size
+                .map(usize::try_from)
+                .transpose()
+                .map_err(|_| Status::invalid_argument("LMI integer out of range"))?
+                .unwrap_or(defaults.batch_size),
+            kmeans_iterations: value
+                .kmeans_iterations
+                .map(usize::try_from)
+                .transpose()
+                .map_err(|_| Status::invalid_argument("LMI integer out of range"))?
+                .unwrap_or(defaults.kmeans_iterations),
+            nprobe: value
+                .nprobe
+                .map(usize::try_from)
+                .transpose()
+                .map_err(|_| Status::invalid_argument("LMI integer out of range"))?
+                .unwrap_or(defaults.nprobe),
+            seed: value.seed.unwrap_or(defaults.seed),
+        };
+        config
+            .check()
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        Ok(config)
+    }
+}
+impl From<segment::index::lmi_index::LmiConfig> for crate::grpc::qdrant::LmiConfig {
+    fn from(c: segment::index::lmi_index::LmiConfig) -> Self {
+        Self {
+            n_buckets: Some(c.n_buckets as u64),
+            sample_size: Some(c.sample_size as u64),
+            hidden_dim: Some(c.hidden_dim as u64),
+            epochs: Some(c.epochs as u64),
+            batch_size: Some(c.batch_size as u64),
+            kmeans_iterations: Some(c.kmeans_iterations as u64),
+            nprobe: Some(c.nprobe as u64),
+            seed: Some(c.seed),
+        }
+    }
+}
+
+#[cfg(test)]
+mod lmi_config_tests {
+    use super::*;
+    use segment::index::lmi_index::LmiConfig;
+
+    #[test]
+    fn lmi_configuration_defaults_roundtrip_and_validation() {
+        assert_eq!(
+            LmiConfig::try_from(grpc::LmiConfig::default()).unwrap(),
+            LmiConfig::default()
+        );
+        let config = LmiConfig {
+            n_buckets: 3,
+            nprobe: 3,
+            seed: u64::MAX,
+            ..Default::default()
+        };
+        assert_eq!(
+            LmiConfig::try_from(grpc::LmiConfig::from(config)).unwrap(),
+            config
+        );
+        assert!(
+            LmiConfig::try_from(grpc::LmiConfig {
+                nprobe: Some(9),
+                ..Default::default()
+            })
+            .is_err()
+        );
+    }
+}

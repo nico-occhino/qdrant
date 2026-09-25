@@ -222,18 +222,21 @@ pub trait SegmentOptimizer: Sync {
         let mut vector_data = segment_optimizer_config.plain_dense_vector_config.clone();
         let mut sparse_vector_data = segment_optimizer_config.plain_sparse_vector_config.clone();
 
-        // If indexing, change to HNSW index and quantization
-        // We must always create an HNSW index if we have deferred points to be able to promote them
+        // If indexing, select the configured index and quantization
+        // An immutable indexed segment promotes deferred points during the build.
         if threshold_is_indexed || any_has_deferred {
             if !threshold_is_indexed {
                 log::info!(
-                    "Segment has deferred points, but doesn't exceed indexing threshold. It will be optimized with HNSW index and quantization."
+                    "Segment has deferred points, but doesn't exceed indexing threshold. It will be optimized with the configured index and quantization."
                 );
             }
             vector_data.iter_mut().for_each(|(vector_name, config)| {
                 if let Some(vector_cfg) = segment_optimizer_config.dense_vector.get(vector_name) {
-                    // Assign HNSW index
-                    config.index = Indexes::Hnsw(vector_cfg.hnsw_config);
+                    // Assign the configured dense index
+                    config.index = vector_cfg
+                        .lmi_config
+                        .map(Indexes::LmiTrained)
+                        .unwrap_or(Indexes::Hnsw(vector_cfg.hnsw_config));
                     // Assign quantization config
                     config.quantization_config = vector_cfg.quantization_config.clone();
                 }

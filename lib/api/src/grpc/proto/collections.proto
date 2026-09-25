@@ -54,6 +54,8 @@ message VectorParams {
   // Overrides the deprecated `on_disk` flag if both are set.
   // `Pinned` is not supported for dense vector storage.
   optional Memory memory = 8;
+  // Experimental LMI configuration; selects LMI instead of HNSW during optimization.
+  optional LmiConfig lmi_config = 9;
 }
 
 message VectorParamsDiff {
@@ -1231,4 +1233,16 @@ message ListShardKeysResponse {
   repeated ShardKeyDescription shard_keys = 1;
   // Time spent to process
   double time = 2;
+}
+
+// Experimental CPU LMI training configuration. Omitted fields use server defaults.
+message LmiConfig {
+  optional uint64 n_buckets = 1;
+  optional uint64 sample_size = 2;
+  optional uint64 hidden_dim = 3;
+  optional uint64 epochs = 4;
+  optional uint64 batch_size = 5;
+  optional uint64 kmeans_iterations = 6;
+  optional uint64 nprobe = 7;
+  optional uint64 seed = 8;
 }

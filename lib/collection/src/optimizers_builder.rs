@@ -196,6 +196,7 @@ pub fn build_segment_optimizer_config(
         .params_iter()
         .map(|(name, params)| {
             let VectorParams {
+                lmi_config,
                 size,
                 distance,
                 hnsw_config,
@@ -209,6 +210,7 @@ pub fn build_segment_optimizer_config(
             (
                 name.into(),
                 DenseVectorOptimizerInput {
+                    lmi_config: *lmi_config,
                     size: size.get() as usize,
                     distance: *distance,
                     on_disk: *on_disk,

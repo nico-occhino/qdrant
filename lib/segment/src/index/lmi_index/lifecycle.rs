@@ -10,11 +10,19 @@ use crate::index::VectorIndex;
 
 impl VectorIndex for LmiIndex {
     fn files(&self) -> Vec<PathBuf> {
-        self.plain.files()
+        self.state_path
+            .iter()
+            .cloned()
+            .chain(self.plain.files())
+            .collect()
     }
 
     fn immutable_files(&self) -> Vec<PathBuf> {
-        self.plain.immutable_files()
+        self.state_path
+            .iter()
+            .cloned()
+            .chain(self.plain.immutable_files())
+            .collect()
     }
 
     fn update_vector(
@@ -23,6 +31,13 @@ impl VectorIndex for LmiIndex {
         vector: Option<VectorRef>,
         hw_counter: &HardwareCounterCell,
     ) -> OperationResult<()> {
+        if self.state_path.is_some() && vector.is_some() {
+            return Err(
+                crate::common::operation_error::OperationError::service_error(
+                    "Trained LMI requires segment rebuild for vector updates",
+                ),
+            );
+        }
         self.plain.update_vector(id, vector, hw_counter)
     }
 
@@ -32,6 +47,13 @@ impl VectorIndex for LmiIndex {
         vector: Option<&[u8]>,
         hw_counter: &HardwareCounterCell,
     ) -> OperationResult<()> {
+        if self.state_path.is_some() && vector.is_some() {
+            return Err(
+                crate::common::operation_error::OperationError::service_error(
+                    "Trained LMI requires segment rebuild for vector updates",
+                ),
+            );
+        }
         self.plain.update_vector_raw(id, vector, hw_counter)
     }
 }

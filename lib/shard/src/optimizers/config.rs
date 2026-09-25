@@ -21,6 +21,7 @@ pub const DEFAULT_VACUUM_MIN_VECTOR_NUMBER: usize = 1000;
 /// Extra configuration for dense vectors, applied on top of the plain config during optimization.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DenseVectorOptimizerConfig {
+    pub lmi_config: Option<segment::index::lmi_index::LmiConfig>,
     pub on_disk: Option<bool>,
     pub memory: Option<Memory>,
     pub hnsw_config: HnswConfig,
@@ -114,6 +115,7 @@ impl SegmentOptimizerConfig {
         let (mut plain_dense_vector_config, mut dense_vector) = (HashMap::new(), HashMap::new());
         for (name, input) in dense_vectors {
             let DenseVectorOptimizerInput {
+                lmi_config,
                 size,
                 distance,
                 on_disk,
@@ -145,6 +147,7 @@ impl SegmentOptimizerConfig {
             dense_vector.insert(
                 name,
                 DenseVectorOptimizerConfig {
+                    lmi_config,
                     on_disk,
                     memory,
                     hnsw_config,
@@ -207,6 +210,7 @@ impl SegmentOptimizerConfig {
 /// Per-dense-vector input for the optimizer builder.
 #[derive(Debug, Clone)]
 pub struct DenseVectorOptimizerInput {
+    pub lmi_config: Option<segment::index::lmi_index::LmiConfig>,
     pub size: usize,
     pub distance: Distance,
     pub on_disk: Option<bool>,

@@ -13,6 +13,7 @@ workspace = true
 
 [features]
 default = []
+lmi-training = ["dep:tch"]
 testing = ["common/testing", "sparse/testing", "gpu/testing", "quantization/testing"]
 gpu = ["gpu/gpu"]
 
@@ -44,6 +45,7 @@ tokio = { workspace = true }
 pprof = { workspace = true }
 
 [dependencies]
+tch = { version = "0.18.1", optional = true }
 io_bridge_object_store = { path = "../common/io_bridge_object_store" }
 blink-alloc = { workspace = true }
 bytemuck = { workspace = true }

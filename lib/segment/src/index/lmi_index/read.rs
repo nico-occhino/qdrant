@@ -80,7 +80,10 @@ impl VectorIndexRead for LmiIndex {
         );
 
         // Quantized scoring/rescoring remains owned by Plain in this phase.
-        if filter.is_some() || params.is_some() || self.quantized_vectors.borrow().is_some() {
+        if filter.is_some()
+            || params.is_some_and(|p| self.state_path.is_none() || *p != SearchParams::default())
+            || self.quantized_vectors.borrow().is_some()
+        {
             return self
                 .plain
                 .search(vectors, filter, top, params, query_context);
@@ -101,7 +104,24 @@ impl VectorIndexRead for LmiIndex {
             let candidates = match self.candidate_mode {
                 LmiCandidateMode::StaticLearned => match &self.routing_state {
                     Some(state) => {
-                        state.candidates_for_query(query, &query_context.is_stopped())?
+                        let normalized;
+                        let route_query = if let (
+                            Some(distance),
+                            QueryVector::Nearest(
+                                crate::data_types::vectors::VectorInternal::Dense(vector),
+                            ),
+                        ) = (self.routing_distance, query)
+                        {
+                            normalized = QueryVector::Nearest(
+                                crate::data_types::vectors::VectorInternal::Dense(
+                                    distance.preprocess_vector::<f32>(vector.clone()),
+                                ),
+                            );
+                            &normalized
+                        } else {
+                            query
+                        };
+                        state.candidates_for_query(route_query, &query_context.is_stopped())?
                     }
                     None => None, // Safe exact fallback when no model was installed.
                 },
@@ -150,7 +170,10 @@ impl VectorIndexRead for LmiIndex {
     }
 
     fn indexed_vector_count(&self) -> usize {
-        self.plain.indexed_vector_count()
+        self.routing_state.as_ref().map_or_else(
+            || self.plain.indexed_vector_count(),
+            |s| s.postings().iter().map(Vec::len).sum(),
+        )
     }
 
     fn size_of_searchable_vectors_in_bytes(&self) -> usize {

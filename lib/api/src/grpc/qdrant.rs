@@ -457,6 +457,9 @@ pub struct VectorParams {
     /// `Pinned` is not supported for dense vector storage.
     #[prost(enumeration = "Memory", optional, tag = "8")]
     pub memory: ::core::option::Option<i32>,
+    /// Experimental LMI configuration; selects LMI instead of HNSW during optimization.
+    #[prost(message, optional, tag = "9")]
+    pub lmi_config: ::core::option::Option<LmiConfig>,
 }
 #[derive(validator::Validate)]
 #[derive(serde::Serialize)]
@@ -2191,6 +2194,27 @@ pub struct ListShardKeysResponse {
     /// Time spent to process
     #[prost(double, tag = "2")]
     pub time: f64,
+}
+/// Experimental CPU LMI training configuration. Omitted fields use server defaults.
+#[derive(serde::Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct LmiConfig {
+    #[prost(uint64, optional, tag = "1")]
+    pub n_buckets: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "2")]
+    pub sample_size: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "3")]
+    pub hidden_dim: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "4")]
+    pub epochs: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "5")]
+    pub batch_size: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "6")]
+    pub kmeans_iterations: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "7")]
+    pub nprobe: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "8")]
+    pub seed: ::core::option::Option<u64>,
 }
 #[derive(serde::Serialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
