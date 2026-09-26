@@ -273,11 +273,13 @@ impl CollectionParams {
 
         self.vectors
             .params_iter()
-            // Skip vectors without HNSW indexing
+            // LMI has its own physical index; HNSW enablement only governs HNSW vectors.
             .filter_map(|(_name, params)| {
                 // Merge HNSW config with vector config to get effective HNSW config for the vector.
                 let effective_hnsw = hnsw_config.update_opt(params.hnsw_config.as_ref());
-                (effective_hnsw.m > 0 || effective_hnsw.payload_m.unwrap_or_default() > 0)
+                (params.lmi_config.is_some()
+                    || effective_hnsw.m > 0
+                    || effective_hnsw.payload_m.unwrap_or_default() > 0)
                     .then_some(params)
             })
             .map(|params| {
@@ -794,6 +796,33 @@ mod tests {
         let mut params = CollectionParams::empty();
         params.vectors = VectorsConfig::Single(builder.build());
         params
+    }
+
+    #[test]
+    fn lmi_config_deferred_eligibility_does_not_depend_on_hnsw() {
+        let mut params = single(None);
+        let mut hnsw = HnswConfig {
+            m: 0,
+            payload_m: Some(0),
+            ..Default::default()
+        };
+        let threshold = NonZeroUsize::new(1024);
+        assert_eq!(params.get_deferred_point_id(&hnsw, threshold), None);
+        let VectorsConfig::Single(vector) = &mut params.vectors else {
+            unreachable!()
+        };
+        vector.lmi_config = Some(segment::index::lmi_index::LmiConfig::default());
+        assert_eq!(params.get_deferred_point_id(&hnsw, threshold), Some(64));
+        assert_eq!(params.get_deferred_point_id(&hnsw, None), None);
+        let VectorsConfig::Single(vector) = &mut params.vectors else {
+            unreachable!()
+        };
+        vector.lmi_config = None;
+        hnsw.payload_m = Some(8);
+        assert_eq!(params.get_deferred_point_id(&hnsw, threshold), Some(64));
+        hnsw.payload_m = Some(0);
+        hnsw.m = 16;
+        assert_eq!(params.get_deferred_point_id(&hnsw, threshold), Some(64));
     }
 
     #[test]

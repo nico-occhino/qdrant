@@ -11,6 +11,7 @@ pub const fn training_available() -> bool {
 pub use build::LMI_STATE_FILE;
 mod lifecycle;
 mod read;
+pub mod read_only;
 mod routing;
 
 pub use routing::{

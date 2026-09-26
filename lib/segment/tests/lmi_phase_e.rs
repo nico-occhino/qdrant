@@ -179,6 +179,28 @@ fn tiny_and_empty_segments_persist_exact_fallback() {
     for count in [0, 1] {
         let (_root, plain, lmi) = fixture(Distance::Dot, config(1), count);
         assert!(state(&lmi).1["router"].is_null());
+        let ro =
+            segment::segment::read_only::ReadOnlySegment::<common::universal_io::MmapFile>::open(
+                &common::universal_io::MmapFs,
+                &lmi.segment_path,
+                uuid::Uuid::nil(),
+                None,
+                None,
+            )
+            .unwrap();
+        let q = QueryVector::from(vec![1.0, 0.0]);
+        let root_context = QueryContext::default();
+        let context = root_context.get_segment_query_context();
+        let context = context.get_vector_context(DEFAULT_VECTOR_NAME, None);
+        assert_eq!(
+            ro.vector_data[DEFAULT_VECTOR_NAME]
+                .vector_index
+                .borrow()
+                .search(&[&q], None, 1000, None, &context)
+                .unwrap()[0],
+            search(&plain, &[1.0, 0.0], None)
+        );
+
         assert_eq!(
             search(&lmi, &[1.0, 0.0], None),
             search(&plain, &[1.0, 0.0], None)
@@ -297,7 +319,18 @@ fn invalid_persisted_model_and_offsets_are_rejected() {
             load_segment(&directory, uuid::Uuid::nil(), None, &AtomicBool::new(false)).is_err(),
             "corruption case {kind} must fail native open, never become Plain"
         );
-        println!("Phase E2: native open rejected {kind}");
+        assert!(
+            segment::segment::read_only::ReadOnlySegment::<common::universal_io::MmapFile>::open(
+                &common::universal_io::MmapFs,
+                &directory,
+                uuid::Uuid::nil(),
+                None,
+                None,
+            )
+            .is_err(),
+            "corruption case {kind} must also fail universal open"
+        );
+        println!("Phase E2: native and universal open rejected {kind}");
     }
 }
 
@@ -396,4 +429,105 @@ fn persisted_index_rejects_transient_mode_changes() {
     }
     assert_eq!(search(&lmi, &[3.0, 0.1], None), before);
     assert_eq!(std::fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn universal_lmi_serves_native_candidates_and_preserves_fallbacks_and_deletions() {
+    use common::universal_io::{MmapFile, MmapFs};
+    use segment::segment::read_only::ReadOnlySegment;
+    for distance in [
+        Distance::Dot,
+        Distance::Cosine,
+        Distance::Euclid,
+        Distance::Manhattan,
+    ] {
+        let (_root, _plain, mut lmi) = fixture(distance, config(1), 32);
+        lmi.delete_point(100, 1.into(), &HardwareCounterCell::new())
+            .unwrap();
+        lmi.flush(true).unwrap();
+        let (path, _) = state(&lmi);
+        let bytes = std::fs::read(&path).unwrap();
+        let ro = ReadOnlySegment::<MmapFile>::open(
+            &MmapFs,
+            &lmi.segment_path,
+            uuid::Uuid::nil(),
+            None,
+            None,
+        )
+        .unwrap();
+        let index = ro.vector_data[DEFAULT_VECTOR_NAME].vector_index.borrow();
+        assert!(matches!(
+            &*index,
+            segment::index::read_only::VectorIndexReadEnum::Lmi(_)
+        ));
+        let queries = [
+            QueryVector::from(vec![3.0, 0.1]),
+            QueryVector::from(vec![-3.0, 0.1]),
+        ];
+        let root = QueryContext::default();
+        let context = root.get_segment_query_context();
+        let context = context.get_vector_context(DEFAULT_VECTOR_NAME, None);
+        let results = index
+            .search(&[&queries[0], &queries[1]], None, 1000, None, &context)
+            .unwrap();
+        assert_eq!(results[0], search(&lmi, &[3.0, 0.1], None));
+        assert_eq!(results[1], search(&lmi, &[-3.0, 0.1], None));
+        assert!(results[0].len() < 31 && !results[0].is_empty());
+        assert_eq!(
+            index
+                .search(
+                    &[&queries[0]],
+                    None,
+                    1000,
+                    Some(&SearchParams::default()),
+                    &context
+                )
+                .unwrap()[0],
+            results[0]
+        );
+        let exact = SearchParams {
+            exact: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            index
+                .search(&[&queries[0]], None, 1000, Some(&exact), &context)
+                .unwrap()[0],
+            search(&lmi, &[3.0, 0.1], Some(&exact))
+        );
+        let filter = segment::types::Filter::default();
+        let native = lmi.vector_data[DEFAULT_VECTOR_NAME].vector_index.borrow();
+        let complex =
+            QueryVector::RecommendBestScore(segment::vector_storage::query::RecoQuery::new(
+                vec![vec![1.0, 0.0].into()],
+                vec![vec![-1.0, 0.0].into()],
+            ));
+        assert_eq!(
+            index
+                .search(&[&queries[0], &complex], None, 1000, None, &context)
+                .unwrap(),
+            native
+                .search(&[&queries[0], &complex], None, 1000, None, &context)
+                .unwrap()
+        );
+        assert_eq!(
+            index
+                .search(&[&queries[0]], None, 0, None, &context)
+                .unwrap(),
+            vec![vec![]]
+        );
+
+        assert_eq!(
+            index
+                .search(&[&queries[0]], Some(&filter), 1000, None, &context)
+                .unwrap(),
+            native
+                .search(&[&queries[0]], Some(&filter), 1000, None, &context)
+                .unwrap()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+    println!(
+        "Phase E2: universal learned serving, batch routing, four metrics, exact/filter fallback, deletion and unchanged state passed"
+    );
 }

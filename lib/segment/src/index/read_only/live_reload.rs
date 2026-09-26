@@ -30,7 +30,13 @@ impl<S: UniversalReadExt> LiveReload for VectorIndexReadEnum<S> {
     ) -> OperationResult<()> {
         match self {
             Self::SparseMutableRam(index) => index.live_reload(new_points),
-            Self::Plain(_)
+            Self::Lmi(_) if !new_points.is_empty() => Err(
+                crate::common::operation_error::OperationError::service_error(
+                    "Trained LMI requires a new segment for appended vectors",
+                ),
+            ),
+            Self::Lmi(_)
+            | Self::Plain(_)
             | Self::Hnsw(_)
             | Self::SparseCompressedImmutableRamF32(_)
             | Self::SparseCompressedImmutableRamF16(_)

@@ -20,7 +20,7 @@ pub const LMI_STATE_FILE: &str = "lmi_state.json";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DiskState {
+pub(super) struct DiskState {
     version: u32,
     config: LmiConfig,
     distance: Distance,
@@ -179,103 +179,12 @@ impl LmiIndex {
         config.check()?;
         let path = open.path.join(LMI_STATE_FILE);
         let state: DiskState = read_json(&path)?;
-        let total = open.vector_storage.borrow().total_vector_count();
-        if state.version != 1
-            || state.config != config
-            || state.dimension != vector_config.size
-            || state.distance != vector_config.distance
-            || state.total_vectors != total
-        {
-            return Err(OperationError::service_error(
-                "LMI persisted state/configuration mismatch",
-            ));
-        }
-        if state.sample_offsets.len() > config.sample_size
-            || state.sample_offsets.iter().any(|&id| id as usize >= total)
-            || state
-                .sample_offsets
-                .windows(2)
-                .any(|pair| pair[0] >= pair[1])
-        {
-            return Err(OperationError::service_error(
-                "LMI persisted sample offsets are invalid",
-            ));
-        }
-        let routing = match state.router {
-            Some(router) => {
-                let (input, output) = router.validate()?;
-                if !matches!(router.layers.as_slice(),
-                    [super::RouterLayer::Linear(first), super::RouterLayer::ReLU, super::RouterLayer::Linear(last)]
-                    if first.out_features == config.hidden_dim && last.in_features == config.hidden_dim)
-                {
-                    return Err(OperationError::service_error(
-                        "LMI persisted architecture/configuration mismatch",
-                    ));
-                }
-
-                if input != state.dimension || output != config.n_buckets {
-                    return Err(OperationError::service_error(
-                        "LMI persisted router dimensions mismatch",
-                    ));
-                }
-                let mut seen = std::collections::HashSet::new();
-                for posting in &state.postings {
-                    for &id in posting {
-                        if id as usize >= total || !seen.insert(id) {
-                            return Err(OperationError::service_error(
-                                "LMI persisted postings contain invalid or duplicate offsets",
-                            ));
-                        }
-                    }
-                }
-                if state.sample_offsets.len() < config.n_buckets {
-                    return Err(OperationError::service_error(
-                        "LMI persisted training sample is too small",
-                    ));
-                }
-                let tracker = open.id_tracker.borrow();
-                let storage = open.vector_storage.borrow();
-                if tracker
-                    .point_mappings()
-                    .filter_deferred_and_deleted(
-                        0..PointOffsetType::try_from(total).map_err(|_| {
-                            OperationError::service_error("LMI offset range exceeded")
-                        })?,
-                        DeferredBehavior::VisibleOnly,
-                    )
-                    .any(|id| !storage.is_deleted_vector(id) && !seen.contains(&id))
-                {
-                    return Err(OperationError::service_error(
-                        "LMI persisted postings omit a live vector",
-                    ));
-                }
-                Some(LmiRoutingState::new(router, state.postings, config.nprobe)?)
-            }
-            None => {
-                let tracker = open.id_tracker.borrow();
-                let storage = open.vector_storage.borrow();
-                let end = PointOffsetType::try_from(total)
-                    .map_err(|_| OperationError::service_error("LMI offset range exceeded"))?;
-                let live = tracker
-                    .point_mappings()
-                    .filter_deferred_and_deleted(0..end, DeferredBehavior::VisibleOnly)
-                    .filter(|&id| {
-                        (id as usize) < tracker.deleted_point_bitslice().len()
-                            && !storage.is_deleted_vector(id)
-                    })
-                    .take(config.n_buckets)
-                    .count();
-                if live >= config.n_buckets {
-                    return Err(OperationError::service_error(
-                        "LMI fallback state unexpectedly omits a trained model",
-                    ));
-                }
-                if !state.postings.is_empty() || state.sample_offsets.len() >= config.n_buckets {
-                    return Err(OperationError::service_error("Invalid LMI fallback state"));
-                }
-                None
-            }
-        };
+        let routing = state.validate(
+            vector_config,
+            config,
+            &*open.id_tracker.borrow(),
+            &*open.vector_storage.borrow(),
+        )?;
         let mut index = Self::new(
             open.id_tracker,
             open.vector_storage,
@@ -295,5 +204,112 @@ impl LmiIndex {
     /// Persisted native state for snapshots; legacy transient fixtures have no file.
     pub fn state_path(&self) -> Option<&Path> {
         self.state_path.as_deref()
+    }
+}
+
+impl DiskState {
+    /// One validation path for native and universal read-only opening.
+    pub(super) fn validate(
+        self,
+        vector_config: &VectorDataConfig,
+        config: LmiConfig,
+        tracker: &impl IdTrackerRead,
+        storage: &impl VectorStorageRead,
+    ) -> OperationResult<Option<LmiRoutingState>> {
+        config.check()?;
+        let total = storage.total_vector_count();
+        if self.version != 1
+            || self.config != config
+            || self.dimension != vector_config.size
+            || self.distance != vector_config.distance
+            || self.total_vectors != total
+        {
+            return Err(OperationError::service_error(
+                "LMI persisted state/configuration mismatch",
+            ));
+        }
+        if self.sample_offsets.len() > config.sample_size
+            || self.sample_offsets.iter().any(|&id| id as usize >= total)
+            || self
+                .sample_offsets
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(OperationError::service_error(
+                "LMI persisted sample offsets are invalid",
+            ));
+        }
+        let routing = match self.router {
+            Some(router) => {
+                let (input, output) = router.validate()?;
+                if !matches!(router.layers.as_slice(),
+                    [super::RouterLayer::Linear(first), super::RouterLayer::ReLU, super::RouterLayer::Linear(last)]
+                    if first.out_features == config.hidden_dim && last.in_features == config.hidden_dim)
+                {
+                    return Err(OperationError::service_error(
+                        "LMI persisted architecture/configuration mismatch",
+                    ));
+                }
+
+                if input != self.dimension || output != config.n_buckets {
+                    return Err(OperationError::service_error(
+                        "LMI persisted router dimensions mismatch",
+                    ));
+                }
+                let mut seen = std::collections::HashSet::new();
+                for posting in &self.postings {
+                    for &id in posting {
+                        if id as usize >= total || !seen.insert(id) {
+                            return Err(OperationError::service_error(
+                                "LMI persisted postings contain invalid or duplicate offsets",
+                            ));
+                        }
+                    }
+                }
+                if self.sample_offsets.len() < config.n_buckets {
+                    return Err(OperationError::service_error(
+                        "LMI persisted training sample is too small",
+                    ));
+                }
+                if tracker
+                    .point_mappings()
+                    .filter_deferred_and_deleted(
+                        0..PointOffsetType::try_from(total).map_err(|_| {
+                            OperationError::service_error("LMI offset range exceeded")
+                        })?,
+                        DeferredBehavior::VisibleOnly,
+                    )
+                    .any(|id| !storage.is_deleted_vector(id) && !seen.contains(&id))
+                {
+                    return Err(OperationError::service_error(
+                        "LMI persisted postings omit a live vector",
+                    ));
+                }
+                Some(LmiRoutingState::new(router, self.postings, config.nprobe)?)
+            }
+            None => {
+                let end = PointOffsetType::try_from(total)
+                    .map_err(|_| OperationError::service_error("LMI offset range exceeded"))?;
+                let live = tracker
+                    .point_mappings()
+                    .filter_deferred_and_deleted(0..end, DeferredBehavior::VisibleOnly)
+                    .filter(|&id| {
+                        (id as usize) < tracker.deleted_point_bitslice().len()
+                            && !storage.is_deleted_vector(id)
+                    })
+                    .take(config.n_buckets)
+                    .count();
+                if live >= config.n_buckets {
+                    return Err(OperationError::service_error(
+                        "LMI fallback state unexpectedly omits a trained model",
+                    ));
+                }
+                if !self.postings.is_empty() || self.sample_offsets.len() >= config.n_buckets {
+                    return Err(OperationError::service_error("Invalid LMI fallback state"));
+                }
+                None
+            }
+        };
+        Ok(routing)
     }
 }
