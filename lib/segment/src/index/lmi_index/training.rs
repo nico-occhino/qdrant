@@ -17,12 +17,12 @@ fn torch_error(err: tch::TchError) -> OperationError {
 
 /// Stable-Rust Lloyd clustering with seeded random-sample initialization.
 /// Empty clusters keep their previous centroid; ties prefer the first cluster.
-pub(super) fn cluster(
+pub(super) fn cluster_with_centers(
     data: &[f32],
     dim: usize,
     config: &LmiConfig,
     stopped: &AtomicBool,
-) -> OperationResult<Vec<i64>> {
+) -> OperationResult<(Vec<i64>, Vec<Vec<f64>>)> {
     let count = data.len() / dim;
     let mut rng = StdRng::seed_from_u64(config.seed);
     let mut order: Vec<_> = (0..count).collect();
@@ -85,8 +85,20 @@ pub(super) fn cluster(
         check_process_stopped(stopped)?;
         result.push(assign(row, &centers) as i64);
     }
-    Ok(result)
+    Ok((result, centers))
 }
+
+pub(super) fn cluster(
+    data: &[f32],
+    dim: usize,
+    config: &LmiConfig,
+    stopped: &AtomicBool,
+) -> OperationResult<Vec<i64>> {
+    cluster_with_centers(data, dim, config, stopped).map(|(labels, _)| labels)
+}
+
+#[cfg(test)]
+pub(super) static STAGE_SECONDS: std::sync::Mutex<[f64; 2]> = std::sync::Mutex::new([0.0; 2]);
 
 pub(super) fn train(
     data: &[f32],
@@ -95,7 +107,13 @@ pub(super) fn train(
     stopped: &AtomicBool,
 ) -> OperationResult<MlpRouter> {
     check_process_stopped(stopped)?;
+    #[cfg(test)]
+    let cluster_started = std::time::Instant::now();
     let labels = cluster(data, dim, config, stopped)?;
+    #[cfg(test)]
+    let cluster_seconds = cluster_started.elapsed().as_secs_f64();
+    #[cfg(test)]
+    let mlp_started = std::time::Instant::now();
     // The only Torch consumer in Qdrant. Set the process-wide inter-op policy once.
     // Intra-op settings are applied on each builder thread; never exceed one CPU.
     static INIT: Once = Once::new();
@@ -208,6 +226,10 @@ pub(super) fn train(
         }
     }
     check_process_stopped(stopped)?;
+    #[cfg(test)]
+    {
+        *STAGE_SECONDS.lock().unwrap() = [cluster_seconds, mlp_started.elapsed().as_secs_f64()];
+    }
     Ok(router)
 }
 

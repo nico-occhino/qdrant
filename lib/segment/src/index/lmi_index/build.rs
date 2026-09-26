@@ -16,6 +16,9 @@ use crate::segment_constructor::{VectorIndexBuildArgs, VectorIndexOpenArgs};
 use crate::types::{Distance, VectorDataConfig, VectorStorageDatatype};
 use crate::vector_storage::VectorStorageRead;
 
+#[cfg(test)]
+pub(super) static POSTING_SECONDS: std::sync::Mutex<f64> = std::sync::Mutex::new(0.0);
+
 pub const LMI_STATE_FILE: &str = "lmi_state.json";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -141,6 +144,8 @@ impl LmiIndex {
                     config.n_buckets
                 );
                 let router = super::training::train(&data, dim, &config, args.stopped)?;
+                #[cfg(test)]
+                let posting_started = std::time::Instant::now();
                 let mut postings = vec![Vec::new(); config.n_buckets];
                 for id in eligible {
                     check_process_stopped(args.stopped)?;
@@ -151,6 +156,10 @@ impl LmiIndex {
                     };
                     let bucket = router.top_buckets_with_stop(&row, 1, args.stopped)?[0];
                     postings[bucket].push(id);
+                }
+                #[cfg(test)]
+                {
+                    *POSTING_SECONDS.lock().unwrap() = posting_started.elapsed().as_secs_f64();
                 }
                 state.router = Some(router);
                 state.postings = postings;

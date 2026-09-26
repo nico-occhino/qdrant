@@ -71,6 +71,7 @@ impl VectorIndexRead for LmiIndex {
         params: Option<&SearchParams>,
         query_context: &VectorQueryContext,
     ) -> OperationResult<Vec<Vec<ScoredPointOffset>>> {
+        #[cfg(not(test))]
         eprintln!(
             "[LMI-DUMMY] search batch={} top={} filtered={} params={}",
             vectors.len(),
@@ -128,6 +129,7 @@ impl VectorIndexRead for LmiIndex {
                 LmiCandidateMode::DeterministicTwoBuckets => fake_route(query)
                     .and_then(|bucket| postings.as_ref().map(|p| p[bucket].clone())),
                 LmiCandidateMode::AllValidPoints => {
+                    #[cfg(not(test))]
                     eprintln!("[LMI-SCAFFOLD] candidate_source=all_valid_points");
                     let tracker = self.id_tracker.borrow();
                     let deleted = query_context
@@ -144,6 +146,7 @@ impl VectorIndexRead for LmiIndex {
                 }
             };
             if let Some(candidates) = candidates {
+                #[cfg(not(test))]
                 eprintln!(
                     "[LMI-SCAFFOLD] candidate_source={:?} candidate_count={}",
                     self.candidate_mode,

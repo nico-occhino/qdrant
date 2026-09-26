@@ -39,6 +39,7 @@ where
 
         let exact = params.is_some_and(|params| params.exact);
 
+        #[cfg(not(test))]
         eprintln!(
             "[HNSW-DISPATCH] batch={} top={} filtered={} exact={} disabled={} available={} threshold={}",
             vectors.len(),
@@ -81,6 +82,7 @@ where
 
                     let params_ref = if exact { exact_params.as_ref() } else { params };
 
+                    #[cfg(not(test))]
                     let reason = if exact {
                         "exact"
                     } else if is_hnsw_disabled {
@@ -89,6 +91,7 @@ where
                         "below_full_scan_threshold"
                     };
 
+                    #[cfg(not(test))]
                     eprintln!("[HNSW-DISPATCH] path=plain_unfiltered reason={}", reason);
 
                     self.search_plain_unfiltered_batched(vectors, top, params_ref, query_context)
@@ -96,6 +99,7 @@ where
                     let _timer =
                         ScopeDurationMeasurer::new(&self.searches_telemetry.unfiltered_hnsw);
 
+                    #[cfg(not(test))]
                     eprintln!("[HNSW-DISPATCH] path=hnsw_unfiltered");
 
                     self.search_vectors_with_graph(vectors, None, top, params, query_context)
@@ -109,8 +113,10 @@ where
 
                 // Exact search must not use the HNSW graph.
                 if exact || is_hnsw_disabled {
+                    #[cfg(not(test))]
                     let reason = if exact { "exact" } else { "hnsw_disabled" };
 
+                    #[cfg(not(test))]
                     eprintln!("[HNSW-DISPATCH] path=plain_filtered reason={}", reason);
 
                     let _timer = ScopeDurationMeasurer::new(if exact {
@@ -144,6 +150,7 @@ where
                     self.id_tracker.available_point_count(),
                 );
 
+                #[cfg(not(test))]
                 eprintln!(
                     "[HNSW-DISPATCH] filter_cardinality min={} max={} threshold={} available={}",
                     query_cardinality.min,
@@ -153,6 +160,7 @@ where
                 );
 
                 if query_cardinality.max < self.config.full_scan_threshold {
+                    #[cfg(not(test))]
                     eprintln!("[HNSW-DISPATCH] path=plain_filtered_small_cardinality");
 
                     let _timer =
@@ -168,6 +176,7 @@ where
                 }
 
                 if query_cardinality.min > self.config.full_scan_threshold {
+                    #[cfg(not(test))]
                     eprintln!("[HNSW-DISPATCH] path=hnsw_filtered_large_cardinality");
 
                     let _timer =
@@ -198,9 +207,11 @@ where
                     )?
                 };
 
+                #[cfg(not(test))]
                 eprintln!("[HNSW-DISPATCH] sampled_decision use_graph={}", use_graph);
 
                 if use_graph {
+                    #[cfg(not(test))]
                     eprintln!("[HNSW-DISPATCH] path=hnsw_filtered_sampled");
 
                     let _timer =
@@ -208,6 +219,7 @@ where
 
                     self.search_vectors_with_graph(vectors, filter, top, params, query_context)
                 } else {
+                    #[cfg(not(test))]
                     eprintln!("[HNSW-DISPATCH] path=plain_filtered_sampled");
 
                     let _timer =
