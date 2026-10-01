@@ -1,4 +1,5 @@
 """Isolated Phase E E2 deferred/rebuild/named-index lifecycle acceptance test (Python is only the test driver)."""
+from lmi_state import read_lmi_state
 import argparse, hashlib, json, os, signal, subprocess, tempfile, time
 from collections import Counter
 from pathlib import Path
@@ -107,7 +108,7 @@ telemetry_disabled: true
             wait_for(lambda: state_files() and request('GET',endpoint)['result']['status']=='green', 'initial LMI')
             original = {p: digest(p) for p in state_files()}
             assert len(original) == 1, original
-            original_json = json.loads(next(iter(original)).read_text())
+            original_json = read_lmi_state(next(iter(original)))
             # Keep the optimizer paused while writes fill the mutable segment,
             # so visibility before deferred promotion can be observed.
             request('PATCH',endpoint,{'optimizers_config':{'max_optimization_threads':0}})
@@ -131,7 +132,7 @@ telemetry_disabled: true
             files = wait_for(rebuilt, 'new generation publication and old learned-state retirement')
             new_hashes = {str(p):digest(p) for p in files}
             assert not set(new_hashes.values()).intersection(original.values())
-            states = [json.loads(p.read_text()) for p in files]
+            states = [read_lmi_state(p) for p in files]
             assert sum(sum(map(len, st['postings'])) for st in states) == len(expected_ids)
             for st in states:
                 offsets = [v for bucket in st['postings'] for v in bucket]

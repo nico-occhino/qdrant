@@ -10,7 +10,7 @@ use crate::index::VectorIndex;
 
 impl VectorIndex for LmiIndex {
     fn files(&self) -> Vec<PathBuf> {
-        self.state_path
+        self.state_files
             .iter()
             .cloned()
             .chain(self.plain.files())
@@ -18,7 +18,7 @@ impl VectorIndex for LmiIndex {
     }
 
     fn immutable_files(&self) -> Vec<PathBuf> {
-        self.state_path
+        self.state_files
             .iter()
             .cloned()
             .chain(self.plain.immutable_files())

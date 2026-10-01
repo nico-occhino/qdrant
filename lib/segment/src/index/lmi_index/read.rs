@@ -175,7 +175,7 @@ impl VectorIndexRead for LmiIndex {
     fn indexed_vector_count(&self) -> usize {
         self.routing_state.as_ref().map_or_else(
             || self.plain.indexed_vector_count(),
-            |s| s.postings().iter().map(Vec::len).sum(),
+            |s| s.postings().point_count(),
         )
     }
 

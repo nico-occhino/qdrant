@@ -1,8 +1,9 @@
-use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
 
 use common::generic_consts::Random;
 use common::types::PointOffsetType;
+
+use super::CompactPostings;
 
 use crate::common::operation_error::{OperationError, OperationResult, check_process_stopped};
 use crate::data_types::named_vectors::CowVector;
@@ -239,13 +240,13 @@ pub struct LmiRoutingState {
     ///     = internal Qdrant point offsets assigned to that bucket.
     ///
     /// Crucially, these are router-predicted assignments.
-    postings: Vec<Vec<PointOffsetType>>,
+    postings: CompactPostings,
 
     nprobe: usize,
 }
 
 impl LmiRoutingState {
-    pub fn postings(&self) -> &[Vec<PointOffsetType>] {
+    pub fn postings(&self) -> &CompactPostings {
         &self.postings
     }
 
@@ -258,6 +259,15 @@ impl LmiRoutingState {
         postings: Vec<Vec<PointOffsetType>>,
         nprobe: usize,
     ) -> OperationResult<Self> {
+        Self::from_compact(router, CompactPostings::from_buckets(postings)?, nprobe)
+    }
+
+    pub(super) fn from_compact(
+        router: MlpRouter,
+        postings: CompactPostings,
+        nprobe: usize,
+    ) -> OperationResult<Self> {
+        postings.validate()?;
         let bucket_count = router.output_dim()?;
 
         if postings.len() != bucket_count {
@@ -307,8 +317,6 @@ impl LmiRoutingState {
 
         let mut candidates = Vec::new();
 
-        let mut seen = HashSet::new();
-
         for bucket in buckets {
             let Some(posting) = self.postings.get(bucket) else {
                 return Err(OperationError::service_error(format!(
@@ -319,15 +327,14 @@ impl LmiRoutingState {
 
             for &point_offset in posting {
                 check_process_stopped(stopped)?;
-                if seen.insert(point_offset) {
-                    candidates.push(point_offset);
-                }
+                candidates.push(point_offset);
             }
         }
 
         // Native top-k can keep a different equal-score boundary point when
         // arrival order differs. Ascending offsets match Plain full-scan order.
         candidates.sort_unstable();
+        candidates.dedup();
         check_process_stopped(stopped)?;
         Ok(Some(candidates))
     }

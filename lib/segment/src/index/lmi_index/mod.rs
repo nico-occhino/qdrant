@@ -8,11 +8,13 @@ pub use config::LmiConfig;
 pub const fn training_available() -> bool {
     cfg!(feature = "lmi-training")
 }
-pub use build::LMI_STATE_FILE;
+pub use build::{LMI_POSTINGS_FILE, LMI_ROUTER_FILE, LMI_STATE_FILE};
 mod lifecycle;
+mod postings;
 mod read;
 pub mod read_only;
 mod routing;
+pub use postings::CompactPostings;
 
 pub use routing::{
     LinearLayer, LmiCandidateMode, LmiRoutingState, MlpRouter, RouterLayer, build_router_postings,
@@ -35,6 +37,7 @@ use crate::vector_storage::quantized::quantized_vectors::QuantizedVectors;
 pub struct LmiIndex {
     plain: PlainVectorIndex,
     state_path: Option<std::path::PathBuf>,
+    state_files: Vec<std::path::PathBuf>,
     routing_distance: Option<crate::types::Distance>,
     candidate_mode: LmiCandidateMode,
     routing_state: Option<LmiRoutingState>,
@@ -110,6 +113,7 @@ impl LmiIndex {
         Self {
             plain,
             state_path: None,
+            state_files: Vec::new(),
             routing_distance: None,
             candidate_mode: LmiCandidateMode::AllValidPoints,
             routing_state: None,

@@ -71,7 +71,23 @@ fn state(segment: &Segment) -> (std::path::PathBuf, serde_json::Value) {
     };
     let path = lmi.state_path().unwrap().to_owned();
     assert_eq!(path.file_name().unwrap(), LMI_STATE_FILE);
-    let json = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    if json["version"] == 2 {
+        // Reconstruct the legacy JSON fixture for the existing corruption matrix.
+        // Normal native/read-only tests still exercise the v2 binary reader.
+        let (sample, router): (Vec<u32>, Option<segment::index::lmi_index::MlpRouter>) =
+            common::fs::read_bin(&path.with_file_name(segment::index::lmi_index::LMI_ROUTER_FILE))
+                .unwrap();
+        let postings: segment::index::lmi_index::CompactPostings = common::fs::read_bin(
+            &path.with_file_name(segment::index::lmi_index::LMI_POSTINGS_FILE),
+        )
+        .unwrap();
+        json["sample_offsets"] = serde_json::json!(sample);
+        json["router"] = serde_json::json!(router);
+        json["postings"] = serde_json::json!(postings.to_vec());
+        json["version"] = 1.into();
+    }
     (path, json)
 }
 
@@ -530,4 +546,148 @@ fn universal_lmi_serves_native_candidates_and_preserves_fallbacks_and_deletions(
     println!(
         "Phase E2: universal learned serving, batch routing, four metrics, exact/filter fallback, deletion and unchanged state passed"
     );
+}
+
+#[test]
+fn compact_files_and_legacy_reopen_preserve_results() {
+    use segment::index::lmi_index::{LMI_POSTINGS_FILE, LMI_ROUTER_FILE};
+    let (_root, _plain, lmi) = fixture(Distance::Dot, config(2), 64);
+    let expected = search(&lmi, &[3.0, 0.1], None);
+    let (path, legacy) = state(&lmi);
+    let metadata: serde_json::Value = common::fs::read_json(&path).unwrap();
+    assert_eq!(metadata["version"], 2);
+    assert!(metadata.get("postings").is_none());
+    assert!(metadata.get("router").is_none());
+    let files = lmi.vector_data[DEFAULT_VECTOR_NAME]
+        .vector_index
+        .borrow()
+        .files();
+    let immutable = lmi.vector_data[DEFAULT_VECTOR_NAME]
+        .vector_index
+        .borrow()
+        .immutable_files();
+    for name in [LMI_STATE_FILE, LMI_ROUTER_FILE, LMI_POSTINGS_FILE] {
+        assert!(files.contains(&path.with_file_name(name)));
+        assert!(immutable.contains(&path.with_file_name(name)));
+    }
+    assert_eq!(
+        std::fs::metadata(path.with_file_name(LMI_POSTINGS_FILE))
+            .unwrap()
+            .len(),
+        16 + 8 * 3 + 4 * 64
+    );
+    let dir = lmi.segment_path.clone();
+    drop(lmi);
+    // A genuine v1 file remains readable, without binary files or a rewrite.
+    std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+    std::fs::remove_file(path.with_file_name(LMI_POSTINGS_FILE)).unwrap();
+    std::fs::remove_file(path.with_file_name(LMI_ROUTER_FILE)).unwrap();
+    let old_bytes = std::fs::read(&path).unwrap();
+    let old = load_segment(&dir, uuid::Uuid::nil(), None, &AtomicBool::new(false)).unwrap();
+    assert_eq!(search(&old, &[3.0, 0.1], None), expected);
+    segment::segment::read_only::ReadOnlySegment::<common::universal_io::MmapFile>::open(
+        &common::universal_io::MmapFs,
+        &dir,
+        uuid::Uuid::nil(),
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), old_bytes);
+}
+
+#[test]
+fn compact_binary_corruption_rejected_by_both_openers() {
+    use segment::index::lmi_index::LMI_POSTINGS_FILE;
+    for kind in [
+        "missing",
+        "truncated",
+        "start",
+        "descending",
+        "end",
+        "range",
+        "duplicate",
+        "omitted",
+        "bucket_count",
+    ] {
+        let (_root, _plain, lmi) = fixture(Distance::Dot, config(1), 8);
+        let path = state(&lmi).0.with_file_name(LMI_POSTINGS_FILE);
+        let dir = lmi.segment_path.clone();
+        drop(lmi);
+        // Wire layout matches CompactPostings: boundaries, then offsets.
+        let (mut boundaries, mut points): (Vec<u64>, Vec<u32>) =
+            common::fs::read_bin(&path).unwrap();
+        match kind {
+            "missing" => {
+                std::fs::remove_file(&path).unwrap();
+            }
+            "truncated" => {
+                let bytes = std::fs::read(&path).unwrap();
+                std::fs::write(&path, &bytes[..bytes.len() - 1]).unwrap();
+            }
+            _ => {
+                match kind {
+                    "start" => boundaries[0] = 1,
+                    "descending" => boundaries[1] = u64::MAX,
+                    "end" => *boundaries.last_mut().unwrap() += 1,
+                    "range" => points[0] = 999,
+                    "duplicate" => points[0] = points[1],
+                    "omitted" => {
+                        points.pop();
+                        for b in &mut boundaries {
+                            *b = (*b).min(points.len() as u64);
+                        }
+                    }
+                    "bucket_count" => boundaries.push(points.len() as u64),
+                    _ => unreachable!(),
+                }
+                common::fs::atomic_save_bin(&path, &(boundaries, points)).unwrap();
+            }
+        }
+        assert!(
+            load_segment(&dir, uuid::Uuid::nil(), None, &AtomicBool::new(false)).is_err(),
+            "{kind}"
+        );
+        assert!(
+            segment::segment::read_only::ReadOnlySegment::<common::universal_io::MmapFile>::open(
+                &common::universal_io::MmapFs,
+                &dir,
+                uuid::Uuid::nil(),
+                None,
+                None
+            )
+            .is_err(),
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn compact_optimizer_rebuild_preserves_live_data() {
+    let (root, _plain, mut lmi) = fixture(Distance::Dot, config(2), 32);
+    lmi.delete_point(100, 1.into(), &HardwareCounterCell::new())
+        .unwrap();
+    let expected = search(&lmi, &[3.0, 0.1], None);
+    let staging = tempfile::tempdir().unwrap();
+    let mut builder =
+        SegmentBuilder::new(staging.path(), lmi.config(), &HnswGlobalConfig::default()).unwrap();
+    builder
+        .update(
+            &[&lmi],
+            &AtomicBool::new(false),
+            &HardwareCounterCell::new(),
+        )
+        .unwrap();
+    let rebuilt = builder.build_for_test(root.path());
+    let actual = search(&rebuilt, &[3.0, 0.1], None);
+    assert_eq!(actual.len(), expected.len());
+    // Optimizer may remap internal offsets. Compare external IDs and scores.
+    let external = |segment: &Segment, rows: Vec<common::types::ScoredPointOffset>| {
+        use segment::id_tracker::IdTrackerRead;
+        let tracker = segment.id_tracker.borrow();
+        rows.into_iter()
+            .map(|p| (tracker.external_id(p.idx).unwrap(), p.score))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(external(&rebuilt, actual), external(&lmi, expected));
 }

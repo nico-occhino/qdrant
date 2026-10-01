@@ -1,13 +1,15 @@
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
-use common::fs::{atomic_save_json, read_json};
+use common::fs::{atomic_save_bin, atomic_save_json};
 use common::generic_consts::Random;
 use common::types::{DeferredBehavior, PointOffsetType};
+use common::universal_io::{MmapFs, UniversalReadFs, read_bin_via, read_json_via};
 use rand::rngs::StdRng;
 use rand::{Rng, RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 
+use super::CompactPostings;
 use super::{LmiCandidateMode, LmiConfig, LmiIndex, LmiRoutingState, MlpRouter};
 use crate::common::operation_error::{OperationError, OperationResult, check_process_stopped};
 use crate::data_types::named_vectors::CowVector;
@@ -20,6 +22,8 @@ use crate::vector_storage::VectorStorageRead;
 pub(super) static POSTING_SECONDS: std::sync::Mutex<f64> = std::sync::Mutex::new(0.0);
 
 pub const LMI_STATE_FILE: &str = "lmi_state.json";
+pub const LMI_POSTINGS_FILE: &str = "lmi_postings.bin";
+pub const LMI_ROUTER_FILE: &str = "lmi_router.bin";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,9 +33,14 @@ pub(super) struct DiskState {
     distance: Distance,
     dimension: usize,
     total_vectors: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     sample_offsets: Vec<PointOffsetType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     router: Option<MlpRouter>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     postings: Vec<Vec<PointOffsetType>>,
+    #[serde(skip)]
+    compact: Option<CompactPostings>,
 }
 
 impl LmiIndex {
@@ -110,7 +119,7 @@ impl LmiIndex {
         sample.sort_unstable();
         #[allow(unused_mut)] // Populated only in builds with the optional trainer.
         let mut state = DiskState {
-            version: 1,
+            version: 2,
             config,
             distance: vector_config.distance,
             dimension: dim,
@@ -118,6 +127,7 @@ impl LmiIndex {
             sample_offsets: sample.clone(),
             router: None,
             postings: vec![],
+            compact: None,
         };
         if sample.len() >= config.n_buckets {
             let mut data = Vec::with_capacity(sample.len() * dim);
@@ -162,7 +172,7 @@ impl LmiIndex {
                     *POSTING_SECONDS.lock().unwrap() = posting_started.elapsed().as_secs_f64();
                 }
                 state.router = Some(router);
-                state.postings = postings;
+                state.compact = Some(CompactPostings::from_buckets(postings)?);
             }
         } else {
             log::info!(
@@ -175,7 +185,10 @@ impl LmiIndex {
         drop(tracker);
         check_process_stopped(args.stopped)?;
         fs_err::create_dir_all(open.path)?;
-        atomic_save_json(&open.path.join(LMI_STATE_FILE), &state)?;
+        // Binary payloads first, metadata last. SegmentBuilder publishes the
+        // entire staging directory only after all indexes and segment state succeed.
+        state.save(open.path)?;
+        drop(state); // Do not hold a second complete posting array during reopen.
         progress.store(total as u64, Ordering::Relaxed);
         Self::open_trained(open, vector_config, config)
     }
@@ -187,7 +200,8 @@ impl LmiIndex {
     ) -> OperationResult<Self> {
         config.check()?;
         let path = open.path.join(LMI_STATE_FILE);
-        let state: DiskState = read_json(&path)?;
+        let state = DiskState::load(&MmapFs, open.path)?;
+        let state_files = state.files(open.path);
         let routing = state.validate(
             vector_config,
             config,
@@ -206,6 +220,7 @@ impl LmiIndex {
         }
         index.routing_distance = Some(vector_config.distance);
         index.state_path = Some(path);
+        index.state_files = state_files;
         log::info!("LMI open: mode={:?}; no training", index.candidate_mode);
         Ok(index)
     }
@@ -213,6 +228,75 @@ impl LmiIndex {
     /// Persisted native state for snapshots; legacy transient fixtures have no file.
     pub fn state_path(&self) -> Option<&Path> {
         self.state_path.as_deref()
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct DiskRouter {
+    sample_offsets: Vec<PointOffsetType>,
+    router: Option<MlpRouter>,
+}
+
+impl DiskState {
+    #[cfg(test)]
+    pub(super) fn diagnostic_json(&self) -> serde_json::Value {
+        let mut value = serde_json::to_value(self).expect("serializable state");
+        if let Some(postings) = &self.compact {
+            value["postings"] = serde_json::json!(postings.to_vec());
+        }
+        value
+    }
+
+    pub(super) fn load(fs: &impl UniversalReadFs, path: &Path) -> OperationResult<Self> {
+        let mut state: Self = read_json_via(fs, path.join(LMI_STATE_FILE))?;
+        match state.version {
+            1 => {}
+            2 => {
+                if !state.sample_offsets.is_empty()
+                    || state.router.is_some()
+                    || !state.postings.is_empty()
+                {
+                    return Err(OperationError::service_error(
+                        "LMI v2 contains unexpected inline arrays",
+                    ));
+                }
+                let model: DiskRouter = read_bin_via(fs, path.join(LMI_ROUTER_FILE))?;
+                let postings: CompactPostings = read_bin_via(fs, path.join(LMI_POSTINGS_FILE))?;
+                postings.validate()?;
+                state.sample_offsets = model.sample_offsets;
+                state.router = model.router;
+                state.compact = Some(postings);
+            }
+            _ => {
+                return Err(OperationError::service_error(
+                    "Unsupported LMI state version",
+                ));
+            }
+        }
+        Ok(state)
+    }
+
+    fn files(&self, path: &Path) -> Vec<std::path::PathBuf> {
+        let mut files = vec![path.join(LMI_STATE_FILE)];
+        if self.version == 2 {
+            files.extend([path.join(LMI_ROUTER_FILE), path.join(LMI_POSTINGS_FILE)]);
+        }
+        files
+    }
+
+    fn save(&mut self, path: &Path) -> OperationResult<()> {
+        let router = DiskRouter {
+            sample_offsets: std::mem::take(&mut self.sample_offsets),
+            router: self.router.take(),
+        };
+        let postings = self
+            .compact
+            .take()
+            .unwrap_or(CompactPostings::from_buckets(vec![])?);
+        atomic_save_bin(&path.join(LMI_ROUTER_FILE), &router)?;
+        atomic_save_bin(&path.join(LMI_POSTINGS_FILE), &postings)?;
+        atomic_save_json(&path.join(LMI_STATE_FILE), self)?;
+        Ok(())
     }
 }
 
@@ -227,7 +311,7 @@ impl DiskState {
     ) -> OperationResult<Option<LmiRoutingState>> {
         config.check()?;
         let total = storage.total_vector_count();
-        if self.version != 1
+        if !matches!(self.version, 1 | 2)
             || self.config != config
             || self.dimension != vector_config.size
             || self.distance != vector_config.distance
@@ -248,6 +332,11 @@ impl DiskState {
                 "LMI persisted sample offsets are invalid",
             ));
         }
+        let postings = match self.compact {
+            Some(postings) => postings,
+            None => CompactPostings::from_buckets(self.postings)?,
+        };
+        postings.validate()?;
         let routing = match self.router {
             Some(router) => {
                 let (input, output) = router.validate()?;
@@ -265,10 +354,12 @@ impl DiskState {
                         "LMI persisted router dimensions mismatch",
                     ));
                 }
-                let mut seen = std::collections::HashSet::new();
-                for posting in &self.postings {
+                // Exact uniqueness and coverage, at one bit per physical offset.
+                // Stale deleted postings remain allowed, as in version 1.
+                let mut seen = bitvec::vec::BitVec::<u8, bitvec::order::Lsb0>::repeat(false, total);
+                for posting in postings.iter() {
                     for &id in posting {
-                        if id as usize >= total || !seen.insert(id) {
+                        if id as usize >= total || seen.replace(id as usize, true) {
                             return Err(OperationError::service_error(
                                 "LMI persisted postings contain invalid or duplicate offsets",
                             ));
@@ -288,13 +379,17 @@ impl DiskState {
                         })?,
                         DeferredBehavior::VisibleOnly,
                     )
-                    .any(|id| !storage.is_deleted_vector(id) && !seen.contains(&id))
+                    .any(|id| !storage.is_deleted_vector(id) && !seen[id as usize])
                 {
                     return Err(OperationError::service_error(
                         "LMI persisted postings omit a live vector",
                     ));
                 }
-                Some(LmiRoutingState::new(router, self.postings, config.nprobe)?)
+                Some(LmiRoutingState::from_compact(
+                    router,
+                    postings,
+                    config.nprobe,
+                )?)
             }
             None => {
                 let end = PointOffsetType::try_from(total)
@@ -313,7 +408,7 @@ impl DiskState {
                         "LMI fallback state unexpectedly omits a trained model",
                     ));
                 }
-                if !self.postings.is_empty() || self.sample_offsets.len() >= config.n_buckets {
+                if !postings.is_empty() || self.sample_offsets.len() >= config.n_buckets {
                     return Err(OperationError::service_error("Invalid LMI fallback state"));
                 }
                 None

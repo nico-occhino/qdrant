@@ -3,11 +3,11 @@ use std::sync::atomic::AtomicBool;
 
 use common::counter::hardware_counter::HardwareCounterCell;
 use common::types::{DeferredBehavior, ScoredPointOffset, TelemetryDetail};
-use common::universal_io::{UniversalReadFs, read_json_via};
+use common::universal_io::UniversalReadFs;
 use sparse::common::types::DimId;
 
 use super::build::DiskState;
-use super::{LMI_STATE_FILE, LmiConfig, LmiRoutingState};
+use super::{LmiConfig, LmiRoutingState};
 use crate::common::operation_error::OperationResult;
 use crate::data_types::query_context::VectorQueryContext;
 use crate::data_types::vectors::{QueryVector, VectorInternal};
@@ -34,7 +34,7 @@ impl<S: UniversalReadExt + 'static> ReadOnlyLmiIndex<S> {
         config: LmiConfig,
         args: ReadOnlyVectorIndexOpenArgs<'_, S, Fs>,
     ) -> OperationResult<Self> {
-        let state: DiskState = read_json_via(args.fs, &args.path.join(LMI_STATE_FILE))?;
+        let state = DiskState::load(args.fs, args.path)?;
         let routing = state.validate(
             vector_config,
             config,
@@ -139,7 +139,7 @@ impl<S: UniversalReadExt + 'static> VectorIndexRead for ReadOnlyLmiIndex<S> {
     fn indexed_vector_count(&self) -> usize {
         self.routing
             .as_ref()
-            .map_or(0, |s| s.postings().iter().map(Vec::len).sum())
+            .map_or(0, |s| s.postings().point_count())
     }
     fn size_of_searchable_vectors_in_bytes(&self) -> usize {
         self.plain.size_of_searchable_vectors_in_bytes()
