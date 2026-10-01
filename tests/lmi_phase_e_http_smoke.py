@@ -1,4 +1,5 @@
 """Isolated Phase E REST/optimizer/restart/fresh-snapshot-restore smoke test (Python is only the test driver)."""
+from lmi_state import state_digest
 import argparse, hashlib, json, os, signal, subprocess, tempfile, time
 from collections import Counter
 from pathlib import Path
@@ -108,14 +109,14 @@ telemetry_disabled: true
         assert ids(a) == ids(default)
         assert len(exact) == len(filtered) == 300
         assert ids(a) == [p['id'] for p in exact if p['id'] in set(ids(a))]
-        hashes={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+        hashes={str(p):state_digest(p) for p in files}
         snapshot=request('POST','/collections/phase_e/snapshots')['result']
         evidence.update(indexed_vectors=info['indexed_vectors_count'],positive_candidates=len(a),negative_candidates=len(b),exact_results=len(exact),filtered_results=len(filtered),snapshot=snapshot,model_hashes=hashes)
         stop(); start(2)
         assert request('GET', '/collections/phase_e')['result']['config'] == before_config
         evidence['restart_preserved_configuration'] = True
         assert ids(query([3,.1]))==ids(a)
-        assert hashes=={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+        assert hashes=={str(p):state_digest(p) for p in files}
         stop()
         assert 'LMI build: training' not in (out/'server-2.log').read_text()
         evidence.update(restart_same_results=True,restart_same_state=True,restart_did_not_train=True)
@@ -132,7 +133,7 @@ telemetry_disabled: true
         start(3, ['--snapshot', f'{snapshot_path}:phase_e'])
         assert request('GET', '/collections/phase_e')['result']['config'] == before_config
         restored_files = list((root / 'storage').rglob('lmi_state.json'))
-        restored_hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in restored_files}
+        restored_hashes = {str(p): state_digest(p) for p in restored_files}
         assert Counter(restored_hashes.values()) == Counter(hashes.values())
         # Compare IDs AND scores, but also require pruned results and the native
         # StaticLearned serving marker below: equality alone is insufficient.

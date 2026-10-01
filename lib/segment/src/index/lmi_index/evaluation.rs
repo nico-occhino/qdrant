@@ -212,8 +212,10 @@ fn phase_f_benchmark() {
         assert!(index.routing_state.is_some());
         index.state_path().unwrap().to_owned()
     };
-    let disk: Value = super::build::DiskState::load(&common::universal_io::MmapFs, state_path.parent().unwrap())
-        .unwrap().diagnostic_json();
+    let disk: Value =
+        super::build::DiskState::load(&common::universal_io::MmapFs, state_path.parent().unwrap())
+            .unwrap()
+            .diagnostic_json();
     let router: MlpRouter = serde_json::from_value(disk["router"].clone()).unwrap();
     let mlp_postings: Vec<Vec<PointOffsetType>> =
         serde_json::from_value(disk["postings"].clone()).unwrap();

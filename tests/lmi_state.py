@@ -26,6 +26,26 @@ def read_lmi_state(path):
         raise ValueError('invalid posting boundaries')
     points = struct.unpack_from(f'<{count}I', data, 16 + size * 8)
     state['postings'] = [list(points[a:b]) for a,b in zip(boundaries,boundaries[1:])]
-    # Lifecycle test compares model identities, not individual weights.
-    state['router'] = hashlib.sha256(path.with_name('lmi_router.bin').read_bytes()).hexdigest()
+    # Exclude sampled offsets: a changed sample alone does not prove a new model.
+    model = path.with_name('lmi_router.bin').read_bytes()
+    (sample_count,) = struct.unpack_from('<Q', model, 0)
+    router_start = 8 + 4 * sample_count
+    if router_start >= len(model):
+        raise ValueError('invalid router file size')
+    state['router'] = hashlib.sha256(model[router_start:]).hexdigest()
     return state
+
+
+def state_digest(path):
+    """Bind smoke-test identity to metadata AND all auxiliary binary files."""
+    state = json.loads(path.read_text())
+    files = [path]
+    if state['version'] == 2:
+        files += [path.with_name('lmi_router.bin'), path.with_name('lmi_postings.bin')]
+    digest = hashlib.sha256()
+    for file in files:
+        digest.update(file.name.encode())
+        with file.open('rb') as source:
+            for block in iter(lambda: source.read(1024 * 1024), b''):
+                digest.update(block)
+    return digest.hexdigest()

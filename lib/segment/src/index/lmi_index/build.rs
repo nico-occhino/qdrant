@@ -92,20 +92,23 @@ impl LmiIndex {
             .map_err(|_| OperationError::service_error("LMI offset range exceeded"))?;
         let mut rng = StdRng::seed_from_u64(config.seed);
         let mut sample = Vec::with_capacity(config.sample_size.min(total));
-        let mut eligible = Vec::new();
+        // Both borrows remain held through sampling, training and both posting
+        // passes. Internal offsets are stable; named-vector tombstones are skipped.
+        let eligible = || {
+            tracker
+                .point_mappings()
+                .filter_deferred_and_deleted(0..end, DeferredBehavior::VisibleOnly)
+                .filter(|&id| {
+                    (id as usize) < tracker.deleted_point_bitslice().len()
+                        && !storage.is_deleted_vector(id)
+                })
+        };
+        let mut seen = 0usize;
+        let sampling_started = std::time::Instant::now();
         let progress = args.progress.track_progress(Some(total as u64));
-        for id in tracker
-            .point_mappings()
-            .filter_deferred_and_deleted(0..end, DeferredBehavior::VisibleOnly)
-        {
+        for id in eligible() {
             check_process_stopped(args.stopped)?;
-            if id as usize >= tracker.deleted_point_bitslice().len()
-                || storage.is_deleted_vector(id)
-            {
-                continue;
-            }
-            eligible.push(id);
-            let seen = eligible.len();
+            seen += 1;
             if sample.len() < config.sample_size {
                 sample.push(id);
             } else {
@@ -117,6 +120,12 @@ impl LmiIndex {
             progress.store(u64::from(id) + 1, Ordering::Relaxed);
         }
         sample.sort_unstable();
+        log::info!(
+            "LMI sampling: segment_slots={total} eligible={seen} sample={} buckets={} seconds={:.6}",
+            sample.len(),
+            config.n_buckets,
+            sampling_started.elapsed().as_secs_f64()
+        );
         #[allow(unused_mut)] // Populated only in builds with the optional trainer.
         let mut state = DiskState {
             version: 2,
@@ -156,23 +165,39 @@ impl LmiIndex {
                 let router = super::training::train(&data, dim, &config, args.stopped)?;
                 #[cfg(test)]
                 let posting_started = std::time::Instant::now();
-                let mut postings = vec![Vec::new(); config.n_buckets];
-                for id in eligible {
-                    check_process_stopped(args.stopped)?;
-                    let Some(CowVector::Dense(row)) = storage.get_vector_opt::<Random>(id) else {
-                        return Err(OperationError::service_error(
-                            "LMI posting contains no dense vector",
-                        ));
-                    };
-                    let bucket = router.top_buckets_with_stop(&row, 1, args.stopped)?[0];
-                    postings[bucket].push(id);
-                }
+                // Release the training matrix before allocating corpus postings.
+                drop(data);
+                let (postings, times) =
+                    CompactPostings::build_two_pass(config.n_buckets, args.stopped, |push| {
+                        for id in eligible() {
+                            check_process_stopped(args.stopped)?;
+                            let Some(CowVector::Dense(row)) = storage.get_vector_opt::<Random>(id)
+                            else {
+                                return Err(OperationError::service_error(
+                                    "LMI posting contains no dense vector",
+                                ));
+                            };
+                            // Bounded native inference: one borrowed/decoded row at a time.
+                            // Same arithmetic and tie policy as existing query routing.
+                            let bucket = router.top_buckets_with_stop(&row, 1, args.stopped)?[0];
+                            push(id, bucket)?;
+                        }
+                        Ok(())
+                    })?;
+                log::info!(
+                    "LMI postings: segment_slots={total} eligible={seen} buckets={} postings={} pass1_seconds={:.6} allocation_seconds={:.6} pass2_seconds={:.6}",
+                    config.n_buckets,
+                    postings.point_count(),
+                    times[0],
+                    times[1],
+                    times[2]
+                );
                 #[cfg(test)]
                 {
                     *POSTING_SECONDS.lock().unwrap() = posting_started.elapsed().as_secs_f64();
                 }
                 state.router = Some(router);
-                state.compact = Some(CompactPostings::from_buckets(postings)?);
+                state.compact = Some(postings);
             }
         } else {
             log::info!(
@@ -187,7 +212,12 @@ impl LmiIndex {
         fs_err::create_dir_all(open.path)?;
         // Binary payloads first, metadata last. SegmentBuilder publishes the
         // entire staging directory only after all indexes and segment state succeed.
+        let persistence_started = std::time::Instant::now();
         state.save(open.path)?;
+        log::info!(
+            "LMI persistence: seconds={:.6}",
+            persistence_started.elapsed().as_secs_f64()
+        );
         drop(state); // Do not hold a second complete posting array during reopen.
         progress.store(total as u64, Ordering::Relaxed);
         Self::open_trained(open, vector_config, config)
@@ -199,6 +229,7 @@ impl LmiIndex {
         config: LmiConfig,
     ) -> OperationResult<Self> {
         config.check()?;
+        let reopen_started = std::time::Instant::now();
         let path = open.path.join(LMI_STATE_FILE);
         let state = DiskState::load(&MmapFs, open.path)?;
         let state_files = state.files(open.path);
@@ -221,7 +252,11 @@ impl LmiIndex {
         index.routing_distance = Some(vector_config.distance);
         index.state_path = Some(path);
         index.state_files = state_files;
-        log::info!("LMI open: mode={:?}; no training", index.candidate_mode);
+        log::info!(
+            "LMI open: mode={:?}; no training; seconds={:.6}",
+            index.candidate_mode,
+            reopen_started.elapsed().as_secs_f64()
+        );
         Ok(index)
     }
 

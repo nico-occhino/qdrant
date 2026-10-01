@@ -1,5 +1,5 @@
 """Isolated Phase E E2 deferred/rebuild/named-index lifecycle acceptance test (Python is only the test driver)."""
-from lmi_state import read_lmi_state
+from lmi_state import read_lmi_state, state_digest
 import argparse, hashlib, json, os, signal, subprocess, tempfile, time
 from collections import Counter
 from pathlib import Path
@@ -75,7 +75,7 @@ telemetry_disabled: true
             time.sleep(.25)
         raise AssertionError(f'timeout: {label}')
     def digest(path):
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+        return state_digest(path)
     try:
         start(1)
         cfg = {'n_buckets':2, 'sample_size':32, 'hidden_dim':8, 'epochs':60,
