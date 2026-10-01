@@ -1,0 +1,106 @@
+[
+  {
+    "url": "https://raw.githubusercontent.com/Coda-Research-Group/LearnedMetricIndex/paper-sisap24-indexing-challenge/README.md",
+    "path": "/home/nicoo/work/qdrant/work/phase_s/references/Coda-Research-Group_LearnedMetricIndex/paper-sisap24-indexing-challenge/README.md",
+    "bytes": 3233
+  },
+  {
+    "url": "https://raw.githubusercontent.com/Coda-Research-Group/LearnedMetricIndex/paper-sisap24-indexing-challenge/task1.py",
+    "path": "/home/nicoo/work/qdrant/work/phase_s/references/Coda-Research-Group_LearnedMetricIndex/paper-sisap24-indexing-challenge/task1.py",
+    "bytes": 10766
+  },
+  {
+    "url": "https://raw.githubusercontent.com/Coda-Research-Group/LearnedMetricIndex/paper-sisap24-indexing-challenge/utils.py",
+    "path": "/home/nicoo/work/qdrant/work/phase_s/references/Coda-Research-Group_LearnedMetricIndex/paper-sisap24-indexing-challenge/utils.py",
+    "bytes": 3982
+  },
+  {
+    "url": "https://raw.githubusercontent.com/Coda-Research-Group/LearnedMetricIndex/enhancing-performance/README.md",
+    "path": "/home/nicoo/work/qdrant/work/phase_s/references/Coda-Research-Group_LearnedMetricIndex/enhancing-performance/README.md",
+    "bytes": 2055
+  },
+  {
+    "url": "https://raw.githubusercontent.com/Coda-Research-Group/LearnedMetricIndex/enhancing-performance/experiments/task1-1B.py",
+    "path": "/home/nicoo/work/qdrant/work/phase_s/references/Coda-Research-Group_LearnedMetricIndex/enhancing-performance/experiments/task1-1B.py",
+    "bytes": 11510
+  },
+  {
+    "url": "https://raw.githubusercontent.com/Coda-Research-Group/LearnedMetricIndex/enhancing-performance/experiments/task1-alpha.py",
+    "path": "/home/nicoo/work/qdrant/work/phase_s/references/Coda-Research-Group_LearnedMetricIndex/enhancing-performance/experiments/task1-alpha.py",
+    "bytes": 13011
+  },
+  {
+    "url": "https://raw.githubusercontent.com/Coda-Research-Group/LearnedMetricIndex/enhancing-performance/experiments/task1-gpu.py",
+    "path": "/home/nicoo/work/qdrant/work/phase_s/references/Coda-Research-Group_LearnedMetricIndex/enhancing-performance/experiments/task1-gpu.py",
+    "bytes": 11663
+  },
+  {
+    "url": "https://raw.githubusercontent.com/Coda-Research-Group/LearnedMetricIndex/enhancing-performance/experiments/task1-quant.py",
+    "path": "/home/nicoo/work/qdrant/work/phase_s/references/Coda-Research-Group_LearnedMetricIndex/enhancing-performance/experiments/task1-quant.py",
+    "bytes": 13770
+  },
+  {
+    "url": "https://raw.githubusercontent.com/Coda-Research-Group/LearnedMetricIndex/enhancing-performance/experiments/task1-inmemory.py",
+    "path": "/home/nicoo/work/qdrant/work/phase_s/references/Coda-Research-Group_LearnedMetricIndex/enhancing-performance/experiments/task1-inmemory.py",
+    "bytes": 12380
+  },
+  {
+    "url": "https://raw.githubusercontent.com/Coda-Research-Group/LearnedMetricIndex/enhancing-performance/experiments/task1-compile.py",
+    "path": "/home/nicoo/work/qdrant/work/phase_s/references/Coda-Research-Group_LearnedMetricIndex/enhancing-performance/experiments/task1-compile.py",
+    "bytes": 13309
+  },
+  {
+    "url": "https://raw.githubusercontent.com/Coda-Research-Group/LearnedMetricIndex/enhancing-performance/utils.py",
+    "path": "/home/nicoo/work/qdrant/work/phase_s/references/Coda-Research-Group_LearnedMetricIndex/enhancing-performance/utils.py",
+    "bytes": 6856
+  },
+  {
+    "url": "https://raw.githubusercontent.com/Coda-Research-Group/LearnedMetricIndex/rust/README.md",
+    "error": "HTTP Error 404: Not Found"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/Coda-Research-Group/LearnedMetricIndex/rust/final/rust_lmi/src/lib.rs",
+    "path": "/home/nicoo/work/qdrant/work/phase_s/references/Coda-Research-Group_LearnedMetricIndex/rust/final/rust_lmi/src/lib.rs",
+    "bytes": 23815
+  },
+  {
+    "url": "https://raw.githubusercontent.com/Coda-Research-Group/LearnedMetricIndex/data-insertion/README.md",
+    "path": "/home/nicoo/work/qdrant/work/phase_s/references/Coda-Research-Group_LearnedMetricIndex/data-insertion/README.md",
+    "bytes": 3233
+  },
+  {
+    "url": "https://raw.githubusercontent.com/Coda-Research-Group/LearnedMetricIndex/vibe-ood/README.md",
+    "path": "/home/nicoo/work/qdrant/work/phase_s/references/Coda-Research-Group_LearnedMetricIndex/vibe-ood/README.md",
+    "bytes": 905
+  },
+  {
+    "url": "https://raw.githubusercontent.com/TerkaSlan/sisap23-laion-challenge-learned-index/main/README.md",
+    "path": "/home/nicoo/work/qdrant/work/phase_s/references/TerkaSlan_sisap23-laion-challenge-learned-index/main/README.md",
+    "bytes": 2027
+  },
+  {
+    "url": "https://raw.githubusercontent.com/Coda-Research-Group/DynamicLearnedIndexRust/paper-version/README.md",
+    "path": "/home/nicoo/work/qdrant/work/phase_s/references/Coda-Research-Group_DynamicLearnedIndexRust/paper-version/README.md",
+    "bytes": 11075
+  },
+  {
+    "url": "https://raw.githubusercontent.com/Coda-Research-Group/dynamic-learned-index/main/README.md",
+    "path": "/home/nicoo/work/qdrant/work/phase_s/references/Coda-Research-Group_dynamic-learned-index/main/README.md",
+    "bytes": 1032
+  },
+  {
+    "url": "https://raw.githubusercontent.com/Coda-Research-Group/AlphaFind/main/README.md",
+    "path": "/home/nicoo/work/qdrant/work/phase_s/references/Coda-Research-Group_AlphaFind/main/README.md",
+    "bytes": 4724
+  },
+  {
+    "url": "https://raw.githubusercontent.com/Coda-Research-Group/ProteinEmbeddingBenchmark/main/README.md",
+    "path": "/home/nicoo/work/qdrant/work/phase_s/references/Coda-Research-Group_ProteinEmbeddingBenchmark/main/README.md",
+    "bytes": 4562
+  },
+  {
+    "url": "https://raw.githubusercontent.com/Coda-Research-Group/BalancedTreeLearner/main/README.md",
+    "path": "/home/nicoo/work/qdrant/work/phase_s/references/Coda-Research-Group_BalancedTreeLearner/main/README.md",
+    "bytes": 8152
+  }
+]

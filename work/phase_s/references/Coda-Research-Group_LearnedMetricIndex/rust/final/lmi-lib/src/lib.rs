@@ -1,0 +1,355 @@
+#![allow(non_snake_case)]
+#![allow(unsafe_op_in_unsafe_fn)]
+
+use tch::Kind;
+use tch::Tensor;
+
+use pyo3::prelude::*;
+use pyo3_tch::PyTensor;
+
+use rust_lmi::RustLmi;
+use rust_lmi::helpers;
+use rust_lmi::helpers::{from_raw_ptr, to_raw_ptr};
+use std::collections::HashMap;
+use time::macros::format_description;
+use tracing::Level;
+use tracing_subscriber::FmtSubscriber;
+use tracing_subscriber::fmt::time::LocalTime;
+
+use half::f16;
+
+#[allow(clippy::upper_case_acronyms)]
+#[pyclass]
+struct LMI {
+    #[allow(unused)]
+    #[pyo3(get)]
+    n_buckets: i64,
+    #[allow(unused)]
+    #[pyo3(get)]
+    dimensionality: i64,
+    rust_object: RustLmi,
+}
+
+#[pymethods]
+impl LMI {
+    #[new]
+    fn new(model_json: &str, n_buckets: i64, data_dimensionality: i64) -> Self {
+        LMI {
+            n_buckets,
+            dimensionality: data_dimensionality,
+            rust_object: RustLmi::new(model_json, n_buckets, data_dimensionality),
+        }
+    }
+
+    #[staticmethod]
+    pub fn init_logging() {
+        let time_format = LocalTime::new(format_description!(
+            "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]"
+        ));
+
+        let _ = FmtSubscriber::builder()
+            .with_max_level(Level::DEBUG)
+            .with_timer(time_format)
+            .with_level(true)
+            .with_target(false)
+            .with_file(true)
+            .with_line_number(true)
+            .with_ansi(false)
+            .init();
+    }
+
+    #[staticmethod]
+    fn _run_kmeans(n_buckets: i64, dimensionality: i64, X: PyTensor, n_iter_kmeans: i64) -> PyTensor {
+        PyTensor(RustLmi::run_kmeans(n_buckets, dimensionality, &X, n_iter_kmeans))
+    }
+
+    fn _train_model(&mut self, X: PyTensor, y: PyTensor, epochs: i64, lr: f64) {
+        let raw_ptr = to_raw_ptr(&X);
+        let raw_ptr_y = to_raw_ptr(&y);
+        Python::with_gil(|py| {
+            py.allow_threads(|| {
+                let X = from_raw_ptr::<Tensor>(raw_ptr);
+                let y = from_raw_ptr::<Tensor>(raw_ptr_y);
+                self.rust_object.train_model(X, y, epochs, lr);
+            });
+        });
+    }
+
+    fn _predict(&self, X: PyTensor, top_k: i64) -> PyTensor {
+        let raw_ptr = to_raw_ptr(&X);
+        let X = from_raw_ptr::<Tensor>(raw_ptr);
+        PyTensor(self.rust_object.predict(X, top_k).1)
+    }
+
+    fn _fit_tsvd(&mut self, X: PyTensor, reduced_dim: usize) {
+        let raw_ptr = to_raw_ptr(&X);
+        Python::with_gil(|py| {
+            py.allow_threads(|| {
+                let X = from_raw_ptr::<Tensor>(raw_ptr);
+                self.rust_object.fit_tsvd(X, reduced_dim);
+            });
+        });
+        self.dimensionality = self.rust_object.dimensionality;
+    }
+
+    fn _create_buckets(&mut self, X: PyTensor) {
+        let raw_ptr = to_raw_ptr(&X);
+        Python::with_gil(|py| {
+            py.allow_threads(|| {
+                let X = from_raw_ptr::<Tensor>(raw_ptr);
+                self.rust_object.create_buckets(X);
+            });
+        });
+    }
+
+    fn _count_bucket_sizes(
+        &self,
+        dataset_path: String,
+        n_data: usize,
+        chunk_size: usize,
+    ) -> HashMap<i64, usize> {
+        self.rust_object
+            .count_bucket_sizes(&dataset_path, n_data, chunk_size)
+    }
+
+    fn _create_buckets_scalable(
+        &mut self,
+        dataset_path: String,
+        n_data: usize,
+        chunk_size: usize,
+        total_counts: HashMap<i64, usize>,
+    ) -> f64 {
+        Python::with_gil(|py| {
+            py.allow_threads(|| {
+                self.rust_object.create_buckets_scalable(
+                    &dataset_path,
+                    n_data,
+                    chunk_size,
+                    total_counts,
+                )
+            })
+        })
+    }
+
+    fn get_bucket(&self, bucket_id: i64) -> PyTensor {
+        PyTensor(self.rust_object.bucket_data[bucket_id as usize].shallow_clone())
+    }
+
+    fn get_bucket_sizes(&self) -> PyTensor {
+        let mut bucket_sizes = Vec::new();
+        for bucket_id in 0..self.rust_object.bucket_data.len() {
+            bucket_sizes.push(self.rust_object.bucket_data[bucket_id as usize].size()[0] as i64);
+        }
+        PyTensor(Tensor::from_slice(&bucket_sizes))
+    }
+
+    fn transform_tsvd(&self, X: PyTensor) -> PyTensor {
+        let raw_ptr = to_raw_ptr(&X);
+        let slf_ptr = to_raw_ptr(&self.rust_object);
+        Python::with_gil(|py| {
+            py.allow_threads(|| {
+                let X = from_raw_ptr::<Tensor>(raw_ptr);
+                let slf = from_raw_ptr::<RustLmi>(slf_ptr);
+                PyTensor(slf.transform_tsvd(X))
+            })
+        })
+    }
+
+    #[staticmethod]
+    fn dot_product_scalar(q: PyTensor, d: PyTensor) -> f32 {
+        let q_ptr = q.data_ptr() as *const f32;
+        let d_ptr = d.data_ptr() as *const f32;
+        let dim = q.size()[0] as usize;
+
+        unsafe { helpers::dot_product_scalar(q_ptr, d_ptr, dim) }
+    }
+
+    #[staticmethod]
+    fn dot_product_avx2(q: PyTensor, d: PyTensor) -> f32 {
+        let q_ptr = q.data_ptr() as *const f32;
+        let d_ptr = d.data_ptr() as *const f32;
+        let dim = q.size()[0] as usize;
+
+        unsafe { helpers::dot_product_avx2(q_ptr, d_ptr, dim) }
+    }
+
+    #[staticmethod]
+    fn dot_product_avx2_fma(q: PyTensor, d: PyTensor) -> f32 {
+        let q_ptr = q.data_ptr() as *const f32;
+        let d_ptr = d.data_ptr() as *const f32;
+        let dim = q.size()[0] as usize;
+
+        unsafe { helpers::dot_product_avx2_fma(q_ptr, d_ptr, dim) }
+    }
+
+    #[staticmethod]
+    fn dot_product_avx2_reg_sum(q: PyTensor, d: PyTensor) -> f32 {
+        let q_ptr = q.data_ptr() as *const f32;
+        let d_ptr = d.data_ptr() as *const f32;
+        let dim = q.size()[0] as usize;
+
+        unsafe { helpers::dot_product_avx2_reg_sum(q_ptr, d_ptr, dim) }
+    }
+
+    #[staticmethod]
+    fn dot_product_avx2_fma_reg_sum(q: PyTensor, d: PyTensor) -> f32 {
+        let q_ptr = q.data_ptr() as *const f32;
+        let d_ptr = d.data_ptr() as *const f32;
+        let dim = q.size()[0] as usize;
+
+        unsafe { helpers::dot_product_avx2_fma_reg_sum(q_ptr, d_ptr, dim) }
+    }
+
+    #[staticmethod]
+    fn dot_product_avx512(q: PyTensor, d: PyTensor) -> f32 {
+        let q_ptr = q.data_ptr() as *const f32;
+        let d_ptr = d.data_ptr() as *const f32;
+        let dim = q.size()[0] as usize;
+
+        unsafe { helpers::dot_product_avx512(q_ptr, d_ptr, dim) }
+    }
+
+    #[staticmethod]
+    fn dot_product_f32_f16_avx2(q: PyTensor, d: PyTensor) -> f32 {
+        let q_ptr = q.data_ptr() as *const f32;
+        let d_ptr = d.data_ptr() as *const f16;
+        let dim = q.size()[0] as usize;
+
+        unsafe { helpers::dot_product_f32_f16_avx2(q_ptr, d_ptr, dim) }
+    }
+
+    fn search_batch(&self, data: PyTensor, query: PyTensor, k: i64) -> (PyTensor, PyTensor) {
+        let (indices, distances) = self.rust_object.search_batch(&data, &query, k);
+        (PyTensor(indices), PyTensor(distances))
+    }
+
+    fn search(
+        &self,
+        full_dim_queries: PyTensor,
+        k: i64,
+        nprobe: i64,
+        transformed_queries: Option<PyTensor>,
+    ) -> (PyTensor, PyTensor) {
+        let (indices, distances) = self.rust_object.search(
+            &full_dim_queries,
+            k,
+            nprobe,
+            transformed_queries.as_ref().map(|t| &**t),
+        );
+        (PyTensor(indices), PyTensor(distances))
+    }
+
+    fn test_read_raw_tensor(&self) {
+        let t = Tensor::from_slice(&[1, 2, 3]);
+
+        let tensor_data = t.data_ptr() as *const i32;
+        let tensor_size = t.size()[0] as usize;
+        let tensor_slice = unsafe { std::slice::from_raw_parts(tensor_data, tensor_size) };
+
+        let expected = [1, 2, 3];
+        for i in 0..tensor_size {
+            assert_eq!(tensor_slice[i], expected[i]);
+        }
+    }
+
+    fn test_read_raw_tensor_f32(&self) {
+        let t = Tensor::from_slice(&[1.0, 2.0, 3.0]).to_kind(Kind::Float);
+
+        let tensor_data = t.data_ptr() as *const f32;
+        let tensor_size = t.size()[0] as usize;
+        let tensor_slice = unsafe { std::slice::from_raw_parts(tensor_data, tensor_size) };
+
+        let expected = [1.0, 2.0, 3.0];
+
+        for i in 0..tensor_size {
+            assert_eq!(tensor_slice[i], expected[i]);
+        }
+    }
+
+    fn test_read_raw_tensor_multidim(&self) {
+        let t = Tensor::from_slice(&[
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+        ])
+        .reshape(&[3, 4])
+        .to_kind(Kind::Float);
+
+        let tensor_data = t.data_ptr() as *const f32;
+
+        let rows = t.size()[0] as usize;
+        let cols = t.size()[1] as usize;
+
+        let tensor_slice = unsafe { std::slice::from_raw_parts(tensor_data, rows * cols) };
+
+        let expected = [
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+        ];
+
+        for y in 0..rows {
+            for x in 0..cols {
+                let i = y * cols + x;
+                assert_eq!(tensor_slice[i], expected[i]);
+            }
+        }
+    }
+
+    fn test_modify_raw_tensor(&self) {
+        let t = Tensor::from_slice(&[1, 2, 3]);
+
+        let tensor_data = t.data_ptr() as *mut i32;
+        let tensor_size = t.size()[0] as usize;
+        let tensor_slice = unsafe { std::slice::from_raw_parts_mut(tensor_data, tensor_size) };
+
+        tensor_slice[0] = 4;
+
+        let expected = [4, 2, 3];
+        for i in 0..tensor_size {
+            assert_eq!(tensor_slice[i], expected[i]);
+        }
+    }
+
+    fn test_modify_raw_multidim(&self) {
+        let t = Tensor::from_slice(&[
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+        ])
+        .reshape(&[3, 4])
+        .to_kind(Kind::Float);
+
+        let tensor_data = t.data_ptr() as *mut f32;
+
+        let rows = t.size()[0] as usize;
+        let cols = t.size()[1] as usize;
+
+        let tensor_slice = unsafe { std::slice::from_raw_parts_mut(tensor_data, rows * cols) };
+
+        for y in 0..rows {
+            let i = y * cols;
+            tensor_slice[i] = 100.0;
+        }
+
+        let expected = [
+            100.0, 2.0, 3.0, 4.0, 100.0, 6.0, 7.0, 8.0, 100.0, 10.0, 11.0, 12.0,
+        ];
+
+        for y in 0..rows {
+            for x in 0..cols {
+                let i = y * cols + x;
+                assert_eq!(tensor_slice[i], expected[i]);
+            }
+        }
+    }
+
+    fn run_tests(&self) {
+        self.test_read_raw_tensor();
+        self.test_read_raw_tensor_f32();
+        self.test_read_raw_tensor_multidim();
+        self.test_modify_raw_tensor();
+        self.test_modify_raw_multidim();
+    }
+}
+
+#[pymodule]
+fn lmi(py: Python<'_>, m: Bound<'_, PyModule>) -> PyResult<()> {
+    py.import_bound("torch")?;
+    m.add_class::<LMI>()?;
+    Ok(())
+}

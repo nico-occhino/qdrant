@@ -1,0 +1,41 @@
+{
+  "storage": "/tmp/qdrant-lmi-phase-e2-lifecycle-rm798lbg",
+  "cases": [
+    {
+      "name": "solo",
+      "global_hnsw_m": 0,
+      "deferred_points_hidden": true,
+      "visible_before_promotion": 428,
+      "old_state_immutable": true,
+      "old_state_retired": true,
+      "new_state_hashes": {
+        "/tmp/qdrant-lmi-phase-e2-lifecycle-rm798lbg/storage/collections/solo/0/segments/f1395cdd-c807-4a9b-8a0e-ddfb84166ac2/vector_index-learned/lmi_state.json": "47eebdcc012e58be82304c3f74c625b730b50423cf724d672920bf43d5d24e08"
+      },
+      "expected_live_points": 570,
+      "new_models": true,
+      "postings_unique_in_target_range": true,
+      "updated_scores_correct": true,
+      "deleted_ids_absent": true,
+      "named_indexes_independent": false
+    },
+    {
+      "name": "mixed",
+      "global_hnsw_m": 0,
+      "deferred_points_hidden": true,
+      "visible_before_promotion": 428,
+      "old_state_immutable": true,
+      "old_state_retired": true,
+      "new_state_hashes": {
+        "/tmp/qdrant-lmi-phase-e2-lifecycle-rm798lbg/storage/collections/mixed/0/segments/0dd7655e-3022-4984-aae0-f3bd61efc0b7/vector_index-learned/lmi_state.json": "47eebdcc012e58be82304c3f74c625b730b50423cf724d672920bf43d5d24e08"
+      },
+      "expected_live_points": 570,
+      "new_models": true,
+      "postings_unique_in_target_range": true,
+      "updated_scores_correct": true,
+      "deleted_ids_absent": true,
+      "named_indexes_independent": true
+    }
+  ],
+  "restart_no_training": true,
+  "restart_same_state_ids_scores": true
+}

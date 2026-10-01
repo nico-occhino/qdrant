@@ -1,0 +1,37 @@
+{
+  "storage": "/tmp/qdrant-lmi-phase-e-zz5p7usr",
+  "port": 17533,
+  "conflicting_patch_rejected": true,
+  "rejected_patch_preserved_configuration": true,
+  "indexed_vectors": 300,
+  "positive_candidates": 150,
+  "negative_candidates": 150,
+  "exact_results": 300,
+  "filtered_results": 300,
+  "snapshot": {
+    "name": "phase_e-7655447287507711-2026-10-01-14-27-14.snapshot",
+    "creation_time": "2026-10-01T14:27:14",
+    "size": 122880,
+    "checksum": "63dea6420bb6a15bdb02ff23259653d24475b4282f95a50678a89c043e859b47"
+  },
+  "model_hashes": {
+    "/tmp/qdrant-lmi-phase-e-zz5p7usr/storage/collections/phase_e/0/segments/d529a74a-978a-4a5d-a19c-682111a6a64f/vector_index/lmi_state.json": "f1d803eeea4a28129e82b1e42fb8af46d11bda526410ae4c6ef43c32c151e3c3"
+  },
+  "restart_preserved_configuration": true,
+  "restart_same_results": true,
+  "restart_same_state": true,
+  "restart_did_not_train": true,
+  "restored_storage": "/tmp/qdrant-lmi-phase-e2-restored-wi3pogkb",
+  "restored_model_hashes": {
+    "/tmp/qdrant-lmi-phase-e2-restored-wi3pogkb/storage/collections/phase_e/0/segments/d529a74a-978a-4a5d-a19c-682111a6a64f/vector_index/lmi_state.json": "f1d803eeea4a28129e82b1e42fb8af46d11bda526410ae4c6ef43c32c151e3c3"
+  },
+  "restore_source_stopped": true,
+  "restore_fresh_storage": true,
+  "restore_preserved_configuration": true,
+  "restore_same_state": true,
+  "restore_same_ids_and_scores": true,
+  "restore_did_not_build_or_train": true,
+  "restore_static_learned_open": true,
+  "restore_static_learned_search": true,
+  "restore_exact_and_filter_fallbacks": true
+}
