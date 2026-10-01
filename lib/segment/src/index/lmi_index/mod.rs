@@ -126,3 +126,6 @@ impl LmiIndex {
 
 #[cfg(all(test, feature = "lmi-training"))]
 mod evaluation;
+
+#[cfg(all(test, feature = "lmi-training"))]
+mod evaluation_s3;

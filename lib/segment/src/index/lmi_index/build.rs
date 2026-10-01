@@ -167,6 +167,7 @@ impl LmiIndex {
                 let posting_started = std::time::Instant::now();
                 // Release the training matrix before allocating corpus postings.
                 drop(data);
+                let mut predictor = super::routing::BuildRouter::new(&router, args.stopped)?;
                 let (postings, times) =
                     CompactPostings::build_two_pass(config.n_buckets, args.stopped, |push| {
                         for id in eligible() {
@@ -179,7 +180,7 @@ impl LmiIndex {
                             };
                             // Bounded native inference: one borrowed/decoded row at a time.
                             // Same arithmetic and tie policy as existing query routing.
-                            let bucket = router.top_buckets_with_stop(&row, 1, args.stopped)?[0];
+                            let bucket = predictor.top_bucket(&row, args.stopped)?;
                             push(id, bucket)?;
                         }
                         Ok(())
@@ -196,6 +197,7 @@ impl LmiIndex {
                 {
                     *POSTING_SECONDS.lock().unwrap() = posting_started.elapsed().as_secs_f64();
                 }
+                drop(predictor);
                 state.router = Some(router);
                 state.compact = Some(postings);
             }

@@ -401,3 +401,213 @@ pub fn build_router_postings(
 
     Ok(postings)
 }
+
+/// A build-local immutable model borrow and reusable inference workspace.
+/// Construction validates all weights/shapes once; the borrow prevents mutation.
+#[cfg(any(feature = "lmi-training", test))]
+pub(super) struct BuildRouter<'a> {
+    router: &'a MlpRouter,
+    input_dim: usize,
+    values: Vec<f32>,
+    output: Vec<f32>,
+}
+
+#[cfg(any(feature = "lmi-training", test))]
+impl<'a> BuildRouter<'a> {
+    pub(super) fn new(router: &'a MlpRouter, stopped: &AtomicBool) -> OperationResult<Self> {
+        check_process_stopped(stopped)?;
+        let (input_dim, _) = router.validate()?;
+        let width = router
+            .layers
+            .iter()
+            .fold(input_dim, |width, layer| match layer {
+                RouterLayer::Linear(layer) => width.max(layer.out_features),
+                RouterLayer::ReLU => width,
+            });
+        let allocate = || {
+            let mut buffer = Vec::new();
+            buffer.try_reserve_exact(width).map_err(|e| {
+                OperationError::service_error(format!("LMI inference workspace allocation: {e}"))
+            })?;
+            Ok::<_, OperationError>(buffer)
+        };
+        let result = Self {
+            router,
+            input_dim,
+            values: allocate()?,
+            output: allocate()?,
+        };
+        check_process_stopped(stopped)?;
+        Ok(result)
+    }
+
+    pub(super) fn top_bucket(
+        &mut self,
+        query: &[f32],
+        stopped: &AtomicBool,
+    ) -> OperationResult<usize> {
+        check_process_stopped(stopped)?;
+        if query.len() != self.input_dim || query.iter().any(|v| !v.is_finite()) {
+            return Err(OperationError::service_error(
+                "LMI router input has wrong dimension or non-finite values",
+            ));
+        }
+        self.values.clear();
+        self.values.extend_from_slice(query);
+        for layer in &self.router.layers {
+            check_process_stopped(stopped)?;
+            match layer {
+                RouterLayer::Linear(linear) => {
+                    self.output.clear();
+                    for (row, &bias) in linear
+                        .weights
+                        .chunks_exact(linear.in_features)
+                        .zip(&linear.bias)
+                    {
+                        check_process_stopped(stopped)?;
+                        let mut sum = bias;
+                        for (&weight, &value) in row.iter().zip(&self.values) {
+                            sum += weight * value;
+                        }
+                        if !sum.is_finite() {
+                            return Err(OperationError::service_error(
+                                "LMI router produced non-finite activations/logits",
+                            ));
+                        }
+                        self.output.push(sum);
+                    }
+                    std::mem::swap(&mut self.values, &mut self.output);
+                }
+                RouterLayer::ReLU => self.values.iter_mut().for_each(|v| *v = v.max(0.0)),
+            }
+        }
+        // Strict comparison preserves smaller-ID preference, including signed zero.
+        let mut best = 0;
+        for bucket in 1..self.values.len() {
+            if self.values[bucket] > self.values[best] {
+                best = bucket;
+            }
+        }
+        check_process_stopped(stopped)?;
+        Ok(best)
+    }
+}
+
+#[cfg(test)]
+mod build_router_tests {
+    use super::*;
+    use crate::types::Distance;
+    use rand::{RngExt, SeedableRng};
+
+    #[test]
+    fn build_top1_matches_query_order_and_reuses_scratch() {
+        let stopped = AtomicBool::new(false);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(43);
+        for buckets in [1, 2, 64, 316] {
+            let router = MlpRouter {
+                layers: vec![
+                    RouterLayer::Linear(LinearLayer {
+                        in_features: 7,
+                        out_features: 11,
+                        weights: (0..77).map(|_| rng.random_range(-1.0..1.0)).collect(),
+                        bias: vec![0.0; 11],
+                    }),
+                    RouterLayer::ReLU,
+                    RouterLayer::Linear(LinearLayer {
+                        in_features: 11,
+                        out_features: buckets,
+                        weights: (0..11 * buckets)
+                            .map(|_| rng.random_range(-1.0..1.0))
+                            .collect(),
+                        bias: vec![0.0; buckets],
+                    }),
+                ],
+            };
+            let mut build = BuildRouter::new(&router, &stopped).unwrap();
+            let capacities = (build.values.capacity(), build.output.capacity());
+            for distance in [
+                Distance::Cosine,
+                Distance::Dot,
+                Distance::Euclid,
+                Distance::Manhattan,
+            ] {
+                for _ in 0..20 {
+                    let row = distance.preprocess_vector::<f32>(
+                        (0..7).map(|_| rng.random_range(-2.0..2.0)).collect(),
+                    );
+                    assert_eq!(
+                        build.top_bucket(&row, &stopped).unwrap(),
+                        router.top_buckets(&row, 1).unwrap()[0]
+                    );
+                }
+            }
+            assert_eq!(
+                capacities,
+                (build.values.capacity(), build.output.capacity())
+            );
+            assert!(build.top_bucket(&[], &stopped).is_err());
+            assert!(build.top_bucket(&[f32::NAN; 7], &stopped).is_err());
+        }
+    }
+
+    #[test]
+    fn build_top1_ties_invalid_models_overflow_and_cancellation() {
+        let stopped = AtomicBool::new(false);
+        for bias in [vec![0.0, -0.0, 0.0], vec![1.0, 1.0, 0.0]] {
+            let router = MlpRouter {
+                layers: vec![RouterLayer::Linear(LinearLayer {
+                    in_features: 1,
+                    out_features: 3,
+                    weights: vec![0.0; 3],
+                    bias,
+                })],
+            };
+            let mut build = BuildRouter::new(&router, &stopped).unwrap();
+            assert_eq!(build.top_bucket(&[0.0], &stopped).unwrap(), 0);
+            assert_eq!(
+                build.top_bucket(&[0.0], &stopped).unwrap(),
+                router.top_buckets(&[0.0], 1).unwrap()[0]
+            );
+            assert!(build.top_bucket(&[0.0], &AtomicBool::new(true)).is_err());
+        }
+        for router in [
+            MlpRouter { layers: vec![] },
+            MlpRouter {
+                layers: vec![RouterLayer::ReLU],
+            },
+            MlpRouter {
+                layers: vec![RouterLayer::Linear(LinearLayer {
+                    in_features: 1,
+                    out_features: 0,
+                    weights: vec![],
+                    bias: vec![],
+                })],
+            },
+            MlpRouter {
+                layers: vec![RouterLayer::Linear(LinearLayer {
+                    in_features: 1,
+                    out_features: 1,
+                    weights: vec![f32::NAN],
+                    bias: vec![0.0],
+                })],
+            },
+        ] {
+            assert!(BuildRouter::new(&router, &stopped).is_err());
+        }
+        let router = MlpRouter {
+            layers: vec![RouterLayer::Linear(LinearLayer {
+                in_features: 1,
+                out_features: 1,
+                weights: vec![f32::MAX],
+                bias: vec![0.0],
+            })],
+        };
+        assert!(BuildRouter::new(&router, &AtomicBool::new(true)).is_err());
+        assert!(
+            BuildRouter::new(&router, &stopped)
+                .unwrap()
+                .top_bucket(&[2.0], &stopped)
+                .is_err()
+        );
+    }
+}
