@@ -157,3 +157,189 @@ All four runs have identical metadata/router/posting hashes and the same learned
 Total auxiliary LMI size: **4,058,692 bytes**.
 
 Focused top-1 parity tests: 2 passed, zero failures. The older F-series studies were not executed.
+
+## LAION768 supplementary regression
+
+One build of each implementation reused `/home/nicoo/work/lmi-phase-f-data`, N=99,780,
+d=768, cosine, with the same B/S/H/epochs/seed and the same `perf` profile as each
+other. No original Phase F artifact was overwritten. All metadata/router/posting
+bytes and the learned query IDs/scores match exactly. Evidence is retained in
+`work/phase_s3/laion-before`, `laion-top1` and `laion-parity.json`. This confirms
+partition preservation at the thesis dimensionality; it is not a new retrieval study.
+
+## Memory/work planner: policy C
+
+`build_plan.rs` estimates components before allocating the reservoir/training matrix,
+first using physical slots as a conservative bound, then using the observed eligible
+count. It does not run at open/reopen. Every sum/product is checked; invalid dimensions
+or unrepresentable plans fail clearly. The normal builder still validates configuration.
+The implementation inspects `common::budget::ResourcePermit`, which provides CPU/IO
+permits, not a RAM reservation. No suitable memory permit is passed into this builder.
+
+**There is no new fixed 512 MiB aggregate limit.** Following the user's option C,
+aggregate bytes and operation counts are reported, while the existing conservative
+component rejection envelope is retained: configured sample matrix and model weights
+are each limited to **128,000,000 bytes**, equivalent to the former 32M f32 elements.
+These are inherited experimental ceilings, not inherent Qdrant/LMI limits. The old
+inline guard is replaced by checked plan construction and component-budget checking;
+its safety restriction has not been relaxed. Requested sample size is still checked
+even when the actual segment is smaller, preserving prior admission behavior.
+
+The planner does not reserve RAM, admit concurrent builders against host availability,
+or reject an aggregate plan solely because it exceeds physical RAM. It is consequently
+not a complete OOM prevention mechanism. Global/configurable memory admission remains
+future work; this limitation is explicit instead of assigning an arbitrary total cap.
+
+Let S=min(configured sample,N), W=(d+B)H, P=W+H+B and K=min(batch size,S).
+All terms below are bytes; they are sizing estimates/allowances, not an allocation trace:
+
+| Component | Formula |
+|---|---:|
+| Rust sample / Torch sample copy | 4Sd each |
+| Reservoir and persisted sample offsets | 8S |
+| Labels and shuffle/workspace allowance | 32S |
+| f64 centroids / f64 accumulators | 8Bd each |
+| Cluster sizes | 8B |
+| Parameters, gradients, each Adam moment, native export, initialization workspace | 4P each (six terms) |
+| Batch input plus gradient allowance | 8Kd |
+| Hidden activations plus gradient allowance | 8KH |
+| Logits/loss/gradient allowance | 16KB |
+| Batch indices/labels | 16K |
+| Posting counts, boundaries, cursors | 24B+8 |
+| Final posting offsets | 4N |
+| Encoded posting buffer allowance during open | 4N+8(B+1)+16 |
+| Encoded model/sample allowance | 4P+4S+256 |
+| Open validation bitmap | ceil(N/8), using physical slots in the pre-scan plan |
+| Reusable inference scratch | 8 max(d,H,B) |
+
+The reported explicit subtotal conservatively sums these components across phases,
+although not all coexist. The separate **backend allowance = subtotal/4 + 32 MiB**
+is a declared, uncalibrated engineering allowance for Torch/allocator workspace, not
+a proven upper bound or acceptance threshold. Some activation terms themselves include
+conservative gradient/loss allowances. Neither value includes Qdrant-owned corpus
+storage, native segment copies, IDs/payloads or the process's baseline shared libraries.
+
+Reported work: Lloyd upper iteration work (I+1)SBd; approximate training dense
+forward/backward MACs 3*epochs*S*W; two corpus forward passes 2NW. These are operation
+estimates, not wall-time predictions or runtime work quotas. The new path removes
+sorting and repeated parameter validation, not the O(NW) network arithmetic.
+
+## Reproduction
+
+Host: WSL2 x86_64 on Intel Core Ultra 9 285H, 16 visible CPUs; benchmark pinned to CPU
+0. Compiler details are in `work/phase_s3/rustc.txt` (rustc 1.98.0). Raw process RSS,
+per-run logs/results, corpus hashes, prepared data and saved before/top-1 test binaries
+are retained under `work/phase_s3/`, outside the commits. Compilation is excluded from
+timings. The sample configuration is fixed; `LMI_S3_CONFIG` may specify a JSON config
+only for separately named future experiments.
+
+```bash
+cd /home/nicoo/work/qdrant
+export PATH="/home/nicoo/.cargo/bin:/home/nicoo/miniconda3/envs/lmi-rust-inspect/bin:$PATH"
+export LIBTORCH_USE_PYTORCH=1
+export LD_LIBRARY_PATH=/home/nicoo/miniconda3/envs/lmi-rust-inspect/lib/python3.11/site-packages/torch/lib
+export CXX=clang++ CXXFLAGS=-g0 CARGO_BUILD_JOBS=2
+
+# Existing prepared input: do not overwrite or prepare it again.
+export LMI_S3_DATA="$PWD/work/phase_s3/sift1m"
+# Choose a NEW output directory for any intentional future repeat.
+export LMI_S3_RUN_ROOT="$PWD/work/phase_s3/reproduction-new"
+bash tests/run_lmi_phase_s3.sh
+
+# To reproduce the preserved BEFORE implementation without rebuilding:
+# export LMI_S3_BINARY="$PWD/work/phase_s3/before-sift-test-binary"
+# To reproduce TOP-1 only:
+# export LMI_S3_BINARY="$PWD/work/phase_s3/top1-test-binary"
+# Set a different NEW LMI_S3_RUN_ROOT and invoke the same runner.
+
+# Preparation for a different existing fvecs input (outside the physical index):
+# python3 tests/lmi_phase_s3_prepare.py SOURCE.fvecs work/NEW_DATA --metric Euclid
+```
+
+The measured runs used the same underlying invocation, twice per implementation:
+`/usr/bin/time -v -o TIME_LOG taskset -c 0 SAVED_BINARY phase_s3_build_benchmark
+--ignored --nocapture --test-threads=1`, with `LMI_S3_DATA`, `LMI_S3_OUTPUT` and
+`RUST_LOG=segment::index::lmi_index::build=info`. Build command was
+`cargo test -p segment --profile perf --features lmi-training --locked --lib
+phase_s3_build_benchmark --no-run`. The original top-1 binary build instead selected
+`build_router_tests` and ran those two tests before measuring; compilation profile
+and resulting benchmark code/configuration are the same.
+
+## Scale status and next steps
+
+- **SIFT1M: EMPIRICALLY TESTED at N=1,000,000, d=128**, for this build configuration.
+- **LAION: EMPIRICALLY TESTED at N=99,780, d=768**, supplementary parity regression.
+- **10M: NOT YET TESTED.** Need ingestion/build/reopen/RSS measurements and a concurrent
+  builder memory policy. No direct timing extrapolation from SIFT is warranted.
+- **100M: NOT YET TESTED.** Larger training coverage, scalable native clustering,
+  corpus inference throughput, mmap/bounded decode and hardware/IO validation remain.
+- **1B: NOT YET TESTED.** All previous gates plus offset/segment/distributed lifecycle
+  and multi-terabyte storage validation. Representable arithmetic is not feasibility.
+
+The implementation is structurally scale-aware. It is not demonstrated at 100M/1B.
+At this measured small-sample configuration, clustering is around 0.09 seconds while
+optimized count/fill still consume 86% of whole-build time. The best next throughput
+experiment is **bounded native batched corpus inference**, preserving this scalar
+reference and checking partition parity separately. No batching is implemented here.
+The native spherical-clustering design above remains a separate semantics-controlled
+S.3B experiment for larger training samples/bucket counts. No FAISS, GPU, new loss,
+Python runtime dependency, external service, new C++ dependency or production default
+was introduced. Existing LibTorch CPU training remains unchanged.
+
+## Observed planner estimates
+
+These are arithmetic estimates only; the large sample/corpus cases were not built. K=256, epochs=30 and I=20 in every row. Large corpus rows assume S=1M and d=768.
+
+| Case | N | d | S | B | H | Explicit subtotal, bytes | Backend allowance, bytes | Reported total, bytes |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| baseline | 1000000 | 128 | 2048 | 64 | 64 | 11454312 | 36418010 | 47872322 |
+| sample_1m | 1000000 | 768 | 1000000 | 64 | 64 | 6200385128 | 1583650714 | 7784035842 |
+| corpus_100m | 100000000 | 768 | 1000000 | 10000 | 512 | 7322110208 | 1864081984 | 9186192192 |
+| corpus_1b | 1000000000 | 768 | 1000000 | 31622 | 512 | 15300481320 | 3858674762 | 19159156082 |
+
+SIFT1M planner subtotal: **10.92 MiB**; with the declared backend allowance: **45.65 MiB**. Observed whole-process peak RSS (two-run median): **1860.87 MiB**. These are not comparable scopes: RSS includes native corpus/segment storage and process libraries; the planner covers the listed LMI build components and deliberately sums some non-overlapping phases. The difference does not calibrate a trustworthy Torch overhead multiplier.
+
+The 1M-by-768 sample and both large-corpus examples exceed the retained sample component ceiling. A hypothetical large corpus with a small permitted sample may still pass component checks even when aggregate RAM is impractical; option C deliberately reports this limitation. No configurable/global memory admission has been implemented.
+
+## Final verification and files
+
+All commands below ran with the environment given above. No ignored F-series study was rerun.
+
+| Command | Result |
+|---|---|
+| `cargo test -p segment --profile perf --features lmi-training --locked --lib build_router_tests -- --nocapture` | 2 passed |
+| `cargo test -p segment --profile perf --features lmi-training --locked --lib index::lmi_index -- --nocapture` | 12 passed, 0 failed, 5 ignored (F/F.2/F.3/F.4/S.3 opt-in benchmarks) |
+| `cargo test -p segment --profile perf --features lmi-training --locked --test lmi_candidate_scoring --test lmi_dummy --test lmi_phase_c --test lmi_phase_d --test lmi_phase_e -- --nocapture` | 39 passed, 0 failed |
+| `cargo check --bin qdrant --locked` | PASS |
+| `cargo check -p edge --locked` | PASS |
+| `cargo clippy -p segment --lib --features lmi-training --locked` | PASS with existing warnings, not a -D warnings run |
+| `rustfmt --check --edition 2024 --config skip_children=true lib/segment/src/index/lmi_index/{routing,build,build_plan,evaluation_s3,mod}.rs` | PASS |
+| `git diff --check` | PASS |
+
+Planner tests cover overflow, zero dimensions, tiny/default plans, both sides of the
+previous sample/model boundary, a 1M x 768 sample, B=10,000 and B=31,622 estimates,
+and explicit demonstration that aggregate reporting is not a host-memory admission
+guarantee. Integration tests retain native/read-only reopen, v1/v2 corruption checks,
+empty/tiny behavior, deletion validity and optimizer rebuild coverage.
+
+The final planner was verified through these tests; the completed two-before/two-after
+scale experiment was not repeated after adding reporting/admission refactoring. Its
+timing result specifically isolates the top-1 commit. A planner integration typo caught
+by compilation was corrected before these final tests; no benchmark state was affected.
+
+Commit 1, `3cbffecb3` (`LMI: optimize native top-1 corpus routing`):
+`routing.rs` adds the validated scratch-reusing view/tests; `build.rs` uses it in both
+passes; `mod.rs` registers the opt-in benchmark; `evaluation_s3.rs` implements that
+benchmark; `tests/lmi_phase_s3_prepare.py` and `tests/run_lmi_phase_s3.sh` provide
+external orchestration; this document records methods and observations.
+
+Commit 2, `LMI: plan bounded native training memory`: `build_plan.rs` contains checked
+accounting/component ceilings/tests; `build.rs` logs/checks plans only during build;
+`mod.rs` registers the planner; this document completes the engineering handoff.
+
+No Cargo manifest, lockfile, training algorithm, F-series evaluation source or original
+experimental artifact changed. Only new `work/phase_s3/` raw inputs/results/binaries
+remain untracked. There is no push. Final commit SHAs and status are provided with
+the delivery snapshot.
+
+Workspace `cargo fmt --all -- --check`: FAIL; existing unrelated differences preserved: /home/nicoo/work/qdrant/lib/segment/src/index/field_index/full_text_index/inverted_index/on_disk_inverted_index/on_disk_postings.rs:4:.

@@ -1,4 +1,5 @@
 mod build;
+mod build_plan;
 mod config;
 #[cfg(feature = "lmi-training")]
 mod training;

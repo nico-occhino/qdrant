@@ -72,22 +72,13 @@ impl LmiIndex {
             ));
         }
         let dim = vector_config.size;
-        // Bound temporary training/model allocation independently of corpus size.
-        let sample_elements = config.sample_size.checked_mul(dim);
-        let model_elements = dim
-            .checked_add(config.n_buckets)
-            .and_then(|n| n.checked_mul(config.hidden_dim));
-        if dim == 0
-            || sample_elements.is_none_or(|n| n > 32_000_000)
-            || model_elements.is_none_or(|n| n > 32_000_000)
-        {
-            return Err(OperationError::service_error(
-                "LMI training matrix/model exceeds the experimental 32M-element limit",
-            ));
-        }
         let tracker = open.id_tracker.borrow();
         let storage = open.vector_storage.borrow();
         let total = storage.total_vector_count();
+        // Physical slots provide a conservative pre-scan bound, including holes.
+        let plan = super::build_plan::BuildPlan::estimate(total, dim, &config)?;
+        log::info!("LMI build plan (physical-slot upper bound): {plan:?}");
+        plan.check_budget()?;
         let end = PointOffsetType::try_from(total)
             .map_err(|_| OperationError::service_error("LMI offset range exceeded"))?;
         let mut rng = StdRng::seed_from_u64(config.seed);
@@ -120,6 +111,9 @@ impl LmiIndex {
             progress.store(u64::from(id) + 1, Ordering::Relaxed);
         }
         sample.sort_unstable();
+        let plan = super::build_plan::BuildPlan::estimate(seen, dim, &config)?;
+        log::info!("LMI build plan (eligible vectors): {plan:?}");
+        plan.check_budget()?;
         log::info!(
             "LMI sampling: segment_slots={total} eligible={seen} sample={} buckets={} seconds={:.6}",
             sample.len(),
