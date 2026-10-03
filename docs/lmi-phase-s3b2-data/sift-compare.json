@@ -1,0 +1,40 @@
+{
+  "count": 1000000,
+  "assignment_mismatches": 2,
+  "mismatch_rate": 2e-06,
+  "mismatch_examples": [
+    {
+      "offset": 802590,
+      "native_bucket": 30,
+      "tch_bucket": 31
+    },
+    {
+      "offset": 826019,
+      "native_bucket": 17,
+      "tch_bucket": 37
+    }
+  ],
+  "query_results_equal": true,
+  "build_seconds": {
+    "native": 7.681151768,
+    "tch": 2.1757703680000002
+  },
+  "reopen_seconds": {
+    "native": 0.035233815,
+    "tch": 0.032581046
+  },
+  "file_sha256": {
+    "lmi_state.json": {
+      "native": "2df27fd5e5c4e60da42099d637b3c2251be4e312db5e0756a158cd8e3d01b7f8",
+      "tch": "2df27fd5e5c4e60da42099d637b3c2251be4e312db5e0756a158cd8e3d01b7f8"
+    },
+    "lmi_router.bin": {
+      "native": "248acbc78357c01cb0ee454e0d8d8246d95f7d209037494b725d6b8d24e43ac1",
+      "tch": "248acbc78357c01cb0ee454e0d8d8246d95f7d209037494b725d6b8d24e43ac1"
+    },
+    "lmi_postings.bin": {
+      "native": "4647b615e6d2f1797a52fb14d4fc85685b759e2bcd5dad23c8a4b3e7540d060a",
+      "tch": "1c7e85ba2bf4509b17362f698d06ccfa2175a3f8d83b022f5eaa3e127bf301a5"
+    }
+  }
+}

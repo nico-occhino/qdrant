@@ -1,0 +1,29 @@
+{
+  "count": 99780,
+  "assignment_mismatches": 0,
+  "mismatch_rate": 0.0,
+  "mismatch_examples": [],
+  "query_results_equal": true,
+  "build_seconds": {
+    "native": 4.882435495,
+    "tch": 1.297079599
+  },
+  "reopen_seconds": {
+    "native": 0.012706746,
+    "tch": 0.010945194
+  },
+  "file_sha256": {
+    "lmi_state.json": {
+      "native": "f7e8601e9f3ceae9ce8e83b459b764475d1e64c5511b1b106e888ea70b73e0a0",
+      "tch": "f7e8601e9f3ceae9ce8e83b459b764475d1e64c5511b1b106e888ea70b73e0a0"
+    },
+    "lmi_router.bin": {
+      "native": "29cc0bf1958f10a0b0f5974d8532561cb18d176c6943e6d691d0fb9a4cd7205d",
+      "tch": "29cc0bf1958f10a0b0f5974d8532561cb18d176c6943e6d691d0fb9a4cd7205d"
+    },
+    "lmi_postings.bin": {
+      "native": "dbd319467b7935d560b77eaccde917cc7cd6455b5a402a6424ab6c00e1426ec3",
+      "tch": "dbd319467b7935d560b77eaccde917cc7cd6455b5a402a6424ab6c00e1426ec3"
+    }
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "n": 99780,
+  "d": 768,
+  "config": {
+    "n_buckets": 64,
+    "sample_size": 2048,
+    "hidden_dim": 64,
+    "epochs": 30,
+    "batch_size": 256,
+    "routing_batch_size": 256,
+    "kmeans_iterations": 20,
+    "nprobe": 4,
+    "seed": 42
+  },
+  "ingest_seconds": 0.314299114,
+  "total_build_seconds": 1.297079599,
+  "clustering_seconds": 0.438492631,
+  "training_export_seconds": 0.176631152,
+  "reopen_seconds": 0.010945194,
+  "files": {
+    "lmi_state.json": 230,
+    "lmi_router.bin": 221789,
+    "lmi_postings.bin": 399656
+  },
+  "query_results": [
+    [
+      0,
+      1.0
+    ],
+    [
+      68639,
+      0.8358455896377563
+    ],
+    [
+      69486,
+      0.8311960697174072
+    ],
+    [
+      81765,
+      0.8129468560218811
+    ],
+    [
+      74628,
+      0.811998188495636
+    ],
+    [
+      57821,
+      0.8116220235824585
+    ],
+    [
+      16348,
+      0.810333251953125
+    ],
+    [
+      11192,
+      0.7988855838775635
+    ],
+    [
+      62860,
+      0.7978790998458862
+    ],
+    [
+      14192,
+      0.7932302951812744
+    ]
+  ],
+  "proc_status": "Name:\tsegment-92315b0\nUmask:\t0022\nState:\tS (sleeping)\nTgid:\t11451\nNgid:\t0\nPid:\t11451\nPPid:\t11450\nTracerPid:\t0\nUid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nFDSize:\t64\nGroups:\t4 24 27 30 46 100 1000 1001 \nNStgid:\t11451\nNSpid:\t11451\nNSpgid:\t11442\nNSsid:\t11442\nKthread:\t0\nVmPeak:\t 1878136 kB\nVmSize:\t 1864684 kB\nVmLck:\t       0 kB\nVmPin:\t       0 kB\nVmHWM:\t 1077812 kB\nVmRSS:\t 1067040 kB\nRssAnon:\t   86176 kB\nRssFile:\t   77452 kB\nRssShmem:\t  903412 kB\nVmData:\t   92772 kB\nVmStk:\t     132 kB\nVmExe:\t   35264 kB\nVmLib:\t  323136 kB\nVmPTE:\t    2984 kB\nVmSwap:\t       0 kB\nHugetlbPages:\t       0 kB\nCoreDumping:\t0\nTHP_enabled:\t1\nuntag_mask:\t0xffffffffffffffff\nThreads:\t2\nSigQ:\t1/62635\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000000001000\nSigCgt:\t0000000100000440\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\nNoNewPrivs:\t0\nSeccomp:\t0\nSeccomp_filters:\t0\nSpeculation_Store_Bypass:\tthread vulnerable\nSpeculationIndirectBranch:\tconditional enabled\nCpus_allowed:\t0001\nCpus_allowed_list:\t0\nMems_allowed:\t00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001\nMems_allowed_list:\t0\nvoluntary_ctxt_switches:\t1\nnonvoluntary_ctxt_switches:\t1\n"
+}
