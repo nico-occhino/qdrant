@@ -79,3 +79,27 @@ SIFT1M is empirically tested end-to-end in S.3A at N=1M, d=128. LAION was
 empirically tested near N=100K, d=768 in S.3A. 10M, 100M and 1B are not yet
 tested end-to-end. A future B=10,000 or B=31,622 router microbenchmark is only
 a dense-router compute measurement and does not establish corpus scalability.
+
+## Initial SIFT1M end-to-end measurements
+
+All runs used the existing SIFT1M corpus (N=1,000,000, d=128, Euclidean,
+64 buckets), CPU affinity 0, the perf profile, and the S.3A training
+configuration. They are one controlled trial per batch point, not a claim of
+statistical significance.
+
+| routing K | count s | fill s | count+fill s | build s | peak RSS KiB | batch router workspace |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 3.394437 | 3.191226 | 6.585663 | 7.651291 | 1,902,548 | 16,512 B |
+| 256 | 3.321129 | 3.356609 | 6.677738 | 7.681152 | 1,901,956 | 264,192 B |
+
+For comparison, S.3A’s two scalar-reference trials had median-like count
+3.34889 s, fill 3.28116 s and total build 7.69618 s. The K=16 router and
+postings binary SHA-256 values match the scalar reference exactly; K=256 does
+as well. `lmi_state.json` deliberately differs because it records the explicit
+`routing_batch_size` configuration.
+
+These results show that the ordered native batch implementation preserves the
+persisted partition. They do **not** show a reliable throughput improvement at
+B=64: dense arithmetic and row-wise scalar reduction still dominate, and the
+extra gather/copy work can offset batching. No production default changes on
+this evidence.
