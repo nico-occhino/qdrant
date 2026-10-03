@@ -133,3 +133,6 @@ mod evaluation_s3;
 
 #[cfg(all(test, feature = "lmi-training"))]
 mod evaluation_s3b1;
+
+#[cfg(all(test, feature = "lmi-training"))]
+mod evaluation_s3b2a;

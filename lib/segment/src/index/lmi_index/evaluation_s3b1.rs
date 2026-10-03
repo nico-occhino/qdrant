@@ -23,13 +23,13 @@ fn dense(input: usize, output: usize, salt: usize) -> RouterLayer {
     })
 }
 
-fn model(d: usize, h: usize, b: usize) -> MlpRouter {
+pub(super) fn model(d: usize, h: usize, b: usize) -> MlpRouter {
     MlpRouter {
         layers: vec![dense(d, h, 11), RouterLayer::ReLU, dense(h, b, 29)],
     }
 }
 
-fn inputs(rows: usize, d: usize) -> Vec<f32> {
+pub(super) fn inputs(rows: usize, d: usize) -> Vec<f32> {
     (0..rows * d)
         .map(|i| ((i.wrapping_mul(31) % 211) as f32 - 105.0) / 4096.0)
         .collect()
