@@ -23,6 +23,12 @@ pub struct LmiConfig {
     pub epochs: usize,
     #[validate(range(min = 1, max = 65536))]
     pub batch_size: usize,
+    /// Build-only corpus-routing rows kept in native reusable buffers. One
+    /// preserves the prior scalar reference path; larger values are explicit
+    /// experimental batching choices and do not affect query-time routing.
+    #[serde(default = "default_routing_batch_size")]
+    #[validate(range(min = 1, max = 65536))]
+    pub routing_batch_size: usize,
     #[validate(range(min = 1, max = 1000))]
     pub kmeans_iterations: usize,
     #[validate(range(min = 1))]
@@ -38,11 +44,16 @@ impl Default for LmiConfig {
             hidden_dim: 64,
             epochs: 30,
             batch_size: 256,
+            routing_batch_size: 1,
             kmeans_iterations: 20,
             nprobe: 2,
             seed: 42,
         }
     }
+}
+
+const fn default_routing_batch_size() -> usize {
+    1
 }
 
 fn validate_config(config: &LmiConfig) -> Result<(), ValidationError> {

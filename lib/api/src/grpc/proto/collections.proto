@@ -1242,6 +1242,7 @@ message LmiConfig {
   optional uint64 hidden_dim = 3;
   optional uint64 epochs = 4;
   optional uint64 batch_size = 5;
+  optional uint64 routing_batch_size = 9;
   optional uint64 kmeans_iterations = 6;
   optional uint64 nprobe = 7;
   optional uint64 seed = 8;

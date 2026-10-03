@@ -24,6 +24,7 @@ fn config(nprobe: usize) -> LmiConfig {
         hidden_dim: 8,
         epochs: 60,
         batch_size: 8,
+        routing_batch_size: 3,
         kmeans_iterations: 8,
         nprobe,
         seed: 42,

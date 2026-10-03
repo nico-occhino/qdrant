@@ -29,6 +29,7 @@ pub(super) struct BuildPlan {
     buckets: u64,
     hidden: u64,
     batch: u64,
+    routing_batch: u64,
     pub(super) bytes: BTreeMap<&'static str, u64>,
     explicit_bytes: u64,
     backend_allowance_bytes: u64,
@@ -57,10 +58,19 @@ impl BuildPlan {
         let h = u64::try_from(config.hidden_dim).map_err(|_| overflow())?;
         let requested = u64::try_from(config.sample_size).map_err(|_| overflow())?;
         let s = requested.min(n);
+        let routing_k = u64::try_from(config.routing_batch_size)
+            .map_err(|_| overflow())?
+            .min(n);
         let k = u64::try_from(config.batch_size)
             .map_err(|_| overflow())?
             .min(s);
-        if d == 0 || b == 0 || h == 0 || requested == 0 || config.batch_size == 0 {
+        if d == 0
+            || b == 0
+            || h == 0
+            || requested == 0
+            || config.batch_size == 0
+            || config.routing_batch_size == 0
+        {
             return Err(OperationError::service_error(
                 "LMI build plan requires nonzero dimensions and configuration",
             ));
@@ -106,6 +116,15 @@ impl BuildPlan {
             sum(&[product(&[4, parameters])?, product(&[4, s])?, 256])?,
         );
         bytes.insert("open_validation_bits", sum(&[n, 7])? / 8);
+        bytes.insert("routing_batch_gathered_input", product(&[4, routing_k, d])?);
+        bytes.insert(
+            "routing_batch_two_activation_buffers",
+            product(&[8, routing_k, d.max(h).max(b)])?,
+        );
+        bytes.insert(
+            "routing_batch_offsets_and_buckets",
+            product(&[12, routing_k])?,
+        );
         bytes.insert("inference_scratch", product(&[8, d.max(h).max(b)])?);
         let explicit_bytes = bytes
             .values()
@@ -119,6 +138,7 @@ impl BuildPlan {
             buckets: b,
             hidden: h,
             batch: k,
+            routing_batch: routing_k,
             bytes,
             explicit_bytes,
             backend_allowance_bytes,
@@ -173,50 +193,42 @@ mod tests {
             .unwrap()
             .check_budget()
             .unwrap();
-        assert!(
-            BuildPlan::estimate(1_000_000, 33, &config)
-                .unwrap()
-                .check_budget()
-                .is_err()
-        );
+        assert!(BuildPlan::estimate(1_000_000, 33, &config)
+            .unwrap()
+            .check_budget()
+            .is_err());
         // Same requested-component envelope even when the segment is much smaller.
-        assert!(
-            BuildPlan::estimate(1, 33, &config)
-                .unwrap()
-                .check_budget()
-                .is_err()
-        );
+        assert!(BuildPlan::estimate(1, 33, &config)
+            .unwrap()
+            .check_budget()
+            .is_err());
         config.sample_size = 1;
         config.hidden_dim = 4096;
         BuildPlan::estimate(1, 7811, &config)
             .unwrap()
             .check_budget()
             .unwrap();
-        assert!(
-            BuildPlan::estimate(1, 7812, &config)
-                .unwrap()
-                .check_budget()
-                .is_err()
-        );
+        assert!(BuildPlan::estimate(1, 7812, &config)
+            .unwrap()
+            .check_budget()
+            .is_err());
     }
     #[test]
     fn impossible_and_overflowing_plans_fail_before_allocation() {
         assert!(BuildPlan::estimate(usize::MAX, 768, &LmiConfig::default()).is_err());
         assert!(BuildPlan::estimate(1, usize::MAX, &LmiConfig::default()).is_err());
         assert!(BuildPlan::estimate(1, 0, &LmiConfig::default()).is_err());
-        assert!(
-            BuildPlan::estimate(
-                1_000_000,
-                768,
-                &LmiConfig {
-                    sample_size: 1_000_000,
-                    ..LmiConfig::default()
-                }
-            )
-            .unwrap()
-            .check_budget()
-            .is_err()
-        );
+        assert!(BuildPlan::estimate(
+            1_000_000,
+            768,
+            &LmiConfig {
+                sample_size: 1_000_000,
+                ..LmiConfig::default()
+            }
+        )
+        .unwrap()
+        .check_budget()
+        .is_err());
         let large = BuildPlan::estimate(1_000_000_000, 768, &LmiConfig::default()).unwrap();
         assert!(large.estimated_bytes > 8_000_000_000);
         // Reporting this estimate is not a guarantee that the host can build it.

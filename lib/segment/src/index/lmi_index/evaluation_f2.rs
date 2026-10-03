@@ -179,6 +179,7 @@ fn phase_f2_study() {
                 epochs: job["epochs"].as_u64().unwrap() as usize,
                 seed: job["seed"].as_u64().unwrap(),
                 batch_size: 256,
+                routing_batch_size: 1,
                 nprobe: 1,
                 kmeans_iterations: 20,
             };

@@ -3861,6 +3861,12 @@ impl TryFrom<crate::grpc::qdrant::LmiConfig> for segment::index::lmi_index::LmiC
                 .transpose()
                 .map_err(|_| Status::invalid_argument("LMI integer out of range"))?
                 .unwrap_or(defaults.batch_size),
+            routing_batch_size: value
+                .routing_batch_size
+                .map(usize::try_from)
+                .transpose()
+                .map_err(|_| Status::invalid_argument("LMI integer out of range"))?
+                .unwrap_or(defaults.routing_batch_size),
             kmeans_iterations: value
                 .kmeans_iterations
                 .map(usize::try_from)
@@ -3889,6 +3895,7 @@ impl From<segment::index::lmi_index::LmiConfig> for crate::grpc::qdrant::LmiConf
             hidden_dim: Some(c.hidden_dim as u64),
             epochs: Some(c.epochs as u64),
             batch_size: Some(c.batch_size as u64),
+            routing_batch_size: Some(c.routing_batch_size as u64),
             kmeans_iterations: Some(c.kmeans_iterations as u64),
             nprobe: Some(c.nprobe as u64),
             seed: Some(c.seed),

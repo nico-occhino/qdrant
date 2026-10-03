@@ -166,6 +166,7 @@ fn phase_f4_oracle_and_objective_control() {
         hidden_dim: protocol["router_config"]["hidden_dim"].as_u64().unwrap() as usize,
         epochs: protocol["router_config"]["epochs"].as_u64().unwrap() as usize,
         batch_size: protocol["router_config"]["batch_size"].as_u64().unwrap() as usize,
+        routing_batch_size: 1,
         nprobe: 1,
         kmeans_iterations: 20,
         seed: 0,

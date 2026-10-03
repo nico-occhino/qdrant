@@ -4,14 +4,14 @@ use std::sync::atomic::Ordering;
 use common::fs::{atomic_save_bin, atomic_save_json};
 use common::generic_consts::Random;
 use common::types::{DeferredBehavior, PointOffsetType};
-use common::universal_io::{MmapFs, UniversalReadFs, read_bin_via, read_json_via};
+use common::universal_io::{read_bin_via, read_json_via, MmapFs, UniversalReadFs};
 use rand::rngs::StdRng;
 use rand::{Rng, RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 
 use super::CompactPostings;
 use super::{LmiCandidateMode, LmiConfig, LmiIndex, LmiRoutingState, MlpRouter};
-use crate::common::operation_error::{OperationError, OperationResult, check_process_stopped};
+use crate::common::operation_error::{check_process_stopped, OperationError, OperationResult};
 use crate::data_types::named_vectors::CowVector;
 use crate::id_tracker::IdTrackerRead;
 use crate::segment_constructor::{VectorIndexBuildArgs, VectorIndexOpenArgs};
@@ -161,9 +161,54 @@ impl LmiIndex {
                 let posting_started = std::time::Instant::now();
                 // Release the training matrix before allocating corpus postings.
                 drop(data);
-                let mut predictor = super::routing::BuildRouter::new(&router, args.stopped)?;
+                let mut predictor = super::routing::BuildBatchRouter::new(
+                    &router,
+                    config.routing_batch_size,
+                    args.stopped,
+                )?;
+                log::info!(
+                    "LMI postings: native single-threaded routing batch={} workspace_bytes={}",
+                    config.routing_batch_size,
+                    predictor.workspace_bytes(),
+                );
                 let (postings, times) =
                     CompactPostings::build_two_pass(config.n_buckets, args.stopped, |push| {
+                        let mut offsets = Vec::new();
+                        let mut inputs = Vec::new();
+                        offsets
+                            .try_reserve_exact(config.routing_batch_size)
+                            .map_err(|e| {
+                                OperationError::service_error(format!(
+                                    "LMI posting routing offsets allocation: {e}"
+                                ))
+                            })?;
+                        inputs
+                            .try_reserve_exact(
+                                config.routing_batch_size.checked_mul(dim).ok_or_else(|| {
+                                    OperationError::service_error(
+                                        "LMI posting routing input size overflow",
+                                    )
+                                })?,
+                            )
+                            .map_err(|e| {
+                                OperationError::service_error(format!(
+                                    "LMI posting routing input allocation: {e}"
+                                ))
+                            })?;
+                        let mut flush = |offsets: &mut Vec<PointOffsetType>,
+                                         inputs: &mut Vec<f32>|
+                         -> OperationResult<()> {
+                            if offsets.is_empty() {
+                                return Ok(());
+                            }
+                            let buckets = predictor.top_buckets(inputs, args.stopped)?;
+                            for (&id, &bucket) in offsets.iter().zip(buckets) {
+                                push(id, bucket)?;
+                            }
+                            offsets.clear();
+                            inputs.clear();
+                            Ok(())
+                        };
                         for id in eligible() {
                             check_process_stopped(args.stopped)?;
                             let Some(CowVector::Dense(row)) = storage.get_vector_opt::<Random>(id)
@@ -172,12 +217,18 @@ impl LmiIndex {
                                     "LMI posting contains no dense vector",
                                 ));
                             };
-                            // Bounded native inference: one borrowed/decoded row at a time.
-                            // Same arithmetic and tie policy as existing query routing.
-                            let bucket = predictor.top_bucket(&row, args.stopped)?;
-                            push(id, bucket)?;
+                            if row.len() != dim || row.iter().any(|value| !value.is_finite()) {
+                                return Err(OperationError::service_error(
+                                    "LMI posting has invalid dimension or non-finite value",
+                                ));
+                            }
+                            offsets.push(id);
+                            inputs.extend_from_slice(&row);
+                            if offsets.len() == config.routing_batch_size {
+                                flush(&mut offsets, &mut inputs)?;
+                            }
                         }
-                        Ok(())
+                        flush(&mut offsets, &mut inputs)
                     })?;
                 log::info!(
                     "LMI postings: segment_slots={total} eligible={seen} buckets={} postings={} pass1_seconds={:.6} allocation_seconds={:.6} pass2_seconds={:.6}",

@@ -5,7 +5,7 @@ use common::types::PointOffsetType;
 
 use super::CompactPostings;
 
-use crate::common::operation_error::{OperationError, OperationResult, check_process_stopped};
+use crate::common::operation_error::{check_process_stopped, OperationError, OperationResult};
 use crate::data_types::named_vectors::CowVector;
 use crate::data_types::vectors::{QueryVector, VectorInternal};
 use crate::vector_storage::VectorStorageRead;
@@ -405,6 +405,7 @@ pub fn build_router_postings(
 /// A build-local immutable model borrow and reusable inference workspace.
 /// Construction validates all weights/shapes once; the borrow prevents mutation.
 #[cfg(any(feature = "lmi-training", test))]
+#[allow(dead_code)] // Retained as the S.3B1 scalar correctness/performance reference.
 pub(super) struct BuildRouter<'a> {
     router: &'a MlpRouter,
     input_dim: usize,
@@ -413,6 +414,7 @@ pub(super) struct BuildRouter<'a> {
 }
 
 #[cfg(any(feature = "lmi-training", test))]
+#[allow(dead_code)] // Its methods are exercised by focused parity tests.
 impl<'a> BuildRouter<'a> {
     pub(super) fn new(router: &'a MlpRouter, stopped: &AtomicBool) -> OperationResult<Self> {
         check_process_stopped(stopped)?;
@@ -490,6 +492,149 @@ impl<'a> BuildRouter<'a> {
         }
         check_process_stopped(stopped)?;
         Ok(best)
+    }
+}
+
+/// A build-only, single-threaded batch router. It retains the scalar
+/// multiply/add order for each row, but reuses contiguous K-row workspaces.
+/// Therefore every top-1 assignment is bit/partition-equivalent to
+/// [`BuildRouter`] for the same model and inputs.
+#[cfg(any(feature = "lmi-training", test))]
+pub(super) struct BuildBatchRouter<'a> {
+    router: &'a MlpRouter,
+    input_dim: usize,
+    batch_capacity: usize,
+    values: Vec<f32>,
+    output: Vec<f32>,
+    buckets: Vec<usize>,
+}
+
+#[cfg(any(feature = "lmi-training", test))]
+impl<'a> BuildBatchRouter<'a> {
+    pub(super) fn new(
+        router: &'a MlpRouter,
+        batch_capacity: usize,
+        stopped: &AtomicBool,
+    ) -> OperationResult<Self> {
+        check_process_stopped(stopped)?;
+        if batch_capacity == 0 {
+            return Err(OperationError::service_error(
+                "LMI build routing batch capacity must be nonzero",
+            ));
+        }
+        let (input_dim, _) = router.validate()?;
+        let width = router
+            .layers
+            .iter()
+            .fold(input_dim, |width, layer| match layer {
+                RouterLayer::Linear(layer) => width.max(layer.out_features),
+                RouterLayer::ReLU => width,
+            });
+        let allocate_f32 = |rows: usize, columns: usize| -> OperationResult<Vec<f32>> {
+            let capacity = rows.checked_mul(columns).ok_or_else(|| {
+                OperationError::service_error("LMI build routing workspace size overflow")
+            })?;
+            let mut buffer = Vec::new();
+            buffer.try_reserve_exact(capacity).map_err(|e| {
+                OperationError::service_error(format!("LMI inference workspace allocation: {e}"))
+            })?;
+            Ok(buffer)
+        };
+        let mut buckets = Vec::new();
+        buckets.try_reserve_exact(batch_capacity).map_err(|e| {
+            OperationError::service_error(format!("LMI inference workspace allocation: {e}"))
+        })?;
+        let result = Self {
+            router,
+            input_dim,
+            batch_capacity,
+            values: allocate_f32(batch_capacity, width)?,
+            output: allocate_f32(batch_capacity, width)?,
+            buckets,
+        };
+        check_process_stopped(stopped)?;
+        Ok(result)
+    }
+
+    /// Actual reusable workspace: two K×max(d,H,B) activation buffers plus
+    /// K bucket identifiers. The caller owns the K×d gathered input buffer.
+    pub(super) fn workspace_bytes(&self) -> usize {
+        (self.values.capacity() + self.output.capacity()) * std::mem::size_of::<f32>()
+            + self.buckets.capacity() * std::mem::size_of::<usize>()
+    }
+
+    pub(super) fn top_buckets(
+        &mut self,
+        inputs: &[f32],
+        stopped: &AtomicBool,
+    ) -> OperationResult<&[usize]> {
+        check_process_stopped(stopped)?;
+        if inputs.len() % self.input_dim != 0 {
+            return Err(OperationError::service_error(
+                "LMI batch router input has wrong dimension",
+            ));
+        }
+        let rows = inputs.len() / self.input_dim;
+        if rows > self.batch_capacity {
+            return Err(OperationError::service_error(
+                "LMI batch router input exceeds configured batch capacity",
+            ));
+        }
+        if inputs.iter().any(|value| !value.is_finite()) {
+            return Err(OperationError::service_error(
+                "LMI router input has non-finite values",
+            ));
+        }
+        self.values.clear();
+        self.values.extend_from_slice(inputs);
+        let mut columns = self.input_dim;
+        for layer in &self.router.layers {
+            check_process_stopped(stopped)?;
+            match layer {
+                RouterLayer::Linear(linear) => {
+                    self.output.clear();
+                    for input in self.values.chunks_exact(columns) {
+                        check_process_stopped(stopped)?;
+                        for (weights, &bias) in linear
+                            .weights
+                            .chunks_exact(linear.in_features)
+                            .zip(&linear.bias)
+                        {
+                            // Preserve BuildRouter's ordered f32 reduction exactly.
+                            let mut sum = bias;
+                            for (&weight, &value) in weights.iter().zip(input) {
+                                sum += weight * value;
+                            }
+                            if !sum.is_finite() {
+                                return Err(OperationError::service_error(
+                                    "LMI router produced non-finite activations/logits",
+                                ));
+                            }
+                            self.output.push(sum);
+                        }
+                    }
+                    columns = linear.out_features;
+                    std::mem::swap(&mut self.values, &mut self.output);
+                }
+                RouterLayer::ReLU => self
+                    .values
+                    .iter_mut()
+                    .for_each(|value| *value = value.max(0.0)),
+            }
+        }
+        self.buckets.clear();
+        for logits in self.values.chunks_exact(columns) {
+            // Strict comparison preserves smaller-ID preference, including signed zero.
+            let mut best = 0;
+            for bucket in 1..logits.len() {
+                if logits[bucket] > logits[best] {
+                    best = bucket;
+                }
+            }
+            self.buckets.push(best);
+        }
+        check_process_stopped(stopped)?;
+        Ok(&self.buckets)
     }
 }
 
@@ -603,11 +748,84 @@ mod build_router_tests {
             })],
         };
         assert!(BuildRouter::new(&router, &AtomicBool::new(true)).is_err());
-        assert!(
-            BuildRouter::new(&router, &stopped)
-                .unwrap()
-                .top_bucket(&[2.0], &stopped)
-                .is_err()
-        );
+        assert!(BuildRouter::new(&router, &stopped)
+            .unwrap()
+            .top_bucket(&[2.0], &stopped)
+            .is_err());
+    }
+}
+
+#[cfg(test)]
+mod build_batch_router_tests {
+    use super::*;
+    use rand::{RngExt, SeedableRng};
+
+    fn router(buckets: usize) -> MlpRouter {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(91 + buckets as u64);
+        MlpRouter {
+            layers: vec![
+                RouterLayer::Linear(LinearLayer {
+                    in_features: 3,
+                    out_features: 5,
+                    weights: (0..15).map(|_| rng.random_range(-1.0..1.0)).collect(),
+                    bias: (0..5).map(|_| rng.random_range(-1.0..1.0)).collect(),
+                }),
+                RouterLayer::ReLU,
+                RouterLayer::Linear(LinearLayer {
+                    in_features: 5,
+                    out_features: buckets,
+                    weights: (0..5 * buckets)
+                        .map(|_| rng.random_range(-1.0..1.0))
+                        .collect(),
+                    bias: (0..buckets).map(|_| rng.random_range(-1.0..1.0)).collect(),
+                }),
+            ],
+        }
+    }
+
+    #[test]
+    fn batch_top1_is_scalar_identical_for_full_partial_and_empty_batches() {
+        let stopped = AtomicBool::new(false);
+        for buckets in [1, 2, 7, 64] {
+            let router = router(buckets);
+            let mut rng = rand::rngs::StdRng::seed_from_u64(103 + buckets as u64);
+            let rows: Vec<Vec<f32>> = (0..5)
+                .map(|_| (0..3).map(|_| rng.random_range(-2.0..2.0)).collect())
+                .collect();
+            let expected: Vec<usize> = rows
+                .iter()
+                .map(|row| {
+                    BuildRouter::new(&router, &stopped)
+                        .unwrap()
+                        .top_bucket(row, &stopped)
+                        .unwrap()
+                })
+                .collect();
+            for capacity in [1, 2, 3, 8] {
+                let mut batch = BuildBatchRouter::new(&router, capacity, &stopped).unwrap();
+                assert!(batch.top_buckets(&[], &stopped).unwrap().is_empty());
+                let mut actual = Vec::new();
+                for chunk in rows.chunks(capacity) {
+                    let inputs: Vec<f32> = chunk.iter().flatten().copied().collect();
+                    actual.extend_from_slice(batch.top_buckets(&inputs, &stopped).unwrap());
+                }
+                assert_eq!(actual, expected, "buckets={buckets} capacity={capacity}");
+            }
+        }
+    }
+
+    #[test]
+    fn batch_router_rejects_bad_inputs_and_observes_cancellation() {
+        let router = router(3);
+        let stopped = AtomicBool::new(false);
+        assert!(BuildBatchRouter::new(&router, 0, &stopped).is_err());
+        let mut batch = BuildBatchRouter::new(&router, 2, &stopped).unwrap();
+        assert!(batch.top_buckets(&[1.0, 2.0], &stopped).is_err());
+        assert!(batch.top_buckets(&[f32::NAN, 0.0, 0.0], &stopped).is_err());
+        assert!(batch.top_buckets(&[0.0; 9], &stopped).is_err());
+        assert!(batch
+            .top_buckets(&[0.0; 3], &AtomicBool::new(true))
+            .is_err());
+        assert!(batch.workspace_bytes() > 0);
     }
 }

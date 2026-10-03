@@ -177,6 +177,7 @@ fn phase_f_benchmark() {
         hidden_dim: 64,
         epochs: 30,
         batch_size: 256,
+        routing_batch_size: 1,
         kmeans_iterations: 20,
         nprobe: 1,
         seed: 42,
