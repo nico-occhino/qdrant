@@ -95,6 +95,95 @@ impl TrainedRouter {
         })
     }
 
+    /// Diagnostic only: expose raw Torch logits for margin and rank analysis.
+    #[cfg(test)]
+    pub(super) fn logits_for_test(
+        &self,
+        inputs: &[f32],
+    ) -> OperationResult<(Vec<f32>, Vec<usize>)> {
+        if !inputs.len().is_multiple_of(self.input_dim) || inputs.iter().any(|v| !v.is_finite()) {
+            return Err(OperationError::service_error(
+                "Invalid LMI diagnostic input",
+            ));
+        }
+        let rows = inputs.len() / self.input_dim;
+        let x = Tensor::f_from_slice(inputs)
+            .and_then(|t| t.f_reshape([rows as i64, self.input_dim as i64]))
+            .map_err(torch_error)?;
+        let logits = tch::no_grad(|| self.last.forward(&self.first.forward(&x).relu()));
+        let ids = Vec::<i64>::try_from(logits.argmax(-1, false)).map_err(torch_error)?;
+        let ids = ids.into_iter().map(|v| v as usize).collect();
+        let values =
+            Vec::<f32>::try_from(logits.f_view([-1]).map_err(torch_error)?).map_err(torch_error)?;
+        Ok((values, ids))
+    }
+
+    /// Experimental build-only fast path. Verify ambiguous rows with the
+    /// unchanged native arithmetic and smaller-ID tie rule.
+    pub(super) fn top_buckets_tie_safe(
+        &self,
+        inputs: &[f32],
+        stopped: &AtomicBool,
+        native: &mut super::routing::BuildRouter<'_>,
+    ) -> OperationResult<(Vec<usize>, usize)> {
+        check_process_stopped(stopped)?;
+        let (dim, buckets) = (self.input_dim, self.bucket_count);
+        if !inputs.len().is_multiple_of(dim) || inputs.iter().any(|v| !v.is_finite()) {
+            return Err(OperationError::service_error(
+                "Invalid LMI tch routing input",
+            ));
+        }
+        let rows = inputs.len() / dim;
+        if rows == 0 {
+            return Ok((Vec::new(), 0));
+        }
+        let x = Tensor::f_from_slice(inputs)
+            .and_then(|t| t.f_reshape([rows as i64, dim as i64]))
+            .map_err(torch_error)?;
+        let logits = tch::no_grad(|| self.last.forward(&self.first.forward(&x).relu()));
+        if logits.size() != [rows as i64, buckets as i64]
+            || logits.isfinite().all().int64_value(&[]) == 0
+        {
+            return Err(OperationError::service_error(
+                "Non-finite or malformed LMI tch logits",
+            ));
+        }
+        // The two largest values are sufficient to detect an ambiguous top-1;
+        // fallback itself always evaluates the full native model.
+        let (values, indices) = logits.topk(buckets.min(2) as i64, -1, true, true);
+        let values =
+            Vec::<f32>::try_from(values.f_view([-1]).map_err(torch_error)?).map_err(torch_error)?;
+        let indices = Vec::<i64>::try_from(indices.f_view([-1]).map_err(torch_error)?)
+            .map_err(torch_error)?;
+        let stride = buckets.min(2);
+        let mut result = Vec::with_capacity(rows);
+        let mut fallback_count = 0;
+        for row in 0..rows {
+            let id = usize::try_from(indices[row * stride])
+                .ok()
+                .filter(|&id| id < buckets)
+                .ok_or_else(|| OperationError::service_error("Invalid LMI tch bucket ID"))?;
+            let ambiguous = if stride == 2 {
+                let first = values[row * stride];
+                let second = values[row * stride + 1];
+                let margin = first - second;
+                !margin.is_finite()
+                    || margin <= 4.0 * f32::EPSILON * (1.0 + first.abs().max(second.abs()))
+            } else {
+                false
+            };
+            if ambiguous {
+                result.push(native.top_bucket(&inputs[row * dim..(row + 1) * dim], stopped)?);
+                fallback_count += 1;
+            } else {
+                result.push(id);
+            }
+        }
+        check_process_stopped(stopped)?;
+        Ok((result, fallback_count))
+    }
+
+    #[cfg(test)]
     pub(super) fn top_buckets(
         &self,
         inputs: &[f32],

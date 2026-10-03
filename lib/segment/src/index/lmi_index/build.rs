@@ -1,3 +1,4 @@
+#[cfg(feature = "lmi-training")]
 use std::borrow::Cow;
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -194,8 +195,14 @@ impl LmiIndex {
                         args.stopped,
                     )?)
                 };
+                let mut tie_verifier = if tch_routing {
+                    Some(super::routing::BuildRouter::new(router, args.stopped)?)
+                } else {
+                    None
+                };
+                let mut tie_fallbacks = 0usize;
                 log::info!(
-                    "LMI postings: backend={} batch={} native_workspace_bytes={}",
+                    "LMI postings: backend={} batch={} native_batch_workspace_bytes={}",
                     if tch_routing { "tch" } else { "native" },
                     config.routing_batch_size,
                     predictor.as_ref().map_or(0, |p| p.workspace_bytes()),
@@ -231,12 +238,16 @@ impl LmiIndex {
                                 return Ok(());
                             }
                             let buckets: Cow<'_, [usize]> = if tch_routing {
-                                Cow::Owned(
-                                    trained
-                                        .as_ref()
-                                        .expect("tch backend selected")
-                                        .top_buckets(inputs, args.stopped)?,
-                                )
+                                let (buckets, fallbacks) = trained
+                                    .as_ref()
+                                    .expect("tch backend selected")
+                                    .top_buckets_tie_safe(
+                                        inputs,
+                                        args.stopped,
+                                        tie_verifier.as_mut().expect("native verifier"),
+                                    )?;
+                                tie_fallbacks += fallbacks;
+                                Cow::Owned(buckets)
                             } else {
                                 Cow::Borrowed(
                                     predictor
@@ -273,6 +284,11 @@ impl LmiIndex {
                         }
                         flush(&mut offsets, &mut inputs)
                     })?;
+                if tch_routing {
+                    log::info!(
+                        "LMI postings: tch native tie verification rows={tie_fallbacks} across both passes"
+                    );
+                }
                 log::info!(
                     "LMI postings: segment_slots={total} eligible={seen} buckets={} postings={} pass1_seconds={:.6} allocation_seconds={:.6} pass2_seconds={:.6}",
                     config.n_buckets,
