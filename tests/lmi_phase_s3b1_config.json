@@ -1,0 +1,11 @@
+{
+  "n_buckets": 64,
+  "sample_size": 2048,
+  "hidden_dim": 64,
+  "epochs": 30,
+  "batch_size": 256,
+  "routing_batch_size": 16,
+  "kmeans_iterations": 20,
+  "nprobe": 4,
+  "seed": 42
+}
