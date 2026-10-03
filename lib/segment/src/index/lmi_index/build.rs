@@ -1,17 +1,18 @@
+use std::borrow::Cow;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
 use common::fs::{atomic_save_bin, atomic_save_json};
 use common::generic_consts::Random;
 use common::types::{DeferredBehavior, PointOffsetType};
-use common::universal_io::{read_bin_via, read_json_via, MmapFs, UniversalReadFs};
+use common::universal_io::{MmapFs, UniversalReadFs, read_bin_via, read_json_via};
 use rand::rngs::StdRng;
 use rand::{Rng, RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 
 use super::CompactPostings;
 use super::{LmiCandidateMode, LmiConfig, LmiIndex, LmiRoutingState, MlpRouter};
-use crate::common::operation_error::{check_process_stopped, OperationError, OperationResult};
+use crate::common::operation_error::{OperationError, OperationResult, check_process_stopped};
 use crate::data_types::named_vectors::CowVector;
 use crate::id_tracker::IdTrackerRead;
 use crate::segment_constructor::{VectorIndexBuildArgs, VectorIndexOpenArgs};
@@ -156,20 +157,48 @@ impl LmiIndex {
                     dim,
                     config.n_buckets
                 );
-                let router = super::training::train(&data, dim, &config, args.stopped)?;
+                // Explicit experimental build knob; never persisted and never used at open/search.
+                let tch_routing = std::env::var("LMI_EXPERIMENTAL_TCH_BUILD_ROUTING")
+                    .is_ok_and(|value| value == "1");
+                let trained = if tch_routing {
+                    Some(super::training::train_with_tch(
+                        &data,
+                        dim,
+                        &config,
+                        args.stopped,
+                    )?)
+                } else {
+                    None
+                };
+                // The default native path drops the Torch model immediately after export.
+                let native_router = if tch_routing {
+                    None
+                } else {
+                    Some(super::training::train(&data, dim, &config, args.stopped)?)
+                };
+                let router = trained
+                    .as_ref()
+                    .map(|t| &t.native)
+                    .or(native_router.as_ref())
+                    .expect("one routing backend");
                 #[cfg(test)]
                 let posting_started = std::time::Instant::now();
                 // Release the training matrix before allocating corpus postings.
                 drop(data);
-                let mut predictor = super::routing::BuildBatchRouter::new(
-                    &router,
-                    config.routing_batch_size,
-                    args.stopped,
-                )?;
+                let mut predictor = if tch_routing {
+                    None
+                } else {
+                    Some(super::routing::BuildBatchRouter::new(
+                        router,
+                        config.routing_batch_size,
+                        args.stopped,
+                    )?)
+                };
                 log::info!(
-                    "LMI postings: native single-threaded routing batch={} workspace_bytes={}",
+                    "LMI postings: backend={} batch={} native_workspace_bytes={}",
+                    if tch_routing { "tch" } else { "native" },
                     config.routing_batch_size,
-                    predictor.workspace_bytes(),
+                    predictor.as_ref().map_or(0, |p| p.workspace_bytes()),
                 );
                 let (postings, times) =
                     CompactPostings::build_two_pass(config.n_buckets, args.stopped, |push| {
@@ -201,8 +230,22 @@ impl LmiIndex {
                             if offsets.is_empty() {
                                 return Ok(());
                             }
-                            let buckets = predictor.top_buckets(inputs, args.stopped)?;
-                            for (&id, &bucket) in offsets.iter().zip(buckets) {
+                            let buckets: Cow<'_, [usize]> = if tch_routing {
+                                Cow::Owned(
+                                    trained
+                                        .as_ref()
+                                        .expect("tch backend selected")
+                                        .top_buckets(inputs, args.stopped)?,
+                                )
+                            } else {
+                                Cow::Borrowed(
+                                    predictor
+                                        .as_mut()
+                                        .expect("native backend selected")
+                                        .top_buckets(inputs, args.stopped)?,
+                                )
+                            };
+                            for (&id, &bucket) in offsets.iter().zip(buckets.iter()) {
                                 push(id, bucket)?;
                             }
                             offsets.clear();
@@ -243,7 +286,11 @@ impl LmiIndex {
                     *POSTING_SECONDS.lock().unwrap() = posting_started.elapsed().as_secs_f64();
                 }
                 drop(predictor);
-                state.router = Some(router);
+                state.router = Some(match (trained, native_router) {
+                    (Some(t), None) => t.native,
+                    (None, Some(r)) => r,
+                    _ => unreachable!("exactly one routing backend"),
+                });
                 state.compact = Some(postings);
             }
         } else {

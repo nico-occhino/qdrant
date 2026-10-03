@@ -15,6 +15,125 @@ fn torch_error(err: tch::TchError) -> OperationError {
     OperationError::service_error(format!("LMI training: {err}"))
 }
 
+/// Retained only during index construction; persistence still exports native weights.
+pub(super) struct TrainedRouter {
+    pub(super) native: MlpRouter,
+    first: nn::Linear,
+    last: nn::Linear,
+    _store: nn::VarStore,
+    input_dim: usize,
+    bucket_count: usize,
+}
+
+impl TrainedRouter {
+    #[cfg(test)]
+    pub(super) fn from_native_for_test(native: MlpRouter) -> OperationResult<Self> {
+        let [
+            RouterLayer::Linear(a),
+            RouterLayer::ReLU,
+            RouterLayer::Linear(b),
+        ] = native.layers.as_slice()
+        else {
+            return Err(OperationError::service_error(
+                "Expected two-layer LMI test model",
+            ));
+        };
+        let (input_dim, bucket_count) = native.validate()?;
+        let store = nn::VarStore::new(Device::Cpu);
+        let mut first = nn::linear(
+            &store.root() / "hidden",
+            a.in_features as i64,
+            a.out_features as i64,
+            Default::default(),
+        );
+        let mut last = nn::linear(
+            &store.root() / "output",
+            b.in_features as i64,
+            b.out_features as i64,
+            Default::default(),
+        );
+        let copy = |layer: &mut nn::Linear,
+                    weights: &[f32],
+                    bias: &[f32],
+                    outputs: usize,
+                    inputs: usize|
+         -> OperationResult<()> {
+            tch::no_grad(|| -> Result<(), tch::TchError> {
+                layer.ws.f_copy_(
+                    &Tensor::f_from_slice(weights)?.f_reshape([outputs as i64, inputs as i64])?,
+                )?;
+                layer
+                    .bs
+                    .as_mut()
+                    .unwrap()
+                    .f_copy_(&Tensor::f_from_slice(bias)?)?;
+                Ok(())
+            })
+            .map_err(torch_error)
+        };
+        copy(
+            &mut first,
+            &a.weights,
+            &a.bias,
+            a.out_features,
+            a.in_features,
+        )?;
+        copy(
+            &mut last,
+            &b.weights,
+            &b.bias,
+            b.out_features,
+            b.in_features,
+        )?;
+        Ok(Self {
+            native,
+            first,
+            last,
+            _store: store,
+            input_dim,
+            bucket_count,
+        })
+    }
+
+    pub(super) fn top_buckets(
+        &self,
+        inputs: &[f32],
+        stopped: &AtomicBool,
+    ) -> OperationResult<Vec<usize>> {
+        check_process_stopped(stopped)?;
+        let (dim, buckets) = (self.input_dim, self.bucket_count);
+        if inputs.len() % dim != 0 || inputs.iter().any(|v| !v.is_finite()) {
+            return Err(OperationError::service_error(
+                "Invalid LMI tch routing input",
+            ));
+        }
+        let rows = inputs.len() / dim;
+        if rows == 0 {
+            return Ok(Vec::new());
+        }
+        let x = Tensor::f_from_slice(inputs)
+            .and_then(|t| t.f_reshape([rows as i64, dim as i64]))
+            .map_err(torch_error)?;
+        let logits = tch::no_grad(|| self.last.forward(&self.first.forward(&x).relu()));
+        if logits.size() != [rows as i64, buckets as i64]
+            || logits.isfinite().all().int64_value(&[]) == 0
+        {
+            return Err(OperationError::service_error(
+                "Non-finite or malformed LMI tch logits",
+            ));
+        }
+        // Argmax reduces the K×B logits immediately; no corpus-sized tensor survives.
+        let ids = Vec::<i64>::try_from(logits.argmax(-1, false)).map_err(torch_error)?;
+        let result = ids
+            .into_iter()
+            .map(|id| usize::try_from(id).ok().filter(|&id| id < buckets))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| OperationError::service_error("Invalid LMI tch bucket ID"))?;
+        check_process_stopped(stopped)?;
+        Ok(result)
+    }
+}
+
 /// Stable-Rust Lloyd clustering with seeded random-sample initialization.
 /// Empty clusters keep their previous centroid; ties prefer the first cluster.
 pub(super) fn cluster_with_centers(
@@ -106,6 +225,15 @@ pub(super) fn train(
     config: &LmiConfig,
     stopped: &AtomicBool,
 ) -> OperationResult<MlpRouter> {
+    train_with_tch(data, dim, config, stopped).map(|trained| trained.native)
+}
+
+pub(super) fn train_with_tch(
+    data: &[f32],
+    dim: usize,
+    config: &LmiConfig,
+    stopped: &AtomicBool,
+) -> OperationResult<TrainedRouter> {
     check_process_stopped(stopped)?;
     #[cfg(test)]
     let cluster_started = std::time::Instant::now();
@@ -114,24 +242,37 @@ pub(super) fn train(
     let cluster_seconds = cluster_started.elapsed().as_secs_f64();
     #[cfg(test)]
     let mlp_started = std::time::Instant::now();
-    let router = train_labeled(data, &labels, dim, config, stopped, None)?;
+    let trained = train_labeled_with_tch(data, &labels, dim, config, stopped, None)?;
     #[cfg(test)]
     {
         *STAGE_SECONDS.lock().unwrap() = [cluster_seconds, mlp_started.elapsed().as_secs_f64()];
     }
-    Ok(router)
+    Ok(trained)
 }
 
 /// Fixed-label seam for controlled teacher experiments; normal builds pass no observer.
 /// Observer receives epoch, post-epoch full-sample loss/accuracy, optimizer seconds.
+#[cfg(test)]
 pub(super) fn train_labeled(
     data: &[f32],
     labels: &[i64],
     dim: usize,
     config: &LmiConfig,
     stopped: &AtomicBool,
-    mut observer: Option<&mut dyn FnMut(usize, f64, f64, f64)>,
+    observer: Option<&mut dyn FnMut(usize, f64, f64, f64)>,
 ) -> OperationResult<MlpRouter> {
+    train_labeled_with_tch(data, labels, dim, config, stopped, observer)
+        .map(|trained| trained.native)
+}
+
+fn train_labeled_with_tch(
+    data: &[f32],
+    labels: &[i64],
+    dim: usize,
+    config: &LmiConfig,
+    stopped: &AtomicBool,
+    mut observer: Option<&mut dyn FnMut(usize, f64, f64, f64)>,
+) -> OperationResult<TrainedRouter> {
     check_process_stopped(stopped)?;
     // The only Torch consumer in Qdrant. Set the process-wide inter-op policy once.
     // Intra-op settings are applied on each builder thread; never exceed one CPU.
@@ -261,7 +402,14 @@ pub(super) fn train_labeled(
         }
     }
     check_process_stopped(stopped)?;
-    Ok(router)
+    Ok(TrainedRouter {
+        native: router,
+        first,
+        last,
+        _store: store,
+        input_dim: dim,
+        bucket_count: config.n_buckets,
+    })
 }
 
 #[cfg(test)]
