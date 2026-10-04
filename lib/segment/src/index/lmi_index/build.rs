@@ -166,6 +166,7 @@ impl LmiIndex {
                         &data,
                         dim,
                         &config,
+                        vector_config.distance,
                         args.stopped,
                     )?)
                 } else {
@@ -175,7 +176,13 @@ impl LmiIndex {
                 let native_router = if tch_routing {
                     None
                 } else {
-                    Some(super::training::train(&data, dim, &config, args.stopped)?)
+                    Some(super::training::train(
+                        &data,
+                        dim,
+                        &config,
+                        vector_config.distance,
+                        args.stopped,
+                    )?)
                 };
                 let router = trained
                     .as_ref()

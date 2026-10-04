@@ -10,6 +10,7 @@ use tch::{Device, Tensor, nn};
 
 use super::{LinearLayer, LmiConfig, MlpRouter, RouterLayer};
 use crate::common::operation_error::{OperationError, OperationResult, check_process_stopped};
+use crate::types::Distance;
 
 fn torch_error(err: tch::TchError) -> OperationError {
     OperationError::service_error(format!("LMI training: {err}"))
@@ -312,21 +313,29 @@ pub(super) fn train(
     data: &[f32],
     dim: usize,
     config: &LmiConfig,
+    distance: Distance,
     stopped: &AtomicBool,
 ) -> OperationResult<MlpRouter> {
-    train_with_tch(data, dim, config, stopped).map(|trained| trained.native)
+    train_with_tch(data, dim, config, distance, stopped).map(|trained| trained.native)
 }
 
 pub(super) fn train_with_tch(
     data: &[f32],
     dim: usize,
     config: &LmiConfig,
+    distance: Distance,
     stopped: &AtomicBool,
 ) -> OperationResult<TrainedRouter> {
     check_process_stopped(stopped)?;
     #[cfg(test)]
     let cluster_started = std::time::Instant::now();
-    let labels = cluster(data, dim, config, stopped)?;
+    let labels = match distance {
+        Distance::Cosine => super::spherical_kmeans::cluster(data, dim, config, stopped)?,
+        // Preserve the existing teacher for non-cosine fields in this phase.
+        Distance::Euclid | Distance::Dot | Distance::Manhattan => {
+            cluster(data, dim, config, stopped)?
+        }
+    };
     #[cfg(test)]
     let cluster_seconds = cluster_started.elapsed().as_secs_f64();
     #[cfg(test)]
@@ -520,6 +529,6 @@ mod tests {
         assert_eq!(labels[2], labels[3]);
         assert_ne!(labels[0], labels[2]);
         assert!(cluster(&data, 1, &config, &AtomicBool::new(true)).is_err());
-        assert!(train(&data, 1, &config, &AtomicBool::new(true)).is_err());
+        assert!(train(&data, 1, &config, Distance::Euclid, &AtomicBool::new(true)).is_err());
     }
 }
