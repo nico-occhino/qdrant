@@ -142,3 +142,6 @@ mod spherical_kmeans;
 
 #[cfg(all(test, feature = "lmi-training"))]
 mod evaluation_s3c;
+
+#[cfg(all(test, feature = "lmi-training"))]
+mod evaluation_s3d;

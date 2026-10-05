@@ -1,0 +1,129 @@
+# Phase S.3D: LAION 10M Lance integration experiment
+
+## Status and scope
+
+This is a local engineering benchmark of Qdrant's native LMI on the named `lance-format/laion2b-en-clip-vit-l14-10m` dataset. It is **not** the historical SISAP10M subset. Starting HEAD was `7110beb66` (`LMI: add metric-correct spherical clustering`) on `thesis/lmi-integration`; that existing commit already contains the verified S.3C checkpoint. The unrelated untracked root file `pherical clustering` and all pre-existing output under `work/phase_s3/` were left intact. No 100M run or push is part of this phase.
+
+The intended success condition is strict: exactly 10,000,000 points present, one completed native trained LMI build, persisted router/postings/state, successful reopen without training, and real learned-path search. Ingestion or a 250K sample experiment alone does not meet that condition.
+
+## Dataset and ground truth — measured
+
+The local source is `/home/nicoo/datasets/laion10m-lance/base.lance` (10,000,000 float32 768-D rows); `/home/nicoo/datasets/laion10m-lance/queries.lance` contains 4,992 queries, each with 4,096 exact neighbors and distances. The source has no ANN index. On the first 10,000 source vectors the norm minimum/mean/median/maximum/standard deviation were 0.9994718/1.0000036/1.0000063/1.0005603/0.0002480; normal Qdrant cosine preprocessing was still applied. Neighbor IDs are **zero-based corpus row positions**, range 0–9,999,999, so the ingest uses the same Qdrant point IDs. Query IDs are separate metadata in the range 10,000,000–10,004,999. All checked neighbor IDs were valid and no negative sentinel was seen. Distances are ascending `1 − cosine`; direct source-vector checks for the first three queries' top ten neighbors differed by at most `7.64e-7` from supplied distances.
+
+There are 104 queries whose supplied top-10 boundary has ties. The largest complete eligible set has 2,380 IDs; no top-10 boundary tie extends to the 4,096-neighbor list limit. Tie-aware Recall@10 accepts any returned ID with supplied distance at most the tenth distance, and counts at most ten returned hits. Conventional first-ten ID-overlap is also reported. The exact audit is saved in `work/phase_s3/s3d/query-ground-truth-audit.json` and `query-distance-validation.json`.
+
+## Bounded ingestion — measured gates
+
+The direct-Lance importer reads ordered scanner batches, splits each into independently configurable REST upserts, writes a checkpoint only after all upserts in that scanner batch complete, and verifies retrieved vectors against the source after Qdrant cosine preprocessing. It never materializes or converts the 10M corpus. The chosen full-run batches are scanner 512 and upsert 128, based on a slower observed 1,024/256 10K tuning run. A separate 125-row mock test verified IDs 5–129, five insertion batches, and restart at row 85.
+
+| Gate | Time | Vectors/s | Client peak RSS | Qdrant peak RSS | Retrieved checks | Maximum vector error |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 128 | 1.720 s | 74.4 | 214,716 KiB | 223,128 KiB | 25 | 5.96e-8 |
+| 10,000 | 4.633 s | 2,158.5 | 255,076 KiB | 477,116 KiB | 26 | 2.98e-8 |
+| 100,000 | 28.939 s | 3,455.6 | 542,280 KiB | 726,736 KiB | 26 | 5.96e-8 |
+
+All three isolated collections ended green with the exact point count, one segment, on-disk vectors, zero swap, and `indexing_threshold=0`. That threshold disables LMI indexing during ingestion. The full collection initially used the same setting with global HNSW `m=0`, `payload_m=0` and one shard. Qdrant's default segment-size cap generated eight appendable segments by 5.28M points. The collection was therefore updated at that point to `max_segment_size=67108864` KiB and `max_optimization_threads=0`, to avoid further segment proliferation and defer consolidation until all points arrive. The planned sequence is to verify all 10M, consolidate with indexing still disabled, then enable one native LMI build. Raw configuration events are in `work/phase_s3/s3d/full-10m/collection-config-events.jsonl`.
+
+## Real spherical teacher gate — measured
+
+A separate reproducible **sample-only** experiment drew one seeded uniform row per 40-row stratum, giving S=250,000 and exactly 768,000,000 sample bytes. SHA-256: `8a9830391d56d132f948ad992385aa9f57d041158d70ebc6c9f6b9060695ab55`. These are source vectors after Qdrant cosine preprocessing; no full-corpus alternate representation was made.
+
+The production native-dot spherical implementation ran on one CPU at B=3,162, d=768. Three iterations took 177.500 s and left one empty teacher bucket (min/median/p95/max 0/74/172/469). Five iterations took 269.340 s and left zero empty teacher buckets (1/75/164/383); assignment passes were 43.413, 44.541, 45.792, 44.307, and 46.986 s, with final assignment 43.523 s. Accumulation and centroid normalization were each much smaller. Peak process RSS was about 898,048 KiB; no swap was used. Five iterations were selected for the first integrated build. Ten iterations were not measured; any extension is an estimate rather than an observation. Neither sample-only run is a 10M build.
+
+## Build admission and architecture
+
+The previous component ceiling of 128,000,000 bytes correctly rejected a 768,000,000-byte requested sample. S.3D retains that default and adds an **explicit process opt-in** `QDRANT_LMI_SAMPLE_BUDGET_BYTES` capped at 1,000,000,000 bytes. A larger sample also requires the checked aggregate `BuildPlan` estimate plus 4 GiB to fit within currently available memory. This is an admission check, not a reservation or a guarantee; the full run must still monitor Qdrant RSS, MemAvailable, swap, and host disk. The focused new admission regression passes. Native build logging now records teacher-stage timing and the MLP/export stage without changing the clustering or model calculations.
+
+The production data path remains Qdrant VectorStorage → bounded reservoir sample → spherical KMeans teacher → CPU Torch MLP training/export → tie-safe bounded corpus classification → compact postings → validated persistence → native query routing and Qdrant scoring. The B≈sqrt(N) value is a first inherited scaling hypothesis, not an optimum. Training is 768→512→3162, 30 epochs, batch 256, seed 42. The integrated corpus route used batch 256. The separate 250K/B3162 trained-router parity gate passed, but its sample/model are distinct from the integrated builder's reservoir/model.
+
+## Verification already completed
+
+Four spherical KMeans unit tests, one tie-safe test, four build-plan tests, the bounded importer mock, and all 39 Phase A–E LMI integration tests passed. The five final `cargo check --locked` targets passed: segment with training, collection tests with training, edge, default Qdrant server, and training-enabled server. The optimized native 199-query five-nprobe test passed (1 test, 995 raw rows). Targeted Clippy passed in advisory mode with five warnings at lines unchanged by S.3D. `cargo fmt --all` completed with known stable-rustfmt warnings about nightly-only import options; unrelated formatting-only edits were inspected and removed. `git diff --check` and `git diff --cached --check` passed. The training-enabled release server built and executed the integrated experiment.
+
+## Completed full ingestion and consolidation — measured
+
+All 10,000,000 source rows were inserted through the normal Qdrant REST path. The final importer progress event recorded 3,606.286 s and 2,772.936 vectors/s overall, including simultaneous compile and independent router-training work; this is **not** an isolated ingest-throughput benchmark. Peak client RSS was 1,450,160 KiB, observed Qdrant peak RSS 8,489,320 KiB, MemAvailable low-water mark 13,287,772 KiB, and swap high-water mark 312 KiB. The final checkpoint is exactly row 10,000,000. Qdrant reported exactly 10,000,000 points and zero indexed vectors. Sixty-six randomly selected/boundary stored vectors matched the source after cosine preprocessing, maximum absolute coordinate error `5.96e-8`. The pre-merge storage tree occupied 31,464,338,953 bytes by `du -sb`.
+
+The old ingest server was stopped cleanly and the full collection reopened on the newly built training-enabled release server. With indexing still disabled, the one-thread merge consolidated eight ingest segments into one 10M-point segment; Qdrant temporarily exposed a ninth appendable segment during the merge. The post-merge storage tree occupied 31,081,382,469 bytes. The collection was green, with one segment and zero indexed vectors before indexing was enabled. During merge, the temporary tree reached about 58 GiB; the physical Windows host filesystem still had hundreds of GiB free. File-backed Qdrant RSS grew substantially, but MemAvailable stayed high and swap growth was negligible. The merge was triggered at 10:33:34 UTC and the consolidated segment was observed by 10:45:09 UTC. This is evidence of successful static consolidation, not trained-index publication.
+
+## Representative 250K/B3162 trained-router gate — measured
+
+A separate one-CPU run trained the existing 768→512→3162 architecture for 30 epochs from the preserved stratified sample and validated on 2,048 distinct Lance queries. It ran 2,921.264 s in total; the first independently inspected spherical teacher took 313.428 s, and a second deterministic teacher plus Torch training/export took 2,367.562 s. The first teacher had all 3,162 buckets active, sizes 1–383. Native router top-1 agreed with the sample teacher on 99.3236% of the 250K sample. Raw Torch/native validation top-1 mismatches: 0/2,048; tie-safe fallbacks: 0/2,048; residual mismatches: 0. The minimum Torch top-two margin was 0.001793, p01 0.082663, median 4.301052. Peak process RSS was 1,706,428 KiB; no safety stop occurred. This supports retaining the tie-safe Torch fast path for the first integrated build. It does not certify the independently sampled model that Qdrant will train from its own reservoir.
+
+## Integrated native build — measured success
+
+At 10:47:12 UTC on 2026-10-04, after verifying one consolidated 10M-point segment, `indexing_threshold` was raised to 1 with one optimizer thread. The release server had `QDRANT_LMI_SAMPLE_BUDGET_BYTES=1000000000` and `LMI_EXPERIMENTAL_TCH_BUILD_ROUTING=1`. Qdrant's optimizer first copied the original segment; therefore the wall interval from this configuration update to publication includes approximately 16 minutes of segment preparation and is **not** an isolated LMI training time. The trained index was published around 12:18:44 UTC, roughly 5,492 seconds after the recorded update. At publication Qdrant reported `points_count=10,000,000`, `indexed_vectors_count=10,000,000`, status green and optimizer status OK. A second empty appendable segment remained; the one trained segment contained all 10M points.
+
+The checked build plan admitted S=250,000, B=3,162, H=512, d=768, training/routing batch 256. Its explicit estimate was 1,746,542,440 bytes; with backend allowance 470,190,042 bytes, estimated incremental memory was 2,216,732,482 bytes. This is a planner estimate, not peak RSS. Selection of 250,000 eligible offsets from 10M physical/eligible slots took 0.074083 seconds; vector gathering afterward was not separately instrumented.
+
+The **integrated** spherical teacher ran five iterations in 243.406261 seconds. Initialization took 0.180339 seconds; assignment passes took 39.194164, 38.962754, 44.085749, 39.093939 and 41.887763 seconds; final assignment took 39.121555 seconds. The integrated teacher had three empty buckets, minimum sample bucket size 0 and maximum 385. This differs from the independently stratified sample gate, which had zero empty buckets at five iterations. The integrated 30-epoch MLP training and native export took 1,517.330924 seconds. Integrated training loss, teacher-label accuracy and held-out Torch/native agreement were **not measured**; the separate 2,048-query parity gate above must not be attributed to this independently sampled model.
+
+The full corpus used the bounded Torch build backend with routing batch 256. It classified 10,000,000 eligible vectors into exactly 10,000,000 compact postings. Pass one (route/count) took 1,374.330446 seconds, allocation/prefix work 0.031208 seconds, and pass two (route/fill) 1,375.874314 seconds. Tie-safe native verification was invoked on 16 rows across the 20M routed rows; an integrated-model raw Torch/native mismatch rate was not measured. Persistence took 0.414063 seconds. The two route passes imply about 7,275 classified rows/second each, including vector access. Caching one `u16` bucket label per corpus vector could avoid the measured second route pass at an estimated 20,000,000-byte temporary cost, but that optimization was **not implemented or benchmarked** in S.3D.
+
+The build watcher observed maximum Qdrant RSS 23,335,436 KiB, minimum `MemAvailable` 19,579,308 KiB, swap high-water mark 2,376 KiB, and physical host free-space low-water mark 573,941,510,144 bytes. Most high RSS was clean file-backed vector mapping: a direct check during routing showed about 1.26 GiB anonymous versus 21.0 GiB file-backed RSS and no process swap. RSS therefore must not be interpreted as 23 GiB of incremental build heap. No safety threshold was reached and no optimizer error was logged.
+
+## Persisted partition and restart — measured
+
+The trained segment's `lmi_state.json` is 237 bytes, `lmi_router.bin` 9,063,429 bytes and `lmi_postings.bin` 40,025,320 bytes: 49,088,986 auxiliary bytes in total, or 4.9088986 bytes per indexed vector. This auxiliary index is separate from the collection's complete 31,152,575,005-byte Qdrant storage tree, which includes on-disk vectors and other segment data. Postings contain 10M offsets across 3,162 buckets: 3,159 active and three empty. Corpus bucket sizes have min 0, p01 1, p05 60.1, median 2,863, mean 3,162.56, p95 7,212.5, p99 9,743.92 and max 15,817; coefficient of variation 0.7035 and Gini 0.3849. The nominal balanced mean N/B is about 3,162, but the observed distribution is not balanced.
+
+After a clean stop, a fresh Qdrant process reopened the same 10M collection. Its log showed `LMI open: mode=StaticLearned; no training; seconds=0.077391` and no new teacher, MLP or corpus-postings stage. The reopened collection remained green with 10M points and 10M indexed vectors. A normal HTTP query emitted one `candidate_source=StaticLearned` marker, scored 24,720 candidates and returned all ten supplied nearest-neighbor IDs for that query. This satisfies the strict integrated 10M build, persistence, reopen and real-query success condition. The release binary still dynamically links LibTorch for training-enabled builds; the evidence proves **no LibTorch model reconstruction or retraining on query serving**, not that the executable can run without its shared libraries.
+
+The documented Plain fallbacks also held. An exact query logged `params=true` and no learned-candidate marker, returning ten points in 125.612 seconds with `?timeout=300`; its IDs were in the same order as that first learned result. With the default 60-second request timeout the same on-disk Plain scan returned HTTP 500 due to a search timeout, while the collection stayed healthy. A `has_id=[0]` filtered query logged `filtered=true`, no learned marker, returned only point 0, and took 0.155 seconds. Neither fallback is part of learned candidate routing.
+
+## Retrieval evaluation — measured on a systematic held-out sample
+
+Twenty query rows 0–19 were warmups. The measured selection is exactly 199 query rows `35, 60, …, 4985`, spanning the 4,992-query Lance set with stride 25. These are held out from the 250K training sample. The 4,992-query exhaustive sweep was **not run**: after 20 warmups, ten distinct held-out HTTP queries still averaged 4.67 seconds, making a full five-point on-disk sweep disproportionately costly. This selection was fixed before evaluating the nprobe sweep; it is systematic rather than random and carries possible sampling bias. Preliminary query probes also primed the OS cache before the final HTTP run; no cache reset or random operating-point order was used. One native trial was run per operating point, always in order 1, 2, 4, 8, 16. Results are exact observations for this host and cache sequence, not uncertainty estimates.
+
+| nprobe | Tie-aware Recall@10 | Mean candidates | Mean candidate fraction | Native total mean / p50 / p95 / p99 (ms) |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.59598 | 5,055 | 0.05055% | 1,194 / 1,123 / 2,441 / 3,164 |
+| 2 | 0.73467 | 9,473 | 0.09473% | 820 / 775 / 1,850 / 2,244 |
+| 4 | 0.83869 | 18,358 | 0.18358% | 1,183 / 1,171 / 2,451 / 2,961 |
+| 8 | 0.91106 | 35,352 | 0.35352% | 2,487 / 2,341 / 4,846 / 5,366 |
+| 16 | 0.95829 | 66,884 | 0.66884% | 6,757 / 6,484 / 11,136 / 12,913 |
+
+Native per-query mean route times (ms) for nprobe 1/2/4/8/16 were 2.582/2.630/2.647/2.845/2.925; posting-gather times 0.011/0.101/0.199/1.660/4.686; combined Qdrant scoring and top-k times 1,191/817/1,180/2,483/6,749. The scorer's internal scoring and top-k stages were **not timed separately**. The JSON and CSV aggregates contain all means, p50, p95 and p99 values for each component, candidate count and candidate fraction. Native persisted-segment reopen in the test was 0.507 seconds with a warm cache. Nprobe=2 being faster than nprobe=1 despite more candidates demonstrates fixed-order cache effects; those timings cannot establish an algorithmic speedup. Routing compute is a small part of the observed disk-backed scoring time.
+
+Ordinary Qdrant HTTP at persisted nprobe=4 used the same 199 query rows and 20 warmups. It produced one learned-path marker per measured request, tie-aware Recall@10 0.83869, conventional ID-overlap 0.83819, mean candidates 18,358 (p50 18,060; p95 28,223; p99 33,829), and local HTTP latency mean 3,090 ms, p50 2,836 ms, p95 6,249 ms, p99 7,418 ms. The first separately checked query took 7.309 seconds cold and 21 ms when repeated, confirming a large cache effect. HTTP latency includes transport, collection dispatch and storage access and must not be conflated with the native in-process decomposition. Native and HTTP nprobe=4 had identical candidate counts and top-10 ID **sets** on all 199 rows; seven rows differed only in order among equal-score ties. No full 4,992-query recall estimate or statistical confidence interval is claimed.
+
+## Raw evidence and reproduction
+
+All experiment outputs remain untracked under `work/phase_s3/s3d/`; do not stage the Lance source, Qdrant storage, logs, result JSONL or compiled binaries. Key evidence is `full-10m/ingestion.jsonl`, `full-10m/build-watch.jsonl`, `full-10m/server.log`, `full-10m/postings-summary.json`, `full-10m/http-nprobe4-sampled-raw.jsonl` plus its `.summary.json`, `full-10m/native-nprobe-sampled-raw.jsonl` plus `.metadata.json`, and `full-10m/native-nprobe-sampled-summary.json` plus `.csv`. The HTTP raw SHA-256 is `0c1fd5faa134f1e5f7fcf8561af67bc678edf4973ef0dbbd9286792cc0ba6706`; native raw SHA-256 is `3f2f34a5be4bab0c38816b852a0c2728742080d11e5dac9a08982632344698c6`. The query/ground-truth-only fixture SHA-256 is `3845f04d2299108d5e16d07cc47839c36751ada76c4609f3800a0bf6bd83f521`.
+
+Environment: Intel Core Ultra 9 285H, 16 visible x86-64 CPUs, one NUMA node; WSL memory 25,198,989,312 bytes and swap 8,589,934,592 bytes; Rust/Cargo 1.98.0; CPU Torch 2.7.1; isolated Python environment with `pylance==12.0.0`, `pyarrow==25.0.1`, `numpy==2.5.3`. The Lance source lives at `/home/nicoo/datasets/laion10m-lance`; the isolated Qdrant storage lives outside Git at `/home/nicoo/work/lmi-s3d-storage/full-10m`. The training-enabled release binary SHA-256 is `106aee3b7839b01a15e835bfda0029609e3cd42ede12bd6c0e33efa92f62d34c`. The key command forms are:
+
+```bash
+PY=/home/nicoo/miniconda3/envs/lmi-starterpack/bin/python
+$PY -m pip install --target work/phase_s3/s3d/deps pylance==12.0.0 pyarrow==25.0.1 numpy==2.5.3
+export PYTHONPATH=work/phase_s3/s3d/deps
+export LIBTORCH=/home/nicoo/miniconda3/envs/lmi-starterpack/lib/python3.12/site-packages/torch
+export LD_LIBRARY_PATH="$LIBTORCH/lib"
+export QDRANT_LMI_SAMPLE_BUDGET_BYTES=1000000000
+export LMI_EXPERIMENTAL_TCH_BUILD_ROUTING=1
+$PY tests/lmi_s3d_full_controller.py start --root /home/nicoo/work/lmi-s3d-storage/full-10m --output work/phase_s3/s3d/full-10m --port 17033
+# Run this importer in a separate terminal. While it runs, apply the next patch at 5,278,528 points.
+$PY tests/lmi_laion10m_lance_stream.py --source /home/nicoo/datasets/laion10m-lance/base.lance --url http://127.0.0.1:17033 --collection laion10m_lmi --scan-batch 512 --upsert-batch 128 --start 0 --end 10000000 --checkpoint work/phase_s3/s3d/full-10m/ingest-checkpoint.json --server-pid "$(cat work/phase_s3/s3d/full-10m/server.pid)" --disk-path /mnt/c
+# In the controlling terminal, patch while ingestion is still running.
+curl -fsS -X PATCH -H 'Content-Type: application/json' -d '{"optimizers_config":{"max_segment_size":67108864,"max_optimization_threads":0}}' http://127.0.0.1:17033/collections/laion10m_lmi
+# After 10M points: allow one merge with indexing_threshold still zero; wait for one green segment.
+curl -fsS -X PATCH -H 'Content-Type: application/json' -d '{"optimizers_config":{"max_optimization_threads":1}}' http://127.0.0.1:17033/collections/laion10m_lmi
+# After one 10M-point segment: enable the single trained LMI build.
+curl -fsS -X PATCH -H 'Content-Type: application/json' -d '{"optimizers_config":{"indexing_threshold":1,"max_optimization_threads":1}}' http://127.0.0.1:17033/collections/laion10m_lmi
+$PY tests/lmi_s3d_postings_inspect.py --segment-index /home/nicoo/work/lmi-s3d-storage/full-10m/storage/collections/laion10m_lmi/0/segments/32e61fb5-a541-422d-b8d6-6532c0b7e0e7/vector_index --output work/phase_s3/s3d/full-10m/postings-summary.json --expected-points 10000000 --expected-buckets 3162
+$PY tests/lmi_s3d_eval_http.py --queries /home/nicoo/datasets/laion10m-lance/queries.lance --server-log work/phase_s3/s3d/full-10m/server.log --output work/phase_s3/s3d/full-10m/http-nprobe4-sampled-raw.jsonl --start 35 --end 4992 --stride 25 --warmup 20
+cargo test --profile perf -p segment --lib --features lmi-training --locked phase_s3d_native_nprobe_sweep --no-run
+LMI_S3D_SEGMENT_PATH=/home/nicoo/work/lmi-s3d-storage/full-10m/storage/collections/laion10m_lmi/0/segments/32e61fb5-a541-422d-b8d6-6532c0b7e0e7 LMI_S3D_QUERY_INPUT=work/phase_s3/s3d/laion-all-queries-ground-truth.bin LMI_S3D_NATIVE_OUTPUT=work/phase_s3/s3d/full-10m/native-nprobe-sampled-raw.jsonl target/perf/deps/segment-92315b0b0fce32c5 --ignored phase_s3d_native_nprobe_sweep --nocapture
+$PY tests/lmi_s3d_analyze.py --raw work/phase_s3/s3d/full-10m/native-nprobe-sampled-raw.jsonl --output work/phase_s3/s3d/full-10m/native-nprobe-sampled-summary.json
+```
+
+The ingestion command assumes the dedicated collection has already been created with the exact vector/LMI/HNSW/optimizer configuration in `full-10m/initial-config.json`; optimizer threshold transitions are recorded in `full-10m/collection-config-events.jsonl`. The importer checkpoint allows resume after the last completed scanner batch. These commands are a **reproduction record**, not instructions to overwrite preserved results: scripts refuse existing output paths. The first release build, sample-only gates and query fixture generation are scripted in the named `tests/lmi_s3d_*` files and their raw logs.
+
+## Files changed, boundaries and next experiment
+
+`build_plan.rs` adds a capped explicit sample-memory opt-in with checked aggregate admission; `training.rs` logs teacher and export stages; `spherical_kmeans.rs` marks a scalar-only helper test-only; `evaluation_s3c.rs` adds real-sample/scale parity gates. `mod.rs`, `read.rs`, `routing.rs` and new `evaluation_s3d.rs` add **test-only** access to the existing native query router and scorer; release serving semantics were not changed. `tests/lmi_laion10m_lance_stream.py` is the bounded resumable importer. The other `tests/lmi_s3d_*` scripts provide isolated gate control, sampling, monitoring, query export, posting inspection, HTTP/native analysis and fallback acceptance. No persisted LMI format, quantization, HNSW implementation or collection protocol was changed in this phase.
+
+MEASURED: full 10M ingestion, native trained build, compact persisted index, process restart, ordinary learned query, 199-query HTTP retrieval and 199×5 native nprobe sweep. ESTIMATED: the 20 MB temporary `u16` corpus-label cache and its potential to eliminate the measured second classification pass; build-plan memory is also an estimate. NOT TESTED: the historical SISAP10M subset, all 4,992 queries, HNSW at 10M, a spherical centroid control at 10M, S=500K/1M, CPU 4/6/8/16 scaling, cached-label implementation, 100M, dynamic update workloads and any universal superiority claim. These are deliberate boundaries, not successes inferred from the 10M integration.
+
+The next bounded engineering experiment is the cached-`u16`-label posting builder, using the current two-pass files and 1,375.874-second second pass as an exact baseline. It must prove identical postings, deletion/eligibility ordering, cancellation and persistence, and measure whole-build wall time and peak memory. Separately, a controlled retrieval study should randomize/interleave operating-point order or equalize cache conditions, then add spherical-centroid and HNSW controls at matched recall. The current native LMI proves the architecture scales to 10M locally; it does not establish competitive query latency against HNSW on this machine.
+
+At this handoff, the branch remains `thesis/lmi-integration` at `7110beb66` with no new commit or push. The reviewable staged change is 21 files, 1,861 insertions and 58 deletions. The pre-existing unrelated untracked `pherical clustering` file and the untracked `work/phase_s3/` results were not staged.

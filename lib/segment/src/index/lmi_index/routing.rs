@@ -253,6 +253,16 @@ impl LmiRoutingState {
     pub fn nprobe(&self) -> usize {
         self.nprobe
     }
+    #[cfg(test)]
+    pub(super) fn top_buckets_for_test(
+        &self,
+        normalized_query: &[f32],
+        nprobe: usize,
+        stopped: &AtomicBool,
+    ) -> OperationResult<Vec<usize>> {
+        self.router
+            .top_buckets_with_stop(normalized_query, nprobe, stopped)
+    }
 
     pub fn new(
         router: MlpRouter,

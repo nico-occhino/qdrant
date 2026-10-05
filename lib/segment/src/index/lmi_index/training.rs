@@ -327,23 +327,43 @@ pub(super) fn train_with_tch(
     stopped: &AtomicBool,
 ) -> OperationResult<TrainedRouter> {
     check_process_stopped(stopped)?;
-    #[cfg(test)]
     let cluster_started = std::time::Instant::now();
     let labels = match distance {
-        Distance::Cosine => super::spherical_kmeans::cluster(data, dim, config, stopped)?,
+        Distance::Cosine => {
+            let (labels, _, stats) =
+                super::spherical_kmeans::cluster_with_centers_qdrant(data, dim, config, stopped)?;
+            log::info!(
+                "LMI spherical teacher: iterations={} init_seconds={:.6} assignment_seconds={:?} accumulation_seconds={:?} normalization_seconds={:?} final_assignment_seconds={:.6} empty_buckets={} min_bucket={} max_bucket={}",
+                stats.iterations,
+                stats.initialization_seconds,
+                stats.assignment_seconds,
+                stats.accumulation_seconds,
+                stats.normalization_seconds,
+                stats.final_assignment_seconds,
+                stats.sizes.iter().filter(|&&size| size == 0).count(),
+                stats.sizes.iter().min().copied().unwrap_or(0),
+                stats.sizes.iter().max().copied().unwrap_or(0),
+            );
+            labels
+        }
         // Preserve the existing teacher for non-cosine fields in this phase.
         Distance::Euclid | Distance::Dot | Distance::Manhattan => {
             cluster(data, dim, config, stopped)?
         }
     };
-    #[cfg(test)]
     let cluster_seconds = cluster_started.elapsed().as_secs_f64();
-    #[cfg(test)]
     let mlp_started = std::time::Instant::now();
     let trained = train_labeled_with_tch(data, &labels, dim, config, stopped, None)?;
+    let mlp_seconds = mlp_started.elapsed().as_secs_f64();
+    log::info!(
+        "LMI training: sample={} dimensions={dim} buckets={} epochs={} teacher_seconds={cluster_seconds:.6} mlp_export_seconds={mlp_seconds:.6}",
+        labels.len(),
+        config.n_buckets,
+        config.epochs,
+    );
     #[cfg(test)]
     {
-        *STAGE_SECONDS.lock().unwrap() = [cluster_seconds, mlp_started.elapsed().as_secs_f64()];
+        *STAGE_SECONDS.lock().unwrap() = [cluster_seconds, mlp_seconds];
     }
     Ok(trained)
 }

@@ -3,9 +3,34 @@ use std::collections::BTreeMap;
 
 use super::LmiConfig;
 use crate::common::operation_error::{OperationError, OperationResult};
+use crate::utils::mem::Mem;
 
 /// Retain the former component rejection envelope while introducing total accounting.
 const COMPONENT_BUDGET_BYTES: u64 = 128_000_000;
+// The explicit scale gate may opt in to one larger sample component only.
+// The aggregate plan must also leave a substantial measured-memory reserve.
+const MAX_EXPERIMENT_SAMPLE_BYTES: u64 = 1_000_000_000;
+const EXPERIMENT_HEADROOM_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+fn sample_ceiling() -> OperationResult<u64> {
+    match std::env::var("QDRANT_LMI_SAMPLE_BUDGET_BYTES") {
+        Ok(raw) => {
+            let value: u64 = raw.parse().map_err(|_| {
+                OperationError::service_error("Invalid QDRANT_LMI_SAMPLE_BUDGET_BYTES value")
+            })?;
+            if !(COMPONENT_BUDGET_BYTES..=MAX_EXPERIMENT_SAMPLE_BYTES).contains(&value) {
+                return Err(OperationError::service_error(
+                    "QDRANT_LMI_SAMPLE_BUDGET_BYTES must be between 128000000 and 1000000000",
+                ));
+            }
+            Ok(value)
+        }
+        Err(std::env::VarError::NotPresent) => Ok(COMPONENT_BUDGET_BYTES),
+        Err(std::env::VarError::NotUnicode(_)) => Err(OperationError::service_error(
+            "Invalid QDRANT_LMI_SAMPLE_BUDGET_BYTES value",
+        )),
+    }
+}
 
 fn overflow() -> OperationError {
     OperationError::service_error("LMI build plan arithmetic overflow")
@@ -158,16 +183,37 @@ impl BuildPlan {
     }
 
     pub(super) fn check_budget(&self) -> OperationResult<()> {
-        if self.requested_sample_bytes > COMPONENT_BUDGET_BYTES
+        let sample_limit = sample_ceiling()?;
+        let available = if self.requested_sample_bytes > COMPONENT_BUDGET_BYTES {
+            Mem::new().available_memory_bytes()
+        } else {
+            u64::MAX
+        };
+        self.check_budget_with(sample_limit, available)
+    }
+
+    fn check_budget_with(&self, sample_limit: u64, available: u64) -> OperationResult<()> {
+        if self.requested_sample_bytes > sample_limit
             || self.model_weight_bytes > COMPONENT_BUDGET_BYTES
         {
             return Err(OperationError::service_error(format!(
-                "LMI build plan exceeds component budget {COMPONENT_BUDGET_BYTES} bytes: requested sample={} model weights={}; reduce sample_size/hidden_dim/buckets",
+                "LMI build plan exceeds component budget: requested sample={} sample limit={sample_limit} model weights={} model limit={COMPONENT_BUDGET_BYTES}; reduce sample_size/hidden_dim/buckets",
                 self.requested_sample_bytes, self.model_weight_bytes
             )));
         }
-        // Option C: aggregate bytes/work are reported, not admitted against an
-        // invented global memory policy. CPU/IO permits do not reserve RAM.
+        if self.requested_sample_bytes > COMPONENT_BUDGET_BYTES {
+            let required = self
+                .estimated_bytes
+                .checked_add(EXPERIMENT_HEADROOM_BYTES)
+                .ok_or_else(overflow)?;
+            if available < required {
+                return Err(OperationError::service_error(format!(
+                    "LMI experimental sample requires at least {required} bytes available: measured={available}; reduce sample_size or wait for memory"
+                )));
+            }
+        }
+        // The opt-in never reserves RAM. A running experiment must still monitor
+        // MemAvailable and swap, especially if another optimizer starts concurrently.
         Ok(())
     }
 }
@@ -193,42 +239,75 @@ mod tests {
             .unwrap()
             .check_budget()
             .unwrap();
-        assert!(BuildPlan::estimate(1_000_000, 33, &config)
-            .unwrap()
-            .check_budget()
-            .is_err());
+        assert!(
+            BuildPlan::estimate(1_000_000, 33, &config)
+                .unwrap()
+                .check_budget()
+                .is_err()
+        );
         // Same requested-component envelope even when the segment is much smaller.
-        assert!(BuildPlan::estimate(1, 33, &config)
-            .unwrap()
-            .check_budget()
-            .is_err());
+        assert!(
+            BuildPlan::estimate(1, 33, &config)
+                .unwrap()
+                .check_budget()
+                .is_err()
+        );
         config.sample_size = 1;
         config.hidden_dim = 4096;
         BuildPlan::estimate(1, 7811, &config)
             .unwrap()
             .check_budget()
             .unwrap();
-        assert!(BuildPlan::estimate(1, 7812, &config)
-            .unwrap()
-            .check_budget()
-            .is_err());
+        assert!(
+            BuildPlan::estimate(1, 7812, &config)
+                .unwrap()
+                .check_budget()
+                .is_err()
+        );
     }
+    #[test]
+    fn bounded_scale_sample_requires_opt_in_and_memory_headroom() {
+        let config = LmiConfig {
+            sample_size: 250_000,
+            n_buckets: 3_162,
+            hidden_dim: 512,
+            ..LmiConfig::default()
+        };
+        let plan = BuildPlan::estimate(10_000_000, 768, &config).unwrap();
+        assert_eq!(plan.requested_sample_bytes, 768_000_000);
+        assert!(
+            plan.check_budget_with(COMPONENT_BUDGET_BYTES, u64::MAX)
+                .is_err()
+        );
+        assert!(
+            plan.check_budget_with(MAX_EXPERIMENT_SAMPLE_BYTES, 3_000_000_000)
+                .is_err()
+        );
+        assert!(
+            plan.check_budget_with(MAX_EXPERIMENT_SAMPLE_BYTES, 10_000_000_000)
+                .is_ok()
+        );
+        assert!(plan.check_budget_with(700_000_000, u64::MAX).is_err());
+    }
+
     #[test]
     fn impossible_and_overflowing_plans_fail_before_allocation() {
         assert!(BuildPlan::estimate(usize::MAX, 768, &LmiConfig::default()).is_err());
         assert!(BuildPlan::estimate(1, usize::MAX, &LmiConfig::default()).is_err());
         assert!(BuildPlan::estimate(1, 0, &LmiConfig::default()).is_err());
-        assert!(BuildPlan::estimate(
-            1_000_000,
-            768,
-            &LmiConfig {
-                sample_size: 1_000_000,
-                ..LmiConfig::default()
-            }
-        )
-        .unwrap()
-        .check_budget()
-        .is_err());
+        assert!(
+            BuildPlan::estimate(
+                1_000_000,
+                768,
+                &LmiConfig {
+                    sample_size: 1_000_000,
+                    ..LmiConfig::default()
+                }
+            )
+            .unwrap()
+            .check_budget()
+            .is_err()
+        );
         let large = BuildPlan::estimate(1_000_000_000, 768, &LmiConfig::default()).unwrap();
         assert!(large.estimated_bytes > 8_000_000_000);
         // Reporting this estimate is not a guarantee that the host can build it.

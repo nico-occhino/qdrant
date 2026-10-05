@@ -60,6 +60,17 @@ impl LmiIndex {
             .next()
             .expect("one query produces one result"))
     }
+
+    #[cfg(test)]
+    pub(super) fn score_candidates_for_test(
+        &self,
+        query: &QueryVector,
+        candidates: impl Iterator<Item = PointOffsetType>,
+        top: usize,
+        query_context: &VectorQueryContext,
+    ) -> OperationResult<Vec<ScoredPointOffset>> {
+        self.score_candidates_for_query(query, candidates, top, query_context)
+    }
 }
 
 impl VectorIndexRead for LmiIndex {

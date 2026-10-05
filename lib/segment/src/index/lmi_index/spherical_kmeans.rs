@@ -247,6 +247,7 @@ fn cluster_impl(
     Ok((final_labels, centers, stats))
 }
 
+#[cfg(test)]
 pub(super) fn cluster(
     data: &[f32],
     dim: usize,

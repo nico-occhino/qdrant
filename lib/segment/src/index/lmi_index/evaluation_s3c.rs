@@ -24,21 +24,51 @@ fn phase_s3c_spherical_microbenchmark() {
     assert!((1..=10_000).contains(&buckets));
     assert!((1..=20).contains(&iterations));
     let started = Instant::now();
-    let mut state = 0x9e37_79b9_7f4a_7c15u64;
-    let mut data = vec![0.0f32; sample_size.checked_mul(dim).unwrap()];
-    for row in data.chunks_exact_mut(dim) {
-        let mut squared = 0.0f64;
-        for v in row.iter_mut() {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            *v = (((state >> 40) as i32) - 8_388_608) as f32 / 8_388_608.0;
-            squared += f64::from(*v).powi(2);
+    let sample_file = std::env::var_os("LMI_S3C_SAMPLE_FILE");
+    let (data, source_kind) = if let Some(path) = &sample_file {
+        use crate::types::Distance;
+        use std::io::Read;
+        let mut input = std::io::BufReader::new(fs_err::File::open(path).unwrap());
+        let mut raw = vec![0u8; dim * std::mem::size_of::<f32>()];
+        let mut data = Vec::with_capacity(sample_size.checked_mul(dim).unwrap());
+        for _ in 0..sample_size {
+            input.read_exact(&mut raw).unwrap();
+            let row = raw
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|bytes| f32::from_le_bytes(*bytes))
+                .collect::<Vec<_>>();
+            data.extend(Distance::Cosine.preprocess_vector::<f32>(row));
         }
-        let reciprocal = 1.0 / squared.sqrt();
-        row.iter_mut()
-            .for_each(|v| *v = (f64::from(*v) * reciprocal) as f32);
-    }
+        let mut extra = [0u8; 1];
+        assert_eq!(
+            input.read(&mut extra).unwrap(),
+            0,
+            "sample file has extra rows"
+        );
+        (
+            data,
+            "LAION Lance stratified sample with Qdrant cosine preprocessing",
+        )
+    } else {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut data = vec![0.0f32; sample_size.checked_mul(dim).unwrap()];
+        for row in data.chunks_exact_mut(dim) {
+            let mut squared = 0.0f64;
+            for v in row.iter_mut() {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                *v = (((state >> 40) as i32) - 8_388_608) as f32 / 8_388_608.0;
+                squared += f64::from(*v).powi(2);
+            }
+            let reciprocal = 1.0 / squared.sqrt();
+            row.iter_mut()
+                .for_each(|v| *v = (f64::from(*v) * reciprocal) as f32);
+        }
+        (data, "synthetic normalized sample")
+    };
     let generation_seconds = started.elapsed().as_secs_f64();
     let config = LmiConfig {
         n_buckets: buckets,
@@ -86,7 +116,7 @@ fn phase_s3c_spherical_microbenchmark() {
             "sample_bytes":4*sample_size*dim, "centroid_bytes":8*buckets*dim,
             "accumulator_bytes":8*buckets*dim, "temporary_f32_centroid_bytes":4*buckets*dim,
             "assignment_bytes":8*sample_size, "labels":labels.len(), "workers":1,
-            "scope":"synthetic normalized sample only, not corpus build"
+            "scope":source_kind, "full_corpus_build":false
         });
         fs_err::write(output, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
         eprintln!("S3C_NATIVE_MICRO {result}");
@@ -189,7 +219,7 @@ fn phase_s3c_spherical_microbenchmark() {
             "mean":sample_size as f64/buckets as f64,"p95":sizes[(sizes.len()*95/100).min(sizes.len()-1)],
             "max":sizes[sizes.len()-1],"empty":sizes.iter().filter(|&&v|v==0).count()},
         "labels":labels.len(),"centers":centers.len(),"workers":1,
-        "scope":"synthetic normalized sample only, not corpus build"
+        "scope":source_kind, "full_corpus_build":false
     });
     fs_err::write(output, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     eprintln!("S3C_MICRO {result}");
@@ -202,15 +232,31 @@ fn phase_s3c_trained_large_b_tie_gate() {
     use crate::types::Distance;
     use std::io::Read;
 
-    let data_path = std::env::var("LMI_S3C_CORPUS").unwrap();
+    let data_path = std::env::var("LMI_S3C_SAMPLE_FILE")
+        .or_else(|_| std::env::var("LMI_S3C_CORPUS"))
+        .unwrap();
     let output = std::env::var("LMI_S3C_TIE_OUTPUT").unwrap();
     assert!(!std::path::Path::new(&output).exists());
     let dim = 768usize;
-    let sample_count = 10_000usize;
-    let validation_count = 2_048usize;
-    let mut file = std::io::BufReader::new(fs_err::File::open(data_path).unwrap());
+    let sample_count: usize = std::env::var("LMI_S3C_SAMPLE")
+        .unwrap_or_else(|_| "10000".into())
+        .parse()
+        .unwrap();
+    let validation_count: usize = std::env::var("LMI_S3C_VALIDATION_COUNT")
+        .unwrap_or_else(|_| "2048".into())
+        .parse()
+        .unwrap();
+    let bucket_count: usize = std::env::var("LMI_S3C_BUCKETS")
+        .unwrap_or_else(|_| "1000".into())
+        .parse()
+        .unwrap();
+    let kmeans_iterations: usize = std::env::var("LMI_S3C_ITERATIONS")
+        .unwrap_or_else(|_| "3".into())
+        .parse()
+        .unwrap();
+    let mut file = std::io::BufReader::new(fs_err::File::open(&data_path).unwrap());
     let mut raw = vec![0u8; dim * 4];
-    let mut read_rows = |count: usize| -> Vec<f32> {
+    let mut read_rows = |file: &mut std::io::BufReader<fs_err::File>, count: usize| -> Vec<f32> {
         let mut result = Vec::with_capacity(count * dim);
         for _ in 0..count {
             file.read_exact(&mut raw).unwrap();
@@ -224,16 +270,21 @@ fn phase_s3c_trained_large_b_tie_gate() {
         }
         result
     };
-    let sample = read_rows(sample_count);
-    let validation = read_rows(validation_count);
+    let sample = read_rows(&mut file, sample_count);
+    let validation = if let Ok(path) = std::env::var("LMI_S3C_VALIDATION_FILE") {
+        let mut validation_file = std::io::BufReader::new(fs_err::File::open(path).unwrap());
+        read_rows(&mut validation_file, validation_count)
+    } else {
+        read_rows(&mut file, validation_count)
+    };
     let config = LmiConfig {
-        n_buckets: 1_000,
+        n_buckets: bucket_count,
         sample_size: sample_count,
         hidden_dim: 512,
         epochs: 30,
         batch_size: 256,
         routing_batch_size: 256,
-        kmeans_iterations: 3,
+        kmeans_iterations,
         nprobe: 1,
         seed: 42,
     };
@@ -286,7 +337,7 @@ fn phase_s3c_trained_large_b_tie_gate() {
         .count() as f64
         / sample_count as f64;
     let result = json!({
-        "source":"existing LAION 100k corpus, first 10000 training and next 2048 validation rows",
+        "source":format!("sample={data_path}; validation={}", std::env::var("LMI_S3C_VALIDATION_FILE").unwrap_or_else(|_| data_path.clone())),
         "sample_size":sample_count,"validation_size":validation_count,"dimension":dim,
         "buckets":config.n_buckets,"hidden_dim":config.hidden_dim,"epochs":config.epochs,
         "teacher_seconds":teacher_seconds,"train_seconds_including_second_teacher":train_seconds,
