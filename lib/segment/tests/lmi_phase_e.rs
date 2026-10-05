@@ -92,6 +92,29 @@ fn state(segment: &Segment) -> (std::path::PathBuf, serde_json::Value) {
     (path, json)
 }
 
+#[test]
+#[ignore = "Run alone: process-wide oracle switch compares full persisted old/new builds"]
+fn cached_labels_match_two_pass_full_index_bytes() {
+    use segment::index::lmi_index::{LMI_POSTINGS_FILE, LMI_ROUTER_FILE};
+    // This ignored test is filtered to a single process invocation so the
+    // process-wide experimental switch cannot affect other integration tests.
+    unsafe { std::env::set_var("LMI_EXPERIMENTAL_TWO_PASS_POSTINGS", "1") };
+    let (_old_root, _old_plain, old) = fixture(Distance::Dot, config(1), 64);
+    let old_path = state(&old).0;
+    let old_files = [LMI_STATE_FILE, LMI_ROUTER_FILE, LMI_POSTINGS_FILE]
+        .map(|name| std::fs::read(old_path.with_file_name(name)).unwrap());
+    unsafe { std::env::remove_var("LMI_EXPERIMENTAL_TWO_PASS_POSTINGS") };
+    let (_new_root, _new_plain, cached) = fixture(Distance::Dot, config(1), 64);
+    let new_path = state(&cached).0;
+    for (name, expected) in [LMI_STATE_FILE, LMI_ROUTER_FILE, LMI_POSTINGS_FILE]
+        .into_iter()
+        .zip(old_files)
+    {
+        let actual = std::fs::read(new_path.with_file_name(name)).unwrap();
+        assert_eq!(actual, expected, "persisted file differs: {name}");
+    }
+}
+
 fn search(
     segment: &Segment,
     q: &[f32],

@@ -85,8 +85,9 @@ impl LmiIndex {
             .map_err(|_| OperationError::service_error("LMI offset range exceeded"))?;
         let mut rng = StdRng::seed_from_u64(config.seed);
         let mut sample = Vec::with_capacity(config.sample_size.min(total));
-        // Both borrows remain held through sampling, training and both posting
-        // passes. Internal offsets are stable; named-vector tombstones are skipped.
+        // Both immutable borrows remain held through sampling, training, routing,
+        // and offset replay. No build-time mutation can change eligibility or
+        // enumeration order; tombstones and sparse slots are skipped identically.
         let eligible = || {
             tracker
                 .point_mappings()
@@ -214,8 +215,8 @@ impl LmiIndex {
                     config.routing_batch_size,
                     predictor.as_ref().map_or(0, |p| p.workspace_bytes()),
                 );
-                let (postings, times) =
-                    CompactPostings::build_two_pass(config.n_buckets, args.stopped, |push| {
+                let mut route_pass =
+                    |push: &mut dyn FnMut(PointOffsetType, usize) -> OperationResult<()>| {
                         let mut offsets = Vec::new();
                         let mut inputs = Vec::new();
                         offsets
@@ -290,16 +291,56 @@ impl LmiIndex {
                             }
                         }
                         flush(&mut offsets, &mut inputs)
-                    })?;
+                    };
+                // No sentinel: u16 covers IDs 0..=65535, hence up to 65536 buckets.
+                // Larger configurations retain the established two-routing-pass path.
+                // Explicit oracle switch for bounded A/B checks; default builds cache.
+                let force_two_pass = std::env::var("LMI_EXPERIMENTAL_TWO_PASS_POSTINGS")
+                    .is_ok_and(|value| value == "1");
+                let cached_u16 = config.n_buckets <= usize::from(u16::MAX) + 1 && !force_two_pass;
+                let (postings, times) = if cached_u16 {
+                    CompactPostings::build_cached_u16(
+                        config.n_buckets,
+                        seen,
+                        args.stopped,
+                        &mut route_pass,
+                        |push| {
+                            for id in eligible() {
+                                check_process_stopped(args.stopped)?;
+                                push(id)?;
+                            }
+                            Ok(())
+                        },
+                    )?
+                } else {
+                    CompactPostings::build_two_pass(
+                        config.n_buckets,
+                        args.stopped,
+                        &mut route_pass,
+                    )?
+                };
                 if tch_routing {
                     log::info!(
-                        "LMI postings: tch native tie verification rows={tie_fallbacks} across both passes"
+                        "LMI postings: tch native tie verification rows={tie_fallbacks} across {} routing pass(es)",
+                        if cached_u16 { 1 } else { 2 }
                     );
                 }
                 log::info!(
-                    "LMI postings: segment_slots={total} eligible={seen} buckets={} postings={} pass1_seconds={:.6} allocation_seconds={:.6} pass2_seconds={:.6}",
+                    "LMI postings: segment_slots={total} eligible={seen} buckets={} postings={} mode={} cached_labels={} cached_label_bytes={} label_type={} route_count_cache_seconds={:.6} allocation_seconds={:.6} fill_seconds={:.6}",
                     config.n_buckets,
                     postings.point_count(),
+                    if cached_u16 {
+                        "cached-u16"
+                    } else {
+                        "two-route-pass"
+                    },
+                    if cached_u16 { seen } else { 0 },
+                    if cached_u16 {
+                        plan.bytes["cached_u16_labels"]
+                    } else {
+                        0
+                    },
+                    if cached_u16 { "u16" } else { "none" },
                     times[0],
                     times[1],
                     times[2]

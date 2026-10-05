@@ -66,7 +66,7 @@ pub(super) struct BuildPlan {
     lloyd_coordinate_operations: u64,
     /// Approximate forward/backward dense MACs; excludes optimizer/activation work.
     training_macs: u64,
-    corpus_two_pass_macs: u64,
+    corpus_routing_macs: u64,
 }
 
 impl BuildPlan {
@@ -131,6 +131,11 @@ impl BuildPlan {
             sum(&[product(&[24, b])?, 8])?,
         );
         bytes.insert("postings", product(&[4, n])?);
+        let cached_u16 = b <= u64::from(u16::MAX) + 1;
+        bytes.insert(
+            "cached_u16_labels",
+            if cached_u16 { product(&[2, n])? } else { 0 },
+        );
         // Universal decoding may retain an encoded buffer alongside decoded state.
         bytes.insert(
             "encoded_postings_open_allowance",
@@ -178,7 +183,7 @@ impl BuildPlan {
                 d,
             ])?,
             training_macs: product(&[3, config.epochs as u64, s, weights])?,
-            corpus_two_pass_macs: product(&[2, n, weights])?,
+            corpus_routing_macs: product(&[if cached_u16 { 1 } else { 2 }, n, weights])?,
         })
     }
 
@@ -227,6 +232,7 @@ mod tests {
             let plan = BuildPlan::estimate(n, 768, &LmiConfig::default()).unwrap();
             plan.check_budget().unwrap();
             assert_eq!(plan.bytes["postings"], 4 * n as u64);
+            assert_eq!(plan.bytes["cached_u16_labels"], 2 * n as u64);
         }
         let mut config = LmiConfig {
             sample_size: 1_000_000,
@@ -264,6 +270,17 @@ mod tests {
                 .check_budget()
                 .is_err()
         );
+    }
+
+    #[test]
+    fn u16_label_memory_includes_the_last_representable_bucket() {
+        let mut config = LmiConfig::default();
+        config.n_buckets = 65_536;
+        let plan = BuildPlan::estimate(100_000, 1, &config).unwrap();
+        assert_eq!(plan.bytes["cached_u16_labels"], 200_000);
+        config.n_buckets = 65_537;
+        let plan = BuildPlan::estimate(100_000, 1, &config).unwrap();
+        assert_eq!(plan.bytes["cached_u16_labels"], 0);
     }
     #[test]
     fn bounded_scale_sample_requires_opt_in_and_memory_headroom() {
