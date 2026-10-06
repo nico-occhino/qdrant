@@ -555,3 +555,51 @@ Upstream commits:
 Thesis commits:
 
 - 7029bcd0f 2026-09-25T12:52:30+02:00 feat(lmi): integrate database-owned training and persisted routing
+## Candidate scoring contract: historical vs Qdrant 1.19.2
+
+The current call chain for a candidate list is `PointOffsetType` offsets → `IdTrackerRead::point_mappings().filter_deferred_and_deleted(..., VisibleOnly)` → `BatchFilteredSearcher::new` → `peek_top_iter` → `ScorerFilters::check_vector` → storage `RawScorer::score_points` → `common::top_k::TopK` → `ScoredPointOffset`. The relevant sources are `lib/segment/src/id_tracker/id_tracker_base/point_mappings_ref.rs`, `lib/segment/src/index/hnsw_index/point_scorer.rs`, `lib/segment/src/vector_storage/raw_scorer.rs`, and `lib/common/common/src/top_k.rs`.
+
+| Concern | Historical Phase C | Qdrant 1.19.2 | Status | Required LMI adaptation | Evidence/test |
+|---|---|---|---|---|---|
+| Offset validity | LMI bounded offsets before scoring | `NotDeletedChecker` rejects absent point bits; raw scorer should never receive an invalid offset | Same boundary | Explicitly bound by vector count and point bitmap length | Candidate fixture pending |
+| Point deletion | Point bitmap from context or tracker | `ScorerFilters` checks `point_deleted`; missing flag means deleted | Same | Pass context override or tracker bitmap | Deleted-point fixture pending |
+| Vector deletion | Storage deletion bitmap | `NotDeletedChecker` independently checks `vec_deleted` | Same | Keep storage authoritative | Deleted-vector fixture pending |
+| Deferred points | Mapping filter before scorer | `filter_deferred_and_deleted(VisibleOnly)` excludes cutoff and mapping tombstones; shadowed actives excluded when no cutoff | Same, stronger explicit shadowing | Apply mapping filter before `peek_top_iter` | Deferred fixture pending |
+| Candidate duplicates | Historical postings union deduplicated | `TopK` accepts repeated scored offsets and can emit duplicate IDs | Changed exposure | Sort and deduplicate at LMI boundary | Duplicate fixture pending |
+| Candidate ordering | Postings order was implementation-specific | Equal-score acceptance depends on traversal order | Changed queue | Sort unique offsets for reproducible ties | Order fixture pending |
+| Top-k queue | `FixedLengthPriorityQueue` | `TopK`: sorted insertion for k<32; median-based buffer for k>=32; rejects scores at/below threshold | Changed | Use current `BatchFilteredSearcher`; never implement own queue | Tie fixture pending |
+| Ties/equal scores | Ordered ID parity not assumed for Phase G | Equal-score ID membership at cutoff is order-sensitive; `into_vec` sorts by score only | Changed | Compare scores and untied sets; document tie ambiguity | Tie fixture pending |
+| Cosine preprocessing | Qdrant metric path | Current vector preprocessing applies distance through `Distance::preprocess_vector`; scorer uses storage metric | Same principle | Do not normalize or score manually | Cosine/Float16 fixture pending |
+| Float16 vectors | Decoded/scored through Qdrant storage | `DenseMemmapHalf` and other Half variants dispatch through `new_raw_scorer` | Same principle | Borrow authoritative half storage | Float16 fixture pending |
+| Query preprocessing | Caller-provided `QueryVector` | `BatchFilteredSearcher::new` builds a storage-specific `RawScorer` per query; higher layers prepare query vectors | Same seam | Pass query unchanged | Candidate fixture pending |
+| Filter semantics | LMI used Plain fallback | Current Plain search queries payload index; candidate seam can accept optimized filter but need not for this stage | Same conservative policy | Plain fallback for filtered requests | Runtime fixture pending |
+| Cancellation | Query context stop flag passed to scorer | `peek_top_iter` checks stop flag before and during candidate collection | Same | Pass `query_context.is_stopped()` | Cancellation fixture pending |
+| Quantized storage | LMI fell back to Plain | `BatchFilteredSearcher::new` can use quantized vectors, but rescore/oversampling occurs in Plain search | Same conservative policy | Plain fallback; no quantized learned path | Runtime fixture pending |
+| Batched scoring | Old scorer processed chunks | Current `peek_top_iter` batches offsets through `RawScorer::score_points`; full-scan `peek_top_visible` is a separate bitmap path | Changed implementation | Candidate path uses iterator API; never call full-scan API with sparse candidates | Candidate fixture pending |
+
+`TopK` does not enforce unique offsets. Sorting/deduplication must occur before scoring for the synthetic LMI seam. The current upstream scorer implementation changed in commits `9074435d9`, `e2080ec98`, and `f494cb6cd`; the storage scorer gained graph-inline variants in `4b43179e9` and an empty-multivector fix in `6c0379387`. The historical Phase C tests did not exercise this current combination.
+
+## Vector storage contract for LMI on Qdrant 1.19.2
+
+`lib/segment/src/segment_constructor/segment_constructor_base/vector_storage.rs::open_vector_storage` constructs authoritative storage before `vector_index.rs::open_vector_index` receives an `Arc<AtomicRefCell<VectorStorageEnum>>`. The index receives shared ownership of that storage, not a copied corpus. `SegmentBuilder` rebuilds storage and index in its target segment. This preserves the historical ownership rule: LMI should own auxiliary routing state only; Qdrant owns vector bytes.
+
+`VectorDataConfig::check_inline_vectors` permits graph-inline storage only for HNSW with inline storage enabled and quantization configured. `VectorStorageType::GraphInline` opens vectors from the graph file. A first LMI shell must reject GraphInline rather than treating it as an ordinary independent vector store. The combined-storage build path in `segment_builder.rs` is HNSW-specific and must remain upstream-owned.
+
+| Storage/capability | Initial LMI policy | Reason |
+|---|---|---|
+| Dense mmap / chunked mmap Float32 | Candidate seam supported; runtime gate pending | Shared `VectorStorageEnum` and current `RawScorer` |
+| Dense mmap / chunked mmap Float16 | Candidate seam supported; runtime gate pending | Half variants use current scorer; test required |
+| In-RAM mmap / chunked mmap | Candidate seam supported; runtime gate pending | Same storage ownership, different placement |
+| `Memory` (legacy RocksDB) | Unsupported | Current `open_vector_storage` explicitly rejects it |
+| GraphInline / combined graph storage | Unsupported for first LMI shell | Graph file belongs to HNSW and config checks are HNSW-specific |
+| Quantized vectors | Plain fallback | Plain owns current oversampling and rescore semantics |
+| Sparse or multivector | Unsupported for first LMI shell | Historical LMI is dense single-vector only |
+
+Float16 later training must decode bounded samples into f32 compute buffers; this task only proves the serving scorer boundary. No corpus vectors are copied into LMI.
+## Current-upstream candidate seam proof
+
+The new `lib/segment/src/index/candidate_scoring.rs::score_candidates` receives segment-local offsets only. It bounds them by storage and point-bitmap length, sorts and deduplicates them, applies `PointMappingsRefEnum::filter_deferred_and_deleted(VisibleOnly)`, and calls current `BatchFilteredSearcher::peek_top_iter`. Qdrant's scorer applies the context point mask and vector deletion mask, builds the metric-specific `RawScorer`, checks cancellation, and uses current `TopK`. The helper owns no vectors and does not map external IDs.
+
+Evidence: `cargo test -p segment --test candidate_scoring_119 --locked` passed six tests for subset top-k, candidate order/duplicates, independent point/vector deletion, ties, context deletion/cancellation, and real Float16 Cosine storage. `cargo test -p segment --lib filter_deferred_and_deleted_skips_shadowed_on_include_all --locked` passed the upstream mapping test covering shadowed/deferred behavior. The helper currently does not accept filters or quantized scoring; a future LMI index must use Plain fallback for those requests.
+
+The tie test proves repeatability after sorting candidates for its fixture. It does not establish a universal stable order for equal-score points: `TopK` compares scores, not point IDs. Results at a tie cutoff must be evaluated by score and appropriate ID-set semantics.

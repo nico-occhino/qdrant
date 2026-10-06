@@ -1,3 +1,4 @@
+pub mod candidate_scoring;
 mod condition_checker;
 pub mod field_index;
 pub mod hnsw_index;
