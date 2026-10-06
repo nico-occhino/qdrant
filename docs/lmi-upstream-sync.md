@@ -635,3 +635,70 @@ The runtime `LmiIndex` wraps current `PlainVectorIndex`. Its synthetic candidate
 - Check-only whole-workspace formatting reports only two pre-existing upstream file differences after formatting touched files: `lib/common/common/src/universal_io/simple_disk_cache/placeholder.rs` and `lib/segment/src/index/field_index/full_text_index/inverted_index/on_disk_inverted_index/on_disk_postings.rs`.
 
 The next task can begin native MLP routing and compact postings against this tested scoring boundary. Persisted LMI state, collection-level configuration, read-only serving, optimizer lifecycle and real-data results remain unvalidated; this shell must not be used as the canonical thesis development branch yet.
+
+
+## Native static serving and persisted state (forward-port stage)
+
+This section supersedes the first-stage shell status above. The stage started from clean `6a624a304a7233214ffa4a2e51bb207cc29d3d3f` on `thesis/lmi-qdrant-sync`, against upstream `016542aa5deb6c66380bb137badf73d54f742bde`. The frozen historical reference remains `4e0527388b98f16623ab3e5124baab4cd6022b87` on `thesis/lmi-integration`. No historical worktree or canonical 10.12M artifact was changed.
+
+### Final historical sources and port decisions
+
+| Historical component | Final frozen source | Current destination | Algorithm reused? | Qdrant 1.19.2 adaptation and reason |
+|---|---|---:|---|---|
+| Pure Rust `MlpRouter`, `LinearLayer`, `RouterLayer` | `lib/segment/src/index/lmi_index/routing.rs` at frozen SHA; final 10M change `3c9404a05` | `lib/segment/src/index/lmi_index/routing.rs` | Yes: row-major ordered f32 reduction, ReLU, logit ranking and smaller bucket-ID ties | Removed Phase C synthetic routing, corpus builders and training-only workspace; serving remains Torch-free. |
+| `LmiRoutingState` candidate union | Same `routing.rs` | Same path | Yes: top buckets, borrowed posting ranges, sort/dedup offsets | Current `score_candidates` owns visibility, RawScorer and TopK; no historical scorer port. |
+| `CompactPostings` | `lib/segment/src/index/lmi_index/postings.rs`, final cache change `6d9a87d4e` | `lib/segment/src/index/lmi_index/postings.rs` | Yes: contiguous `Vec<PointOffsetType>` and B+1 `Vec<u64>` boundaries | Removed `build_two_pass`/`build_cached_u16` and benchmark code because training is outside this stage. |
+| Version 2 disk state and `open_trained` | `lib/segment/src/index/lmi_index/build.rs`, final Float16 change `e360295aa` | `lib/segment/src/index/lmi_index/state.rs` and `mod.rs` | State file names and atomic payload-before-metadata publication retained | New version 3 metadata has explicit preprocessing/datatype/binary formats; Qdrant 1.19.2 constructor and storage types differ. |
+| Mutable/read-only search and lifecycle | Historical `read.rs`, `read_only.rs`, `lifecycle.rs`, especially persistence change `6f7085b9c` | `mod.rs`, `read_only.rs`, current `index/read_only/mod.rs` and `live_reload.rs` | Fallback policy and immutable-file enumeration retained | Current read-only backends use separate generic tracker/storage and preopen/live-reload contracts. |
+
+The original `routing.rs` includes superseded Phase C `DeterministicTwoBuckets` and all-valid-point modes. The earlier inline `Vec<Vec<PointOffsetType>>` state and version 1 JSON format were superseded by the final compact version 2 files. None is used for the new persisted learned path. The historical two-pass/cached label builders and Torch training are not serving components and were deliberately left behind.
+
+### Router input and validation contract
+
+Qdrant owns vector preprocessing. The historical build samples and routes rows read from `VectorStorage`, whose stored Cosine vectors have already passed Qdrant distance preprocessing. The historical query path in `read.rs` explicitly calls `Distance::Cosine.preprocess_vector::<f32>` before router inference. The current port preserves that split: it preprocesses a Cosine query for the router, while the original query reaches current Qdrant `RawScorer`. Other metrics use identity preprocessing. Version 3 metadata records `identity` or `cosine_normalized` explicitly; loading rejects a mismatch with the configured distance.
+
+The state records dimension `d`, metric, storage datatype (Float32 or Float16), bucket count `B`, hidden size `H`, and the full `LmiConfig` including default `nprobe`. The router must be `Linear(d,H) → ReLU → Linear(H,B)` with row-major weights, an output-row bias, finite coefficients and finite intermediate logits. `nprobe` is in `1..=B`; input length must equal `d`. Logits rank directly because softmax preserves order. Equal logits, including signed zero, prefer the lower bucket ID. A hand-computable `d=2,H=3,B=4` test yields logits `[2,3,1,6]` and bucket order `[3,1,0,2]`. The native source still validates model weights per query; caching this validation is later performance work.
+
+### Compact postings and query path
+
+The serving representation is CSR-like: `boundaries: Vec<u64>` of length `B+1` and one contiguous `points: Vec<PointOffsetType>`. Bucket `b` borrows `points[boundaries[b]..boundaries[b+1]]`. Validation requires first boundary zero, monotonic boundaries, final boundary equal to point count, and bucket count matching the router/config. State open also bounds each offset by the segment's current physical vector count. The write path is a controlled test fixture only. It does not classify the corpus or construct fake production postings.
+
+For unfiltered dense nearest queries with no quantized vectors and semantically default parameters (`None` or `Some(SearchParams::default())`), trained `LmiIndex` runs the native router, unions selected borrowed posting ranges, sorts/deduplicates segment-local offsets, and calls `score_candidates`. The scorer filters mapping visibility/deletion and uses Qdrant's storage `RawScorer` and `TopK`. Exact queries, filters, nondefault parameters, quantized vectors and unsupported query kinds use the shared Plain index. GraphInline and multivector LMI configurations remain rejected. The trained path is proven by a fixture where the Plain top point is outside the selected bucket; learned search returns a different point, and both mutable and read-only restart searches agree.
+
+### Version 3 persistence and compatibility
+
+The index directory owns `lmi_state.json`, `lmi_router.bin`, and `lmi_postings.bin`. JSON metadata includes version 3, config, dimension, distance, datatype, preprocessing, total physical vector count, and router/posting binary-format identifiers. The binary files use existing bincode serialization for `MlpRouter` and `CompactPostings`. The test-only fixture writer validates state and atomically writes binaries before metadata. `LmiTrained` open requires all files, validates them, and never trains. Missing/truncated payloads or metadata mismatches fail index/segment open; corruption is not silently converted to Plain.
+
+Historical version 2 is **incompatible for direct open**: its router binary is a `DiskRouter { sample_offsets, router: Option<MlpRouter> }`, and its metadata lacks explicit preprocessing/datatype/binary-format fields. The compact posting binary itself uses the same field layout, but version 3 intentionally rejects version 2 rather than guessing the query input contract. A future deliberate adapter would need to validate the old distance/config and extract the nested router; no canonical artifact was copied or rewritten here. The small deterministic comparison is source-level for router logits, top buckets, posting ranges and candidate offsets: those algorithms are identical. Returned scores use Qdrant 1.19.2's current scorer and are not asserted byte-identical to the frozen branch.
+
+No stable Qdrant 1.19.2 vector-mapping generation token was identified. The learned files therefore belong exclusively to the same segment directory/generation. Dimension, distance, datatype, config and physical count are checked on open, but those checks alone cannot prove that an externally copied state belongs to another segment with equal shape. Do not copy state files between segments. The fixture deliberately persists inside the built segment and then reopens that exact path. Full live-point coverage/unique-bucket assignment is a future build-time guarantee; opening does not scan a huge corpus to prove it. This is the remaining semantic risk before database-owned training.
+
+### Restart, read-only, file ownership and lifecycle
+
+The current `VectorIndexReadEnum` read-only architecture now has a `ReadOnlyLmiIndex` variant. `preopen` schedules the three files, `open` loads and validates them through `UniversalReadFs`, and search uses the same routing and a generic form of the proven candidate scorer over read-only tracker/storage. The original mutable scorer API remains intact. Read-only live reload rejects newly appended points, because immutable postings cannot cover them; deletions remain filtered at query time. The mutable trained index rejects vector replacements/additions and requires segment rebuild. No model training occurs in either open path.
+
+`VectorIndex::files()` and `immutable_files()` enumerate the three LMI files for snapshot/file ownership. This is file-enumeration readiness, not full optimizer or snapshot lifecycle integration. The shell `Lmi {}` remains a Plain fallback; `LmiTrained` requires a valid persisted state. Collection-level optimizer configuration and production training are still absent.
+
+### Validation and remaining work
+
+Focused `lmi_static_119` tests cover hand-computable logits, tie ranking, invalid shapes/NaN/probe bounds, posting boundaries and empty buckets, candidate union/dedup and probe expansion, deliberate learned restriction, `None` versus explicit default parameters, exact/filter fallback, mutable restart, read-only open/search, file enumeration, nine corruption/mismatch cases, and real Float16 learned search. Existing candidate seam and LMI shell suites remain in place. Plain exact, batch equivalency, and four filtered HNSW cases were rerun after this port. Exact commands and counts are recorded in the final handoff.
+
+This stage is ready for a separate **database-owned training + scalable corpus routing** implementation task after reviewing the segment-generation limitation. It is not ready for G2: there is no production trainer, build/optimizer lifecycle, full corpus posting construction, representative large-scale state, or measured returned-recall/latency frontier.
+
+
+Implementation commit: `99509722c` (`LMI: serve versioned static state with read-only reopen`). The previous scorer and shell commits remain `4c678a649` and `6a624a304`; neither was squashed. No push was performed.
+
+Validation run for this stage:
+
+| Command | Result |
+|---|---|
+| `cargo test -p segment --test lmi_static_119 --locked` | 8 passed: router, postings, union/probes, learned restriction/restart/read-only, corruption matrix, Float16, deletion |
+| `cargo test -p segment --test candidate_scoring_119 --test lmi_shell_119 --test lmi_static_119 --locked` | 6 + 5 + 8 = 19 passed |
+| `cargo test -p segment --test integration exact_search_test --locked` | 1 Plain exact test passed |
+| `cargo test -p segment --test integration test_batch_and_single_request_equivalency --locked` | 1 HNSW batch/single equivalence test passed |
+| `cargo test -p segment --test integration test_filterable_hnsw --locked` | 4 filtered HNSW tests passed |
+| `cargo check -p segment -p collection --locked` | Passed |
+| `cargo check --workspace --locked` | Passed |
+| `git diff --cached --check` before implementation commit | Passed |
+
+The test-only fixture writer is guarded by the segment `testing` feature. The production `LmiTrained` open/search path has no Torch, KMeans, model fitting, or synthetic model generation. Production build of `LmiTrained` remains explicitly unsupported until database-owned training and full segment-builder lifecycle are ported.
