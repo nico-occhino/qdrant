@@ -9,12 +9,14 @@ use crate::data_types::vectors::QueryVector;
 use crate::id_tracker::{IdTrackerEnum, IdTrackerRead};
 use crate::index::hnsw_index::point_scorer::BatchFilteredSearcher;
 use crate::vector_storage::quantized::quantized_vectors::QuantizedVectors;
+use crate::vector_storage::raw_scorer::RawScorerBuilder;
 use crate::vector_storage::{VectorStorageEnum, VectorStorageRead};
 
 /// Score unique candidate offsets. This helper does not select the candidates.
 ///
 /// The mapping filter must run before the scorer: the scorer checks point and
 /// vector deletion, but it does not by itself enforce deferred visibility.
+/// Mutable-segment entry point retained for the existing candidate-scoring seam.
 pub fn score_candidates(
     query: &QueryVector,
     candidates: &[PointOffsetType],
@@ -23,6 +25,28 @@ pub fn score_candidates(
     vector_storage: &VectorStorageEnum,
     query_context: &VectorQueryContext,
 ) -> OperationResult<Vec<ScoredPointOffset>> {
+    score_candidates_generic(
+        query,
+        candidates,
+        top,
+        id_tracker,
+        vector_storage,
+        query_context,
+    )
+}
+
+pub fn score_candidates_generic<V, I>(
+    query: &QueryVector,
+    candidates: &[PointOffsetType],
+    top: usize,
+    id_tracker: &I,
+    vector_storage: &V,
+    query_context: &VectorQueryContext,
+) -> OperationResult<Vec<ScoredPointOffset>>
+where
+    V: VectorStorageRead + RawScorerBuilder,
+    I: IdTrackerRead,
+{
     if top == 0 {
         return Ok(Vec::new());
     }

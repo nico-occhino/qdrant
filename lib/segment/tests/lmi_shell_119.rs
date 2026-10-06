@@ -165,7 +165,7 @@ fn deleted_candidate_and_float16_use_real_storage() {
 }
 
 #[test]
-fn unported_trained_and_graph_inline_modes_fail_explicitly() {
+fn missing_trained_state_and_graph_inline_modes_fail_explicitly() {
     let source_root = tempfile::tempdir().unwrap();
     let source = build_simple_segment(source_root.path(), 2, Distance::Dot).unwrap();
     let mut config = source.config().clone();
@@ -178,7 +178,7 @@ fn unported_trained_and_graph_inline_modes_fail_explicitly() {
     let error = build_segment(target.path(), &config, None, true)
         .err()
         .expect("trained LMI must fail");
-    assert!(error.to_string().contains("not ported"));
+    assert!(error.to_string().contains("lmi_state.json"), "{error}");
 
     config
         .vector_data
@@ -191,6 +191,8 @@ fn unported_trained_and_graph_inline_modes_fail_explicitly() {
         .unwrap()
         .storage_type = VectorStorageType::GraphInline;
     let target = tempfile::tempdir().unwrap();
-    let error = build_segment(target.path(), &config, None, true).err().expect("GraphInline LMI must fail");
+    let error = build_segment(target.path(), &config, None, true)
+        .err()
+        .expect("GraphInline LMI must fail");
     assert!(error.to_string().contains("GraphInline"));
 }

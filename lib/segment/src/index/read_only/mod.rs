@@ -25,6 +25,8 @@ use crate::data_types::vectors::QueryVector;
 use crate::id_tracker::read_only_tracker_enum::ReadOnlyIdTrackerEnum;
 use crate::index::UniversalReadExt;
 use crate::index::hnsw_index::hnsw::read_only::ReadOnlyHNSWIndex;
+use crate::index::lmi_index::read_only::ReadOnlyLmiIndex;
+use crate::index::lmi_index::{LMI_POSTINGS_FILE, LMI_ROUTER_FILE, LMI_STATE_FILE};
 use crate::index::plain_vector_index::read_only::ReadOnlyPlainVectorIndex;
 use crate::index::sparse_index::indices_tracker::IndicesTracker;
 use crate::index::sparse_index::sparse_index_config::{SparseIndexConfig, SparseIndexType};
@@ -48,6 +50,7 @@ use crate::vector_storage::read_only::VectorStorageReadEnum;
 /// is rebuilt from the vector storage at open time.
 pub enum VectorIndexReadEnum<S: UniversalReadExt + 'static> {
     Plain(Box<ReadOnlyPlainVectorIndex<S>>),
+    Lmi(Box<ReadOnlyLmiIndex<S>>),
     Hnsw(Box<ReadOnlyHNSWIndex<S>>),
     SparseMutableRam(Box<ReadOnlySparseVectorIndex<S, InvertedIndexRam>>),
     SparseCompressedImmutableRamF32(
@@ -99,9 +102,13 @@ impl<S: UniversalReadExt + 'static> VectorIndexReadEnum<S> {
     ) -> OperationResult<()> {
         match &vector_config.index {
             Indexes::Plain {} => Ok(()),
-            Indexes::Lmi {} | Indexes::LmiTrained(_) => Err(OperationError::service_error(
-                "Read-only LMI open is not ported to Qdrant 1.19.2",
-            )),
+            Indexes::Lmi {} => Ok(()),
+            Indexes::LmiTrained(_) => {
+                for name in [LMI_STATE_FILE, LMI_ROUTER_FILE, LMI_POSTINGS_FILE] {
+                    fs.schedule_open(&path.join(name), None, None);
+                }
+                Ok(())
+            }
             Indexes::Hnsw(hnsw_config) => {
                 ReadOnlyHNSWIndex::<S>::preopen(fs, path, hnsw_config, populate_override)
             }
@@ -197,11 +204,22 @@ impl<S: UniversalReadExt + 'static> VectorIndexReadEnum<S> {
             quantized_vectors,
         } = args;
         Ok(match &vector_config.index {
-            Indexes::Lmi {} | Indexes::LmiTrained(_) => {
-                return Err(OperationError::service_error(
-                    "Read-only LMI open is not ported to Qdrant 1.19.2",
-                ));
-            }
+            Indexes::Lmi {} => Self::Plain(Box::new(ReadOnlyPlainVectorIndex::open(
+                id_tracker,
+                vector_storage,
+                quantized_vectors,
+                payload_index,
+            )?)),
+            Indexes::LmiTrained(config) => Self::Lmi(Box::new(ReadOnlyLmiIndex::open(
+                fs,
+                path,
+                vector_config,
+                *config,
+                id_tracker,
+                vector_storage,
+                quantized_vectors,
+                payload_index,
+            )?)),
             Indexes::Plain {} => Self::Plain(Box::new(ReadOnlyPlainVectorIndex::open(
                 id_tracker,
                 vector_storage,
@@ -338,6 +356,7 @@ impl<S: UniversalReadExt + 'static> VectorIndexReadEnum<S> {
     pub fn is_on_disk(&self) -> bool {
         match self {
             Self::Plain(_) => false,
+            Self::Lmi(_) => false,
             Self::Hnsw(index) => index.is_on_disk(),
             Self::SparseMutableRam(index) => index.inverted_index().is_on_disk(),
             Self::SparseCompressedImmutableRamF32(index) => index.inverted_index().is_on_disk(),
@@ -352,6 +371,7 @@ impl<S: UniversalReadExt + 'static> VectorIndexReadEnum<S> {
     pub fn populate(&self) -> OperationResult<()> {
         match self {
             Self::Plain(_) => {}
+            Self::Lmi(_) => {}
             Self::Hnsw(index) => index.populate()?,
             Self::SparseMutableRam(_) => {}
             Self::SparseCompressedImmutableRamF32(_) => {}
@@ -367,6 +387,7 @@ impl<S: UniversalReadExt + 'static> VectorIndexReadEnum<S> {
     pub fn clear_cache(&self) -> OperationResult<()> {
         match self {
             Self::Plain(_) => {}
+            Self::Lmi(_) => {}
             Self::Hnsw(index) => index.clear_cache()?,
             Self::SparseMutableRam(_) => {}
             Self::SparseCompressedImmutableRamF32(_) => {}
@@ -390,6 +411,7 @@ impl<S: UniversalReadExt + 'static> VectorIndexRead for VectorIndexReadEnum<S> {
         query_context: &VectorQueryContext,
     ) -> OperationResult<Vec<Vec<ScoredPointOffset>>> {
         match self {
+            Self::Lmi(index) => index.search(vectors, filter, top, params, query_context),
             Self::Plain(index) => index.search(vectors, filter, top, params, query_context),
             Self::Hnsw(index) => index.search(vectors, filter, top, params, query_context),
             Self::SparseMutableRam(index) => {
@@ -418,6 +440,7 @@ impl<S: UniversalReadExt + 'static> VectorIndexRead for VectorIndexReadEnum<S> {
 
     fn get_telemetry_data(&self, detail: TelemetryDetail) -> VectorIndexSearchesTelemetry {
         match self {
+            Self::Lmi(index) => index.get_telemetry_data(detail),
             Self::Plain(index) => index.get_telemetry_data(detail),
             Self::Hnsw(index) => index.get_telemetry_data(detail),
             Self::SparseMutableRam(index) => index.get_telemetry_data(detail),
@@ -432,6 +455,7 @@ impl<S: UniversalReadExt + 'static> VectorIndexRead for VectorIndexReadEnum<S> {
 
     fn indexed_vector_count(&self) -> usize {
         match self {
+            Self::Lmi(index) => index.indexed_vector_count(),
             Self::Plain(index) => index.indexed_vector_count(),
             Self::Hnsw(index) => index.indexed_vector_count(),
             Self::SparseMutableRam(index) => index.indexed_vector_count(),
@@ -446,6 +470,7 @@ impl<S: UniversalReadExt + 'static> VectorIndexRead for VectorIndexReadEnum<S> {
 
     fn size_of_searchable_vectors_in_bytes(&self) -> usize {
         match self {
+            Self::Lmi(index) => index.size_of_searchable_vectors_in_bytes(),
             Self::Plain(index) => index.size_of_searchable_vectors_in_bytes(),
             Self::Hnsw(index) => index.size_of_searchable_vectors_in_bytes(),
             Self::SparseMutableRam(index) => index.size_of_searchable_vectors_in_bytes(),
@@ -472,6 +497,7 @@ impl<S: UniversalReadExt + 'static> VectorIndexRead for VectorIndexReadEnum<S> {
         hw_counter: &HardwareCounterCell,
     ) -> OperationResult<usize> {
         match self {
+            Self::Lmi(index) => index.fill_idf_statistics(idf, corpus, is_stopped, hw_counter),
             Self::Plain(index) => index.fill_idf_statistics(idf, corpus, is_stopped, hw_counter),
             Self::Hnsw(index) => index.fill_idf_statistics(idf, corpus, is_stopped, hw_counter),
             Self::SparseMutableRam(index) => {
@@ -500,6 +526,7 @@ impl<S: UniversalReadExt + 'static> VectorIndexRead for VectorIndexReadEnum<S> {
 
     fn is_index(&self) -> bool {
         match self {
+            Self::Lmi(index) => index.is_index(),
             Self::Plain(index) => index.is_index(),
             Self::Hnsw(index) => index.is_index(),
             Self::SparseMutableRam(index) => index.is_index(),

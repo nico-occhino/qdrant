@@ -6,7 +6,7 @@ use futures::future::BoxFuture;
 
 use super::VectorIndexReadEnum;
 use crate::common::live_reload::LiveReload;
-use crate::common::operation_error::OperationResult;
+use crate::common::operation_error::{OperationError, OperationResult};
 use crate::index::UniversalReadExt;
 
 impl<S: UniversalReadExt> LiveReload for VectorIndexReadEnum<S> {
@@ -42,6 +42,10 @@ impl<S: UniversalReadExt> LiveReload for VectorIndexReadEnum<S> {
     ) -> OperationResult<()> {
         match self {
             Self::SparseMutableRam(index) => index.live_reload(new_points),
+            Self::Lmi(_) if !new_points.is_empty() => Err(OperationError::service_error(
+                "Trained LMI requires segment rebuild for newly appended points",
+            )),
+            Self::Lmi(_) => Ok(()),
             Self::Plain(_)
             | Self::Hnsw(_)
             | Self::SparseCompressedImmutableRamF32(_)

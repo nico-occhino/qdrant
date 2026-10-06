@@ -2,10 +2,21 @@
 //! Training, routing state, postings, persistence, and optimizer hooks are absent.
 
 mod config;
+mod postings;
+pub mod read_only;
+mod routing;
+mod state;
 pub use config::LmiConfig;
+pub use postings::CompactPostings;
+pub use routing::{LinearLayer, LmiRoutingState, MlpRouter, RouterLayer};
+#[cfg(feature = "testing")]
+pub use state::save_fixture_state;
+pub use state::{
+    LMI_POSTINGS_FILE, LMI_ROUTER_FILE, LMI_STATE_FILE, LmiStateMetadata, RouterPreprocessing,
+};
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -14,34 +25,32 @@ use common::counter::hardware_counter::HardwareCounterCell;
 use common::types::{PointOffsetType, ScoredPointOffset, TelemetryDetail};
 use sparse::common::types::DimId;
 
-use crate::common::operation_error::OperationResult;
+use crate::common::operation_error::{OperationError, OperationResult};
 use crate::data_types::query_context::VectorQueryContext;
-#[cfg(feature = "testing")]
 use crate::data_types::vectors::VectorInternal;
 use crate::data_types::vectors::{QueryVector, VectorRef};
 use crate::id_tracker::IdTrackerEnum;
-#[cfg(feature = "testing")]
 use crate::index::candidate_scoring::score_candidates;
 use crate::index::plain_vector_index::PlainVectorIndex;
 use crate::index::{VectorIndex, VectorIndexRead};
 use crate::telemetry::VectorIndexSearchesTelemetry;
-use crate::types::{Filter, SearchParams};
-use crate::vector_storage::VectorStorageEnum;
+use crate::types::{Distance, Filter, SearchParams, VectorDataConfig};
 use crate::vector_storage::quantized::quantized_vectors::QuantizedVectors;
+use crate::vector_storage::{VectorStorageEnum, VectorStorageRead};
 
 /// Plain-backed physical-index shell. Synthetic candidates exist only under
 /// the test feature; production queries take the exact Plain path.
 #[derive(Debug)]
 pub struct LmiIndex {
     plain: PlainVectorIndex,
-    #[cfg(feature = "testing")]
     id_tracker: Arc<AtomicRefCell<IdTrackerEnum>>,
-    #[cfg(feature = "testing")]
     vector_storage: Arc<AtomicRefCell<VectorStorageEnum>>,
-    #[cfg(feature = "testing")]
     quantized_vectors: Arc<AtomicRefCell<Option<QuantizedVectors>>>,
     #[cfg(feature = "testing")]
     synthetic_candidates: parking_lot::Mutex<Option<Vec<PointOffsetType>>>,
+    routing_state: Option<LmiRoutingState>,
+    routing_distance: Option<Distance>,
+    state_files: Vec<PathBuf>,
 }
 
 impl LmiIndex {
@@ -59,15 +68,44 @@ impl LmiIndex {
         );
         Self {
             plain,
-            #[cfg(feature = "testing")]
             id_tracker,
-            #[cfg(feature = "testing")]
             vector_storage,
-            #[cfg(feature = "testing")]
             quantized_vectors,
             #[cfg(feature = "testing")]
             synthetic_candidates: parking_lot::Mutex::new(None),
+            routing_state: None,
+            routing_distance: None,
+            state_files: Vec::new(),
         }
+    }
+
+    pub(crate) fn open_trained(
+        path: &Path,
+        vector_config: &VectorDataConfig,
+        config: LmiConfig,
+        id_tracker: Arc<AtomicRefCell<IdTrackerEnum>>,
+        vector_storage: Arc<AtomicRefCell<VectorStorageEnum>>,
+        quantized_vectors: Arc<AtomicRefCell<Option<QuantizedVectors>>>,
+        payload_index: Arc<AtomicRefCell<crate::index::struct_payload_index::StructPayloadIndex>>,
+    ) -> OperationResult<Self> {
+        let storage = vector_storage.borrow();
+        let routing_state = state::load_local(
+            path,
+            config,
+            vector_config,
+            storage.datatype(),
+            storage.total_vector_count(),
+        )?;
+        drop(storage);
+        let mut index = Self::new(id_tracker, vector_storage, quantized_vectors, payload_index);
+        index.routing_state = Some(routing_state);
+        index.routing_distance = Some(vector_config.distance);
+        index.state_files = state::state_files(path);
+        Ok(index)
+    }
+
+    pub fn routing_state(&self) -> Option<&LmiRoutingState> {
+        self.routing_state.as_ref()
     }
 
     /// Install deterministic offsets only in test builds. They are never persisted.
@@ -76,7 +114,6 @@ impl LmiIndex {
         *self.synthetic_candidates.lock() = Some(candidates);
     }
 
-    #[cfg(feature = "testing")]
     fn supports_candidates(
         &self,
         vectors: &[&QueryVector],
@@ -101,15 +138,55 @@ impl VectorIndexRead for LmiIndex {
         params: Option<&SearchParams>,
         query_context: &VectorQueryContext,
     ) -> OperationResult<Vec<Vec<ScoredPointOffset>>> {
-        #[cfg(feature = "testing")]
         if self.supports_candidates(vectors, filter, params) {
+            if let Some(state) = &self.routing_state {
+                let tracker = self.id_tracker.borrow();
+                let storage = self.vector_storage.borrow();
+                return vectors
+                    .iter()
+                    .map(|query| {
+                        let routed_query = match (self.routing_distance, *query) {
+                            (
+                                Some(Distance::Cosine),
+                                QueryVector::Nearest(VectorInternal::Dense(vector)),
+                            ) => QueryVector::Nearest(VectorInternal::Dense(
+                                Distance::Cosine.preprocess_vector::<f32>(vector.clone()),
+                            )),
+                            _ => (*query).clone(),
+                        };
+                        let candidates = state
+                            .candidates_for_query(&routed_query, &query_context.is_stopped())?
+                            .ok_or_else(|| {
+                                OperationError::service_error(
+                                    "LMI candidate routing received unsupported query",
+                                )
+                            })?;
+                        score_candidates(
+                            query,
+                            &candidates,
+                            top,
+                            &*tracker,
+                            &*storage,
+                            query_context,
+                        )
+                    })
+                    .collect();
+            }
+            #[cfg(feature = "testing")]
             if let Some(candidates) = self.synthetic_candidates.lock().clone() {
                 let tracker = self.id_tracker.borrow();
                 let storage = self.vector_storage.borrow();
                 return vectors
                     .iter()
                     .map(|query| {
-                        score_candidates(query, &candidates, top, &tracker, &storage, query_context)
+                        score_candidates(
+                            query,
+                            &candidates,
+                            top,
+                            &*tracker,
+                            &*storage,
+                            query_context,
+                        )
                     })
                     .collect();
             }
@@ -123,7 +200,10 @@ impl VectorIndexRead for LmiIndex {
     }
 
     fn indexed_vector_count(&self) -> usize {
-        self.plain.indexed_vector_count()
+        self.routing_state.as_ref().map_or_else(
+            || self.plain.indexed_vector_count(),
+            |state| state.postings().point_count(),
+        )
     }
 
     fn size_of_searchable_vectors_in_bytes(&self) -> usize {
@@ -142,13 +222,17 @@ impl VectorIndexRead for LmiIndex {
     }
 
     fn is_index(&self) -> bool {
-        false
+        self.routing_state.is_some()
     }
 }
 
 impl VectorIndex for LmiIndex {
     fn files(&self) -> Vec<PathBuf> {
-        Vec::new()
+        self.state_files.clone()
+    }
+
+    fn immutable_files(&self) -> Vec<PathBuf> {
+        self.state_files.clone()
     }
 
     fn update_vector(
@@ -157,6 +241,11 @@ impl VectorIndex for LmiIndex {
         vector: Option<VectorRef>,
         hw_counter: &HardwareCounterCell,
     ) -> OperationResult<()> {
+        if self.routing_state.is_some() && vector.is_some() {
+            return Err(OperationError::service_error(
+                "Trained LMI requires segment rebuild for vector updates",
+            ));
+        }
         self.plain.update_vector(id, vector, hw_counter)
     }
 
@@ -166,6 +255,11 @@ impl VectorIndex for LmiIndex {
         vector: Option<&[u8]>,
         hw_counter: &HardwareCounterCell,
     ) -> OperationResult<()> {
+        if self.routing_state.is_some() && vector.is_some() {
+            return Err(OperationError::service_error(
+                "Trained LMI requires segment rebuild for vector updates",
+            ));
+        }
         self.plain.update_vector_raw(id, vector, hw_counter)
     }
 }

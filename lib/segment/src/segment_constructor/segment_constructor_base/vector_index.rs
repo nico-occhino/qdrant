@@ -79,11 +79,15 @@ pub(crate) fn open_vector_index(
             quantized_vectors,
             payload_index,
         )),
-        Indexes::LmiTrained(_) => {
-            return Err(OperationError::service_error(
-                "Trained LMI persistence is not ported to Qdrant 1.19.2",
-            ));
-        }
+        Indexes::LmiTrained(config) => VectorIndexEnum::Lmi(LmiIndex::open_trained(
+            path,
+            vector_config,
+            *config,
+            id_tracker,
+            vector_storage,
+            quantized_vectors,
+            payload_index,
+        )?),
         Indexes::Hnsw(hnsw_config) => VectorIndexEnum::Hnsw(HNSWIndex::open(HnswIndexOpenArgs {
             path,
             id_tracker,
