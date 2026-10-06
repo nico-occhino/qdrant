@@ -1,0 +1,41 @@
+{
+  "status": "partial Phase G; no full returned-recall frontier",
+  "focused_tests": {
+    "passed": 41,
+    "failed": 0,
+    "ignored": 1
+  },
+  "export_rerun": {
+    "passed": 1,
+    "failed": 0,
+    "seconds": 10.94,
+    "gold_sha256": "81858d1b7fd68bafda3ae1066998e263171387e2ffc20a7d4eb42d273fd1a432",
+    "router_json_sha256": "8d1116b6ebc5164373582ff2d3c22a059f213908ee73861cea21fa1629ce6a64"
+  },
+  "native_smoke_one": {
+    "passed": 1,
+    "failed": 0,
+    "seconds": 26.76,
+    "p4_id_set_parity_failures": 0
+  },
+  "native_pilot_100": {
+    "diagnostic": true,
+    "p4_id_set_parity": "100/100",
+    "candidate_count_parity": "100/100",
+    "original_test_exit": "failed only strict result ordering on 8 rows; corrected to set comparison"
+  },
+  "native_full": {
+    "accepted": false,
+    "complete_query_groups": 45,
+    "reason": "storage-intensive random Float16 scoring; stopped explicitly"
+  },
+  "preserved_index_sha256": {
+    "state": "61cb61886af0ccbda56f013ac4fe5496ad688b7e5831deb67436f53036e4e459",
+    "router": "35df7ec2613687950ea422b708c7fe2ad18ebc61776724e5a68dc7773c0ac340",
+    "postings": "c82b1cd646d4b349fdc4d5b6a3b5b34154ddcc710cda4af058cc1cc035742bf1"
+  },
+  "git_diff_check": "pass",
+  "tracked_diff_stat": "4 files changed, 124 insertions(+), 7 deletions(-); all pre-existing before Phase G",
+  "committed": false,
+  "pushed": false
+}

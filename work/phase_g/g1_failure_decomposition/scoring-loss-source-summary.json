@@ -1,0 +1,250 @@
+{
+  "queries_with_positive_scoring_output_loss": 295,
+  "queries_all_gold_distances_zero": 10,
+  "queries_any_gold_zero": 44,
+  "queries_all_10_returned_within_gold_d10_plus_1e-7": 40,
+  "mean_returned_within_gold_radius": 8.92542372881356,
+  "examples": [
+    {
+      "query_row": 28,
+      "gold_d10": 0.09581507742404938,
+      "gold_zero_count": 0,
+      "official_recall": 0.9,
+      "candidate_gold_coverage": 1.0,
+      "returned": [
+        {
+          "id": 8335860,
+          "exact_source_cosine_distance": 0.0835332725748541,
+          "stored_score": 0.9165032,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 8311490,
+          "exact_source_cosine_distance": 0.08442083239999465,
+          "stored_score": 0.9157787,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 250938,
+          "exact_source_cosine_distance": 0.0854783967836551,
+          "stored_score": 0.91477734,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 6263833,
+          "exact_source_cosine_distance": 0.0880880717877135,
+          "stored_score": 0.912094,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 2136001,
+          "exact_source_cosine_distance": 0.09170300582207003,
+          "stored_score": 0.9082844,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 6869206,
+          "exact_source_cosine_distance": 0.09353357130183804,
+          "stored_score": 0.9067733,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 617530,
+          "exact_source_cosine_distance": 0.09403518304440495,
+          "stored_score": 0.90600145,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 7542252,
+          "exact_source_cosine_distance": 0.09428607083282947,
+          "stored_score": 0.9058492,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 8460834,
+          "exact_source_cosine_distance": 0.09554542887062278,
+          "stored_score": 0.90455055,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 2444882,
+          "exact_source_cosine_distance": 0.09585851376941534,
+          "stored_score": 0.90437883,
+          "within_gold_d10_1e-7": false,
+          "official_gold_top10": false
+        }
+      ],
+      "returned_within_gold_radius": 9
+    },
+    {
+      "query_row": 55,
+      "gold_d10": 2.220446049250313e-16,
+      "gold_zero_count": 10,
+      "official_recall": 0.7,
+      "candidate_gold_coverage": 1.0,
+      "returned": [
+        {
+          "id": 913633,
+          "exact_source_cosine_distance": 8.717407556702028e-06,
+          "stored_score": 1.0003074,
+          "within_gold_d10_1e-7": false,
+          "official_gold_top10": false
+        },
+        {
+          "id": 8278647,
+          "exact_source_cosine_distance": 8.717407556702028e-06,
+          "stored_score": 1.0003074,
+          "within_gold_d10_1e-7": false,
+          "official_gold_top10": false
+        },
+        {
+          "id": 8278390,
+          "exact_source_cosine_distance": 8.717407556702028e-06,
+          "stored_score": 1.0003074,
+          "within_gold_d10_1e-7": false,
+          "official_gold_top10": false
+        },
+        {
+          "id": 8979,
+          "exact_source_cosine_distance": 2.220446049250313e-16,
+          "stored_score": 1.0001721,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 22058,
+          "exact_source_cosine_distance": 2.220446049250313e-16,
+          "stored_score": 1.0001721,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 21884,
+          "exact_source_cosine_distance": 2.220446049250313e-16,
+          "stored_score": 1.0001721,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 19500,
+          "exact_source_cosine_distance": 2.220446049250313e-16,
+          "stored_score": 1.0001721,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 19607,
+          "exact_source_cosine_distance": 2.220446049250313e-16,
+          "stored_score": 1.0001721,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 33745,
+          "exact_source_cosine_distance": 2.220446049250313e-16,
+          "stored_score": 1.0001721,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 27880,
+          "exact_source_cosine_distance": 2.220446049250313e-16,
+          "stored_score": 1.0001721,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        }
+      ],
+      "returned_within_gold_radius": 7
+    },
+    {
+      "query_row": 84,
+      "gold_d10": 0.14714252948760986,
+      "gold_zero_count": 0,
+      "official_recall": 0.9,
+      "candidate_gold_coverage": 1.0,
+      "returned": [
+        {
+          "id": 8648923,
+          "exact_source_cosine_distance": 0.12170605842348703,
+          "stored_score": 0.87851894,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 4269662,
+          "exact_source_cosine_distance": 0.12615429156017344,
+          "stored_score": 0.8740466,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 35105,
+          "exact_source_cosine_distance": 0.1308583005149877,
+          "stored_score": 0.8690883,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 3434161,
+          "exact_source_cosine_distance": 0.1338595351626939,
+          "stored_score": 0.8661227,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 2160901,
+          "exact_source_cosine_distance": 0.13475916917277653,
+          "stored_score": 0.86530226,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 1476384,
+          "exact_source_cosine_distance": 0.13548126306429575,
+          "stored_score": 0.8645172,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 1613753,
+          "exact_source_cosine_distance": 0.14274619332082572,
+          "stored_score": 0.8574888,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 1507065,
+          "exact_source_cosine_distance": 0.14273376343724076,
+          "stored_score": 0.8574109,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 5004878,
+          "exact_source_cosine_distance": 0.1468224769205324,
+          "stored_score": 0.8531401,
+          "within_gold_d10_1e-7": true,
+          "official_gold_top10": true
+        },
+        {
+          "id": 6075733,
+          "exact_source_cosine_distance": 0.14720745043137806,
+          "stored_score": 0.8529093,
+          "within_gold_d10_1e-7": false,
+          "official_gold_top10": false
+        }
+      ],
+      "returned_within_gold_radius": 9
+    }
+  ],
+  "interpretation": "Original source Float16 rows and original Float32 query were recomputed in Float64. Values are diagnostic and not a substitute for the official gold or Qdrant stored Float16 ranking. Official ID-overlap remains the benchmark."
+}

@@ -1,0 +1,24 @@
+{
+  "classification": "ROUTER-LIMITED overall, MIXED in tail, SCORING/SEMANTIC subpopulation",
+  "status": "MEASURED on all 9980 accepted queries at P=4",
+  "mean_oracle_4": 0.9493987975951904,
+  "mean_router_gold_coverage_4": 0.8188577154308617,
+  "mean_actual_recall_4": 0.8152505010020041,
+  "mean_partition_loss_4": 0.05060120240480962,
+  "mean_router_loss_4": 0.13054108216432866,
+  "mean_scoring_output_loss_4": 0.0036072144288577146,
+  "tail_recall_le_0_3": {
+    "queries": 750,
+    "mean_partition_loss": 0.22266666666666668,
+    "mean_router_loss": 0.5748,
+    "mean_scoring_output_loss": 0.0076
+  },
+  "scoring_loss_caveat": "295 queries have positive candidate-coverage minus official ID-overlap recall; 10 of these have all ten official distances approximately zero. Float16 ranking and dense ties/near duplicates are plausible factors, but source-vector recalculation is diagnostic, not a complete causal proof.",
+  "why": "Router gap 0.13054 exceeds partition gap 0.05060. Oracle at 4 reaches 0.94940, establishing substantial router headroom in this fixed partition. Tail query gaps also predominantly router-related. Do not treat deterministic decomposition correlations as causal effects.",
+  "artifacts": [
+    "gold-buckets.jsonl",
+    "per-query.jsonl",
+    "summary.json",
+    "scoring-loss-source-summary.json"
+  ]
+}

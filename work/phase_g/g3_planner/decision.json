@@ -1,0 +1,16 @@
+{
+  "classification": "WORKABLE WITH LIMITATIONS",
+  "status": "MEASURED small synthetic filter fixture and live REST dispatch; three-way physical-index planner deferred",
+  "current_path": "Segment chooses one configured VectorIndexEnum. HNSW has an internal Plain-vs-graph cardinality planner. LMI uses StaticLearned for supported unfiltered default nearest requests; filtered/nondefault/quantized requests delegate to Plain.",
+  "rest_evidence": "rest-dispatch.json: no_params and default_params each had one StaticLearned marker; exact, hnsw_ef, quantization_ignore and has_id_filter had no learned marker, all reached LmiIndex::search; learned hashes unchanged.",
+  "filter_evidence": "filter-small.json: actual and estimated cardinalities were 1000,500,100,10,1, and filtered results equalled exact Plain at all five selectivities.",
+  "planner_policy": "Existing explicit LMI dispatch is the appropriate bounded policy today: exact/non-default/filtered -> Plain, supported nearest/default -> LMI. HNSW cannot also be selected for the same field under current config and enum. No new learned cost model or duplicate rule layer was added.",
+  "reason_three_way_planner_deferred": "Collection validation rejects per-vector HNSW and LMI; Segment.VectorData has one VectorIndexEnum; builder/open/read-only/snapshot/telemetry each assume one index object. A local if-statement would not create a second physical index.",
+  "future_filtered_options": [
+    "selective Plain via cardinality threshold",
+    "LMI postings intersected with filter",
+    "progressive nprobe",
+    "fallback if fewer than k valid candidates"
+  ],
+  "risk": "The synthetic fixture demonstrates correctness of current fallback, not native filtered LMI efficiency or production-size filter performance."
+}

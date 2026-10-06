@@ -1,0 +1,172 @@
+{
+  "cases": [
+    {
+      "case": "no_params",
+      "request_options": {},
+      "status": "ok",
+      "returned_ids": [
+        1831320,
+        7535354,
+        3003515,
+        5278218,
+        8190596,
+        9060635,
+        210839,
+        5805329,
+        302877,
+        10003215
+      ],
+      "log_static_learned": 1,
+      "log_plain": 0,
+      "log_lmi_search": 1,
+      "log_excerpt": [
+        "[LMI-DUMMY] search batch=1 top=10 filtered=false params=false",
+        "[LMI-SCAFFOLD] candidate_source=StaticLearned candidate_count=23204"
+      ]
+    },
+    {
+      "case": "default_params",
+      "request_options": {
+        "params": {}
+      },
+      "status": "ok",
+      "returned_ids": [
+        1831320,
+        7535354,
+        3003515,
+        5278218,
+        8190596,
+        9060635,
+        210839,
+        5805329,
+        302877,
+        10003215
+      ],
+      "log_static_learned": 1,
+      "log_plain": 0,
+      "log_lmi_search": 1,
+      "log_excerpt": [
+        "[LMI-DUMMY] search batch=1 top=10 filtered=false params=true",
+        "[LMI-SCAFFOLD] candidate_source=StaticLearned candidate_count=23204"
+      ]
+    },
+    {
+      "case": "exact",
+      "request_options": {
+        "params": {
+          "exact": true
+        }
+      },
+      "status": "ok",
+      "returned_ids": [
+        1831320,
+        7535354,
+        7059014,
+        7563483,
+        3003515,
+        5278218,
+        8190596,
+        9060635,
+        5509896,
+        210839
+      ],
+      "log_static_learned": 0,
+      "log_plain": 0,
+      "log_lmi_search": 1,
+      "log_excerpt": [
+        "[LMI-DUMMY] search batch=1 top=10 filtered=false params=true"
+      ]
+    },
+    {
+      "case": "hnsw_ef",
+      "request_options": {
+        "params": {
+          "hnsw_ef": 64
+        }
+      },
+      "status": "ok",
+      "returned_ids": [
+        1831320,
+        7535354,
+        7059014,
+        7563483,
+        3003515,
+        5278218,
+        8190596,
+        9060635,
+        5509896,
+        210839
+      ],
+      "log_static_learned": 0,
+      "log_plain": 0,
+      "log_lmi_search": 1,
+      "log_excerpt": [
+        "[LMI-DUMMY] search batch=1 top=10 filtered=false params=true"
+      ]
+    },
+    {
+      "case": "quantization_ignore",
+      "request_options": {
+        "params": {
+          "quantization": {
+            "ignore": true
+          }
+        }
+      },
+      "status": "ok",
+      "returned_ids": [
+        1831320,
+        7535354,
+        7059014,
+        7563483,
+        3003515,
+        5278218,
+        8190596,
+        9060635,
+        5509896,
+        210839
+      ],
+      "log_static_learned": 0,
+      "log_plain": 0,
+      "log_lmi_search": 1,
+      "log_excerpt": [
+        "[LMI-DUMMY] search batch=1 top=10 filtered=false params=true"
+      ]
+    },
+    {
+      "case": "has_id_filter",
+      "request_options": {
+        "filter": {
+          "must": [
+            {
+              "has_id": [
+                1
+              ]
+            }
+          ]
+        }
+      },
+      "status": "ok",
+      "returned_ids": [
+        1
+      ],
+      "log_static_learned": 0,
+      "log_plain": 0,
+      "log_lmi_search": 1,
+      "log_excerpt": [
+        "[LMI-DUMMY] search batch=1 top=10 filtered=true params=false"
+      ]
+    }
+  ],
+  "learned_hashes_before": {
+    "lmi_state.json": "61cb61886af0ccbda56f013ac4fe5496ad688b7e5831deb67436f53036e4e459",
+    "lmi_router.bin": "35df7ec2613687950ea422b708c7fe2ad18ebc61776724e5a68dc7773c0ac340",
+    "lmi_postings.bin": "c82b1cd646d4b349fdc4d5b6a3b5b34154ddcc710cda4af058cc1cc035742bf1"
+  },
+  "learned_hashes_after": {
+    "lmi_state.json": "61cb61886af0ccbda56f013ac4fe5496ad688b7e5831deb67436f53036e4e459",
+    "lmi_router.bin": "35df7ec2613687950ea422b708c7fe2ad18ebc61776724e5a68dc7773c0ac340",
+    "lmi_postings.bin": "c82b1cd646d4b349fdc4d5b6a3b5b34154ddcc710cda4af058cc1cc035742bf1"
+  },
+  "unchanged": true
+}

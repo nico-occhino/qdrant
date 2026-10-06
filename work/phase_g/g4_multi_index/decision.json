@@ -1,0 +1,63 @@
+{
+  "classification": "MULTI-INDEX FEASIBLE BUT REQUIRES MAJOR REFACTOR",
+  "status": "SOURCE AUDIT; no bounded prototype because representing both indexes requires cross-cutting config, segment, builder, snapshot and telemetry changes",
+  "shared_storage_feasible": "HNSWIndex and LmiIndex constructors both take Arc<AtomicRefCell<VectorStorageEnum>>, IdTrackerEnum and payload index handles. Two auxiliary indexes can theoretically share these authoritative structures without copying vectors.",
+  "one_index_assumptions": [
+    {
+      "location": "lib/segment/src/types.rs::VectorDataConfig.index / Indexes",
+      "kind": "representation",
+      "classification": "expensive architectural change"
+    },
+    {
+      "location": "lib/segment/src/segment/mod.rs::VectorData.vector_index",
+      "kind": "one enum per vector name",
+      "classification": "expensive architectural change"
+    },
+    {
+      "location": "lib/segment/src/segment_constructor/segment_constructor_base/vector_index.rs",
+      "kind": "one open/build match arm",
+      "classification": "expensive architectural change"
+    },
+    {
+      "location": "lib/segment/src/segment_constructor/segment_builder.rs",
+      "kind": "one build per vector field in temporary segment",
+      "classification": "expensive architectural change"
+    },
+    {
+      "location": "lib/segment/src/segment/read_view/search.rs",
+      "kind": "one dispatch target",
+      "classification": "expensive architectural change"
+    },
+    {
+      "location": "lib/segment/src/index/read_only/mod.rs",
+      "kind": "one read-only variant",
+      "classification": "expensive architectural change"
+    },
+    {
+      "location": "lib/segment/src/segment/snapshot.rs",
+      "kind": "files enumerated from one index",
+      "classification": "easy to generalize after representation change"
+    },
+    {
+      "location": "lib/segment/src/segment/read_view/info.rs",
+      "kind": "indexed vector count from one index",
+      "classification": "needs explicit meaning, not additive"
+    },
+    {
+      "location": "lib/collection/src/config.rs / operations/types.rs",
+      "kind": "per-vector HNSW/LMI exclusivity",
+      "classification": "intentional current invariant; redesign required"
+    }
+  ],
+  "storage_bytes": {
+    "authoritative_float16_payload": 15544613376,
+    "measured_lmi_auxiliary": 49569750,
+    "measured_hnsw_100k_m16_auxiliary": 3857946,
+    "linear_hnsw_10_12m_estimate_m16": 390431504,
+    "combined_auxiliary_estimate_if_same_hnsw_density": 440001254,
+    "caveat": "HNSW 10.12M is an unvalidated linear extrapolation from the Phase F 99,780 indexed-vector m=16 build; do not quote as measured 10M bytes. Shared vector payload is counted once."
+  },
+  "lifecycle": "SegmentBuilder already builds a replacement in a temporary directory then renames and reloads it. A multi-index representation should build/validate both auxiliary structures against target offsets before publication, enumerate both for snapshots, and reject an incomplete pair on open. Current code builds only one and does not prove atomic multi-index publication.",
+  "prototype_status": "DEFERRED: a toy pair of objects sharing an Arc would only restate the constructor signature and would not prove optimizer, restart, snapshot or planner semantics. No large architectural refactor is justified before Phase H requirements are fixed.",
+  "dli_cli_implication": "Each future learned index must satisfy shared-offset validity, build/open/files/read-only/search contracts and segment lifecycle. A multi-index planner needs an explicit per-field set of physical indexes rather than overloading the current single enum."
+}

@@ -1,0 +1,10 @@
+{
+  "status": "interrupted/incomplete; not accepted frontier",
+  "valid_rows_written": 273,
+  "has_torn_last_line": true,
+  "complete_queries": 45,
+  "additional_probe_rows": 3,
+  "accepted_benchmark": false,
+  "reason": "6x repeated random native scoring caused severe long-running file-backed I/O; stopped to preserve existing index and machine responsiveness",
+  "sha256": "36ace6bc13ce26452c57e82fac872048c16ec5007a007c679389ef5d1620c3c6"
+}

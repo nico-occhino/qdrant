@@ -1,0 +1,22 @@
+{
+  "phase_g_status": "PARTIAL: G1/G3/G4 complete, G2 returned-recall frontier incomplete; Phase G acceptance criteria not met",
+  "answers": {
+    "static_failure": "Mainly router-limited at P=4 (oracle .9494, router coverage .8189, actual .8153); mixed tail and small Float16/tie semantic subgroup.",
+    "probe_frontier": "Analytic all-query coverage/candidate curve and 100-query native pilot only. No full returned-recall Pareto operating point can be selected.",
+    "access_path": "Current supported unfiltered/default nearest -> LMI; exact/nondefault/filter -> Plain. HNSW internal filter planner is separate.",
+    "filtered_queries": "Five synthetic selectivities all equal exact Plain; no learned filtered path or crossover threshold measured.",
+    "multi_index": "Shared authoritative vectors feasible, simultaneous HNSW+LMI requires major config/enum/builder/open/snapshot/telemetry refactor.",
+    "dli": "Must preserve segment-local offset validity, deletion visibility, atomic build/publication, restart validation and Qdrant scorer ownership.",
+    "cli": "Same lifecycle contract plus its own learned/cluster routing state; no integration justified yet.",
+    "responsibilities": "Qdrant owns vectors, IDs, payload/filter, scoring and lifecycle; learned index owns model, postings and routing.",
+    "next": "Complete G2 full returned-recall frontier efficiently, then controlled retrieval-relevant query-router comparison on fixed partition before DLI/CLI."
+  },
+  "recommended_phase_h": "Conditionally test retrieval-relevant router objective on fixed partition with held-out validation/test after G2 completion; no DLI/CLI implementation yet.",
+  "artifacts": [
+    "docs/lmi-phase-g.md",
+    "g1_failure_decomposition/decision.json",
+    "g2_frontier/decision.json",
+    "g3_planner/decision.json",
+    "g4_multi_index/decision.json"
+  ]
+}

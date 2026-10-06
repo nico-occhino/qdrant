@@ -1,0 +1,6 @@
+{
+  "accepted": false,
+  "limit": 10,
+  "completed_test": false,
+  "reason": "manually stopped after several minutes of file-backed scoring I/O; partial output must not be aggregated"
+}

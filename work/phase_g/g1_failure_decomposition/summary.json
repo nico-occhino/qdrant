@@ -1,0 +1,112 @@
+{
+  "measured_rows": 9980,
+  "mapping": "real Qdrant IdTracker; not ID-as-offset assumption",
+  "postings_cover_all_vectors": true,
+  "accepted_raw_sha256": "26df51cf59be8a70c08661124ab780c10a4e1138edaa058006a774940fcfdf38",
+  "p4_candidate_count_native_parity": {
+    "matching_rows": 9980,
+    "mismatches": 0,
+    "examples": []
+  },
+  "p4": {
+    "oracle_recall": {
+      "mean": 0.9493987975951904,
+      "p5": 0.7,
+      "p50": 1.0,
+      "p95": 1.0,
+      "min": 0.4,
+      "max": 1.0
+    },
+    "router_gold_coverage": {
+      "mean": 0.8188577154308617,
+      "p5": 0.3,
+      "p50": 0.9,
+      "p95": 1.0,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "actual_recall": {
+      "mean": 0.8152505010020041,
+      "p5": 0.3,
+      "p50": 0.9,
+      "p95": 1.0,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "partition_loss": {
+      "mean": 0.05060120240480962,
+      "p5": 0.0,
+      "p50": 0.0,
+      "p95": 0.30000000000000004,
+      "min": 0.0,
+      "max": 0.6
+    },
+    "router_loss": {
+      "mean": 0.13054108216432866,
+      "p5": 0.0,
+      "p50": 0.0,
+      "p95": 0.5,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "scoring_output_loss": {
+      "mean": 0.0036072144288577146,
+      "p5": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "min": 0.0,
+      "max": 1.0
+    }
+  },
+  "query_hardness": {
+    "distinct_gold_buckets": {
+      "mean": 3.247995991983968,
+      "p5": 1.0,
+      "p50": 3.0,
+      "p95": 7.0,
+      "min": 1.0,
+      "max": 10.0
+    },
+    "zero_distance_queries": 298,
+    "ten_zero_distance_queries": 89,
+    "tie_aware_recall": {
+      "mean": 0.8159819639278557,
+      "p5": 0.3,
+      "p50": 0.9,
+      "p95": 1.0,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "official_recall": {
+      "mean": 0.8152505010020041,
+      "p5": 0.3,
+      "p50": 0.9,
+      "p95": 1.0,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "ties_cutoff_more_than_10": 228
+  },
+  "correlations": {
+    "d10_vs_recall": {
+      "pearson_r": -0.5067583010075809,
+      "spearman_rho": -0.5277493818044083
+    },
+    "distinct_gold_buckets_vs_recall": {
+      "pearson_r": -0.7791726343859723,
+      "spearman_rho": -0.8185958284168284
+    },
+    "partition_loss_4_vs_recall": {
+      "pearson_r": -0.7111614462400403,
+      "spearman_rho": -0.7016740964349449
+    },
+    "router_loss_4_vs_recall": {
+      "pearson_r": -0.9149797537164631,
+      "spearman_rho": -0.9390743804402186
+    },
+    "candidate_count_4_vs_recall": {
+      "pearson_r": 0.16960261454709255,
+      "spearman_rho": 0.17083430094516683
+    }
+  }
+}

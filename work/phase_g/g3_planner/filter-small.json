@@ -1,0 +1,57 @@
+[
+  {
+    "filter": "all",
+    "actual_cardinality": 1000,
+    "estimated_min": 1000,
+    "estimated_exp": 1000,
+    "estimated_max": 1000,
+    "chosen_path": "Plain (LmiIndex::search filter fallback)",
+    "recall_at_10_vs_exact": 1.0,
+    "returned": 10,
+    "one_query_elapsed_ns_descriptive_only": 526236
+  },
+  {
+    "filter": "p50",
+    "actual_cardinality": 500,
+    "estimated_min": 500,
+    "estimated_exp": 500,
+    "estimated_max": 500,
+    "chosen_path": "Plain (LmiIndex::search filter fallback)",
+    "recall_at_10_vs_exact": 1.0,
+    "returned": 10,
+    "one_query_elapsed_ns_descriptive_only": 257579
+  },
+  {
+    "filter": "p10",
+    "actual_cardinality": 100,
+    "estimated_min": 100,
+    "estimated_exp": 100,
+    "estimated_max": 100,
+    "chosen_path": "Plain (LmiIndex::search filter fallback)",
+    "recall_at_10_vs_exact": 1.0,
+    "returned": 10,
+    "one_query_elapsed_ns_descriptive_only": 78392
+  },
+  {
+    "filter": "p1",
+    "actual_cardinality": 10,
+    "estimated_min": 10,
+    "estimated_exp": 10,
+    "estimated_max": 10,
+    "chosen_path": "Plain (LmiIndex::search filter fallback)",
+    "recall_at_10_vs_exact": 1.0,
+    "returned": 10,
+    "one_query_elapsed_ns_descriptive_only": 21256
+  },
+  {
+    "filter": "p01",
+    "actual_cardinality": 1,
+    "estimated_min": 1,
+    "estimated_exp": 1,
+    "estimated_max": 1,
+    "chosen_path": "Plain (LmiIndex::search filter fallback)",
+    "recall_at_10_vs_exact": 1.0,
+    "returned": 1,
+    "one_query_elapsed_ns_descriptive_only": 13571
+  }
+]

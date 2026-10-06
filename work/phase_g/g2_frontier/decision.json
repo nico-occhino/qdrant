@@ -1,0 +1,179 @@
+{
+  "classification": "INCOMPLETE: full returned-recall/candidate/latency frontier not established",
+  "status": "Complete 9980-query oracle, routed candidate-gold coverage and exact candidate counts at P=1,2,4,8,16,32; accepted HTTP results at P=4; first-100-query native diagnostic pilot all six P with P=4 ID-set parity; full native attempt stopped after 45 complete queries.",
+  "evidence": [
+    {
+      "nprobe": 1,
+      "oracle_recall": {
+        "mean": 0.6641883767535071,
+        "p5": 0.3,
+        "p50": 0.7,
+        "p95": 1.0,
+        "min": 0.1,
+        "max": 1.0
+      },
+      "router_gold_coverage": {
+        "mean": 0.5592885771543087,
+        "p5": 0.0,
+        "p50": 0.6,
+        "p95": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "candidate_count": {
+        "mean": 4776.362424849699,
+        "p5": 1588.0,
+        "p50": 4430.0,
+        "p95": 8885.0,
+        "min": 30.0,
+        "max": 16230.0
+      },
+      "candidate_fraction_mean": 0.000471963664010857
+    },
+    {
+      "nprobe": 2,
+      "oracle_recall": {
+        "mean": 0.8343486973947895,
+        "p5": 0.5,
+        "p50": 0.9,
+        "p95": 1.0,
+        "min": 0.2,
+        "max": 1.0
+      },
+      "router_gold_coverage": {
+        "mean": 0.7100901803607215,
+        "p5": 0.1,
+        "p50": 0.8,
+        "p95": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "candidate_count": {
+        "mean": 9231.756012024049,
+        "p5": 4196.0,
+        "p50": 8823.0,
+        "p95": 15652.0,
+        "min": 985.0,
+        "max": 27557.0
+      },
+      "candidate_fraction_mean": 0.0009122116383005073
+    },
+    {
+      "nprobe": 4,
+      "oracle_recall": {
+        "mean": 0.9493987975951904,
+        "p5": 0.7,
+        "p50": 1.0,
+        "p95": 1.0,
+        "min": 0.4,
+        "max": 1.0
+      },
+      "router_gold_coverage": {
+        "mean": 0.8188577154308617,
+        "p5": 0.3,
+        "p50": 0.9,
+        "p95": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "candidate_count": {
+        "mean": 17667.078056112223,
+        "p5": 9786.6,
+        "p50": 17106.0,
+        "p95": 27325.299999999996,
+        "min": 2817.0,
+        "max": 45266.0
+      },
+      "candidate_fraction_mean": 0.0017457257532108063
+    },
+    {
+      "nprobe": 8,
+      "oracle_recall": {
+        "mean": 0.9988276553106211,
+        "p5": 1.0,
+        "p50": 1.0,
+        "p95": 1.0,
+        "min": 0.8,
+        "max": 1.0
+      },
+      "router_gold_coverage": {
+        "mean": 0.8924348697394789,
+        "p5": 0.5,
+        "p50": 1.0,
+        "p95": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "candidate_count": {
+        "mean": 33975.68306613227,
+        "p5": 21146.85,
+        "p50": 33373.5,
+        "p95": 49076.34999999999,
+        "min": 8832.0,
+        "max": 75654.0
+      },
+      "candidate_fraction_mean": 0.003357217572882989
+    },
+    {
+      "nprobe": 16,
+      "oracle_recall": {
+        "mean": 1.0,
+        "p5": 1.0,
+        "p50": 1.0,
+        "p95": 1.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "router_gold_coverage": {
+        "mean": 0.9395190380761524,
+        "p5": 0.6,
+        "p50": 1.0,
+        "p95": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "candidate_count": {
+        "mean": 65352.00501002004,
+        "p5": 43484.8,
+        "p50": 64746.0,
+        "p95": 90560.14999999998,
+        "min": 19022.0,
+        "max": 131638.0
+      },
+      "candidate_fraction_mean": 0.006457586127576054
+    },
+    {
+      "nprobe": 32,
+      "oracle_recall": {
+        "mean": 1.0,
+        "p5": 1.0,
+        "p50": 1.0,
+        "p95": 1.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "router_gold_coverage": {
+        "mean": 0.9684769539078156,
+        "p5": 0.8,
+        "p50": 1.0,
+        "p95": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "candidate_count": {
+        "mean": 125698.17535070141,
+        "p5": 87798.05,
+        "p50": 125144.0,
+        "p95": 166720.84999999998,
+        "min": 40201.0,
+        "max": 216584.0
+      },
+      "candidate_fraction_mean": 0.012420533896119293
+    }
+  ],
+  "interpretation": "At P=8, coverage upper bound rises to 0.89243 for mean 33975.68 candidates; P=32 reaches 0.96848 for 125698.18. These are candidate-gold coverage, not measured returned Recall or Pareto latency. No actual optimum can yet be declared.",
+  "next_gate": "Native Qdrant scoring at all P or a diagnostic-only runtime override, with persisted state unchanged, followed by complete 9980-query evaluation.",
+  "native_pilot_summary": "native-pilot-100.summary.json",
+  "partial_metadata": "native-full.partial.metadata.json",
+  "safe_next_method": "Optimize native scoring reuse across nested probe sets or use a diagnostic-only query-time P override, then control cache state and run complete return-set sweeps. Do not rebuild the index."
+}

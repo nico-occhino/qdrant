@@ -1,0 +1,11 @@
+{
+  "segment": "/home/nicoo/work/lmi-sisap2023-storage/10m-f16/storage/collections/sisap2023_10m_f16_lmi/0/segments/8f67bcc1-6bca-49c8-bef5-4ae8f4565ab1",
+  "source_queries": "/home/nicoo/work/qdrant/work/phase_s3/sisap2023/10m-f16/queries.full.jsonl",
+  "measured_rows": 9980,
+  "points": 10120191,
+  "posting_count": 10120191,
+  "bucket_count": 3162,
+  "mapping_method": "IdTrackerRead::internal_id_with_behavior(VisibleOnly)",
+  "rebuild": false,
+  "state_mutation": false
+}
