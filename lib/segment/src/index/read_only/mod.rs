@@ -99,6 +99,9 @@ impl<S: UniversalReadExt + 'static> VectorIndexReadEnum<S> {
     ) -> OperationResult<()> {
         match &vector_config.index {
             Indexes::Plain {} => Ok(()),
+            Indexes::Lmi {} | Indexes::LmiTrained(_) => Err(OperationError::service_error(
+                "Read-only LMI open is not ported to Qdrant 1.19.2",
+            )),
             Indexes::Hnsw(hnsw_config) => {
                 ReadOnlyHNSWIndex::<S>::preopen(fs, path, hnsw_config, populate_override)
             }
@@ -194,6 +197,11 @@ impl<S: UniversalReadExt + 'static> VectorIndexReadEnum<S> {
             quantized_vectors,
         } = args;
         Ok(match &vector_config.index {
+            Indexes::Lmi {} | Indexes::LmiTrained(_) => {
+                return Err(OperationError::service_error(
+                    "Read-only LMI open is not ported to Qdrant 1.19.2",
+                ));
+            }
             Indexes::Plain {} => Self::Plain(Box::new(ReadOnlyPlainVectorIndex::open(
                 id_tracker,
                 vector_storage,

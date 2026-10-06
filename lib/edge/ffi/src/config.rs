@@ -812,7 +812,7 @@ impl From<SegmentVectorDataConfig> for VectorDataConfig {
             datatype: datatype.map(VectorStorageDatatype::from),
             hnsw_config: match index {
                 Indexes::Hnsw(h) => Some(HnswIndexConfig::from(h)),
-                Indexes::Plain {} => None,
+                Indexes::Plain {} | Indexes::Lmi {} | Indexes::LmiTrained(_) => None,
             },
         }
     }

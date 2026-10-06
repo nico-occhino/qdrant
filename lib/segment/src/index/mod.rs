@@ -2,6 +2,7 @@ pub mod candidate_scoring;
 mod condition_checker;
 pub mod field_index;
 pub mod hnsw_index;
+pub mod lmi_index;
 mod memory_reporter;
 pub mod payload_config;
 mod payload_index_base;

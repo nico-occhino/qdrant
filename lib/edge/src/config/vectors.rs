@@ -112,7 +112,7 @@ impl EdgeVectorParams {
             datatype: *datatype,
             quantization_config: quantization_config.clone(),
             hnsw_config: match index {
-                Indexes::Plain {} => None,
+                Indexes::Plain {} | Indexes::Lmi {} | Indexes::LmiTrained(_) => None,
                 Indexes::Hnsw(hnsw_config) => Some(*hnsw_config),
             },
         }

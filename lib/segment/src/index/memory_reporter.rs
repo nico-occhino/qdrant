@@ -5,7 +5,7 @@ impl MemoryReporter for VectorIndexEnum {
     fn memory_usage(&self) -> ComponentMemoryUsage {
         match self {
             // Plain index: no files, no extra memory (searches storage directly)
-            VectorIndexEnum::Plain(_) => ComponentMemoryUsage::empty(),
+            VectorIndexEnum::Plain(_) | VectorIndexEnum::Lmi(_) => ComponentMemoryUsage::empty(),
 
             // HNSW: graph files, intent depends on how the links are actually held
             VectorIndexEnum::Hnsw(index) => {

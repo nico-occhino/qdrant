@@ -4,7 +4,7 @@ use common::mmap::{Advice, AdviceSetting};
 
 use crate::common::operation_error::{OperationError, OperationResult};
 use crate::types::{
-    Memory, SparseVectorStorageType, VectorDataConfig, VectorStorageDatatype, VectorStorageType,
+    Indexes, Memory, SparseVectorStorageType, VectorDataConfig, VectorStorageDatatype, VectorStorageType,
 };
 use crate::vector_storage::VectorStorageEnum;
 use crate::vector_storage::dense::dense_vector_storage::{
@@ -101,6 +101,13 @@ pub(crate) fn open_vector_storage(
     vector_storage_path: &Path,
     vector_index_path: &Path,
 ) -> OperationResult<VectorStorageEnum> {
+    if vector_config.storage_type == VectorStorageType::GraphInline
+        && !matches!(vector_config.index, Indexes::Hnsw(_))
+    {
+        return Err(OperationError::service_error(
+            "GraphInline vector storage requires an HNSW index; LMI requires independent dense storage",
+        ));
+    }
     match vector_config.storage_type {
         VectorStorageType::Memory => Err(OperationError::service_error(
             "Failed to load 'Memory' storage type, RocksDB is not supported in this Qdrant version",

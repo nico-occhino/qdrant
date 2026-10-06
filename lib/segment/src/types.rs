@@ -789,6 +789,15 @@ pub enum Indexes {
     /// Use filterable HNSW index for approximate search. Is very fast even on a very huge collections,
     /// but require additional space to store index and additional time to build it.
     Hnsw(HnswConfig),
+
+    /// Experimental Learned Metric Index integration.
+    ///
+    /// Phase B initially uses a dummy implementation to validate the
+    /// Qdrant vector-index integration contract before introducing
+    /// learned routing.
+    Lmi {},
+    /// Experimental CPU-trained, persisted LMI.
+    LmiTrained(crate::index::lmi_index::LmiConfig),
 }
 
 impl Indexes {
@@ -796,6 +805,7 @@ impl Indexes {
         match self {
             Indexes::Plain {} => false,
             Indexes::Hnsw(_) => true,
+            Indexes::Lmi {} | Indexes::LmiTrained(_) => true,
         }
     }
 
@@ -803,6 +813,7 @@ impl Indexes {
         match self {
             Indexes::Plain {} => false,
             Indexes::Hnsw(config) => config.memory_placement().is_on_disk(),
+            Indexes::Lmi {} | Indexes::LmiTrained(_) => false,
         }
     }
 }
@@ -2174,6 +2185,7 @@ impl VectorDataConfig {
         let is_index_appendable = match self.index {
             Indexes::Plain {} => true,
             Indexes::Hnsw(_) => false,
+            Indexes::Lmi {} | Indexes::LmiTrained(_) => false,
         };
         let is_storage_appendable = match self.storage_type {
             VectorStorageType::Memory => true,
@@ -2252,7 +2264,7 @@ impl VectorDataConfig {
     pub fn check_inline_vectors(&self) -> Result<bool, &'static str> {
         let hnsw_config = match &self.index {
             Indexes::Hnsw(hnsw_config) => hnsw_config,
-            Indexes::Plain {} => return Ok(false),
+            Indexes::Plain {} | Indexes::Lmi {} | Indexes::LmiTrained(_) => return Ok(false),
         };
         if !hnsw_config.inline_storage.unwrap_or_default() {
             return Ok(false);
@@ -2277,7 +2289,7 @@ impl VectorDataConfig {
             (Some(memory), _) => memory,
             (None, Indexes::Hnsw(hnsw_config)) => hnsw_config.memory_placement(),
             // Invalid config: no graph to follow
-            (None, Indexes::Plain {}) => Memory::Cold,
+            (None, Indexes::Plain {} | Indexes::Lmi {} | Indexes::LmiTrained(_)) => Memory::Cold,
         }
     }
 

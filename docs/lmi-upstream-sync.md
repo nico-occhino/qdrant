@@ -603,3 +603,35 @@ The new `lib/segment/src/index/candidate_scoring.rs::score_candidates` receives 
 Evidence: `cargo test -p segment --test candidate_scoring_119 --locked` passed six tests for subset top-k, candidate order/duplicates, independent point/vector deletion, ties, context deletion/cancellation, and real Float16 Cosine storage. `cargo test -p segment --lib filter_deferred_and_deleted_skips_shadowed_on_include_all --locked` passed the upstream mapping test covering shadowed/deferred behavior. The helper currently does not accept filters or quantized scoring; a future LMI index must use Plain fallback for those requests.
 
 The tie test proves repeatability after sorting candidates for its fixture. It does not establish a universal stable order for equal-score points: `TopK` compares scores, not point IDs. Results at a tie cutoff must be evaluated by score and appropriate ID-set semantics.
+## First implementation stage: minimal index shell
+
+Qdrant 1.19.2 now recognizes the historical tagged `Indexes::Lmi {}` and `Indexes::LmiTrained(LmiConfig)` segment configuration shapes. The `LmiConfig` fields and defaults are reused from the frozen branch; no Torch or training dependency was added. The first-stage constructor builds `VectorIndexEnum::Lmi(LmiIndex)` only for `Lmi {}`. `LmiTrained` open/build returns an explicit error because state persistence has not been ported. Read-only LMI open likewise returns an explicit error. This prevents old persisted generations from being mistaken for a working learned index.
+
+The runtime `LmiIndex` wraps current `PlainVectorIndex`. Its synthetic candidate source is compiled only with the segment `testing` feature and is never persisted. Supported dense nearest queries with default params and no filter or quantized vectors use the test candidate set, normalized and scored by `score_candidates`. With no synthetic set, production queries use Plain. Exact, filtered, nondefault-param, quantized, and unsupported query forms use Plain. No MLP routing, postings, training, or persisted state exists on this branch yet.
+
+`VectorDataConfig::check_inline_vectors` remains HNSW-specific. The storage constructor now explicitly rejects `GraphInline` when the index is not HNSW, before attempting graph-owned storage. The LMI index constructor also rejects multivectors and GraphInline; the runtime test confirms a clear GraphInline error. Dense independent Float16 storage and scorer behavior are tested. The collection REST/gRPC `lmi_config` field has not been exposed in this stage; direct segment configuration is the supported test entry point. Edge Python reports LMI as unsupported, and the infallible Edge FFI projection cannot carry LMI type information. Neither edge binding is a supported LMI configuration surface.
+
+### Historical Phase C invariants against Qdrant 1.19.2
+
+| Historical invariant | Current implementation | Evidence |
+|---|---|---|
+| LMI generates segment-local `PointOffsetType` only | Test-only synthetic source supplies offsets to `score_candidates` | LMI dispatch and subset tests pass |
+| Qdrant owns vector bytes | `LmiIndex` borrows shared `VectorStorageEnum`; no vector corpus copy | Float16 runtime and scorer tests pass |
+| Qdrant applies visibility/deletions | Mapping filter handles deferred/mapping state; `BatchFilteredSearcher` handles context point and vector deletion | Six scorer tests and upstream deferred/shadowed test pass |
+| Qdrant performs metric scoring | Current storage `RawScorer` is built by `BatchFilteredSearcher` | Dot and Float16 Cosine fixtures pass |
+| Qdrant performs top-k | Current `TopK` runs inside `peek_top_iter` | Subset, order and tie tests pass |
+| External IDs remain outside LMI | Candidate helper returns `ScoredPointOffset` only | API and runtime type inspection |
+| Query context remains Qdrant-owned | Context mask, cancellation and hardware counter pass through | Context/cancellation test passes |
+
+### First-stage validation
+
+- `cargo check -p segment -p collection --locked`: passed with no LMI warnings after test-only gating.
+- `cargo check --workspace --locked`: passed after explicit Edge binding matches.
+- `cargo test -p segment --test candidate_scoring_119 --test lmi_shell_119 --locked`: six candidate tests and five shell tests passed (the shell rejection case was added after the combined run and passed separately).
+- `cargo test -p segment --lib filter_deferred_and_deleted_skips_shadowed_on_include_all --locked`: passed.
+- `cargo test -p segment --test integration exact_search_test --locked`: passed.
+- `cargo test -p segment --test integration test_batch_and_single_request_equivalency --locked`: passed.
+- `cargo test -p segment --test integration test_filterable_hnsw --locked`: four filtered HNSW cases passed (nearest, discover, recommend best score, recommend sum scores).
+- Check-only whole-workspace formatting reports only two pre-existing upstream file differences after formatting touched files: `lib/common/common/src/universal_io/simple_disk_cache/placeholder.rs` and `lib/segment/src/index/field_index/full_text_index/inverted_index/on_disk_inverted_index/on_disk_postings.rs`.
+
+The next task can begin native MLP routing and compact postings against this tested scoring boundary. Persisted LMI state, collection-level configuration, read-only serving, optimizer lifecycle and real-data results remain unvalidated; this shell must not be used as the canonical thesis development branch yet.
