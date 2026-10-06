@@ -14,7 +14,8 @@ use segment::segment::Segment;
 use segment::segment_constructor::{
     load_segment, segment_builder::SegmentBuilder, simple_segment_constructor::build_simple_segment,
 };
-use segment::types::{Distance, HnswGlobalConfig, Indexes, SearchParams};
+use segment::types::{Distance, HnswGlobalConfig, Indexes, SearchParams, VectorStorageDatatype};
+use segment::vector_storage::VectorStorageRead;
 use std::sync::atomic::AtomicBool;
 
 fn config(nprobe: usize) -> LmiConfig {
@@ -36,9 +37,31 @@ fn fixture(
     config: LmiConfig,
     count: usize,
 ) -> (tempfile::TempDir, Segment, Segment) {
+    fixture_with_datatype(distance, config, count, None)
+}
+
+fn fixture_with_datatype(
+    distance: Distance,
+    config: LmiConfig,
+    count: usize,
+    datatype: Option<VectorStorageDatatype>,
+) -> (tempfile::TempDir, Segment, Segment) {
     let root = tempfile::tempdir().unwrap();
     let staging = tempfile::tempdir().unwrap();
     let mut plain = build_simple_segment(root.path(), 2, distance).unwrap();
+    if let Some(datatype) = datatype {
+        let mut source_config = plain.config().clone();
+        source_config
+            .vector_data
+            .get_mut(DEFAULT_VECTOR_NAME)
+            .unwrap()
+            .datatype = Some(datatype);
+        drop(plain);
+        plain =
+            segment::segment_constructor::build_segment(root.path(), &source_config, None, true)
+                .unwrap()
+                .0;
+    }
     let hw = HardwareCounterCell::new();
     for i in 0..count {
         let sign = if i % 2 == 0 { 1.0 } else { -1.0 };
@@ -54,6 +77,10 @@ fn fixture(
     }
     let mut cfg = plain.config().clone();
     cfg.vector_data.get_mut(DEFAULT_VECTOR_NAME).unwrap().index = Indexes::LmiTrained(config);
+    cfg.vector_data
+        .get_mut(DEFAULT_VECTOR_NAME)
+        .unwrap()
+        .datatype = datatype;
     let mut builder =
         SegmentBuilder::new(staging.path(), &cfg, &HnswGlobalConfig::default()).unwrap();
     builder
@@ -162,6 +189,50 @@ fn builder_trains_persists_and_reopens_without_manual_installation() {
     assert_eq!(search(&reopened, &[3.0, 0.1], None), a);
     assert_eq!(std::fs::read(path).unwrap(), bytes);
     println!("Phase E: automatic training, two routed candidate sets, unchanged state on reopen");
+}
+
+#[test]
+fn float16_storage_trains_persists_reopens_and_routes() {
+    let cfg = config(2);
+    let (_root, plain, lmi) = fixture_with_datatype(
+        Distance::Cosine,
+        cfg,
+        64,
+        Some(VectorStorageDatatype::Float16),
+    );
+    let storage = lmi.vector_data[DEFAULT_VECTOR_NAME].vector_storage.borrow();
+    assert_eq!(storage.datatype(), VectorStorageDatatype::Float16);
+    drop(storage);
+    let query = [0.75, 0.25];
+    let lmi_results = search(&lmi, &query, None);
+    let plain_results = search(&plain, &query, None);
+    assert_eq!(lmi_results.len(), plain_results.len());
+    for (actual, expected) in lmi_results.iter().zip(&plain_results) {
+        assert_eq!(actual.idx, expected.idx);
+        assert!((actual.score - expected.score).abs() < 0.002);
+    }
+
+    let (path, _) = state(&lmi);
+    let old_path = lmi.segment_path.clone();
+    let postings_before =
+        std::fs::read(path.with_file_name(segment::index::lmi_index::LMI_POSTINGS_FILE)).unwrap();
+    drop(lmi);
+    let reopened =
+        load_segment(&old_path, uuid::Uuid::nil(), None, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        reopened.vector_data[DEFAULT_VECTOR_NAME]
+            .vector_storage
+            .borrow()
+            .datatype(),
+        VectorStorageDatatype::Float16
+    );
+    assert_eq!(search(&reopened, &query, None), lmi_results);
+    let reopened_path = state(&reopened).0;
+    assert_eq!(
+        std::fs::read(reopened_path.with_file_name(segment::index::lmi_index::LMI_POSTINGS_FILE))
+            .unwrap(),
+        postings_before
+    );
 }
 
 #[test]

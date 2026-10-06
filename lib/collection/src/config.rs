@@ -865,6 +865,29 @@ mod tests {
     }
 
     #[test]
+    fn lmi_config_accepts_float16_with_training_feature() {
+        let mut params = single(Some(Datatype::Float16));
+        let VectorsConfig::Single(vector) = &mut params.vectors else {
+            unreachable!()
+        };
+        vector.distance = Distance::Cosine;
+        vector.lmi_config = Some(segment::index::lmi_index::LmiConfig::default());
+        let result = validator::Validate::validate(vector);
+        if segment::index::lmi_index::training_available() {
+            assert!(
+                result.is_ok(),
+                "Float16 LMI vector config rejected: {result:?}"
+            );
+        } else {
+            assert!(
+                result.is_err(),
+                "non-training server accepted LMI configuration"
+            );
+            assert!(result.unwrap_err().to_string().contains("lmi-training"));
+        }
+    }
+
+    #[test]
     fn has_turbo_vector_storage_by_datatype() {
         // No explicit datatype (defaults to float32).
         assert!(!single(None).has_turbo_vector_storage());

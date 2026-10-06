@@ -60,12 +60,15 @@ impl LmiIndex {
             ));
         }
         if vector_config.multivector_config.is_some()
-            || vector_config
-                .datatype
-                .is_some_and(|d| d != VectorStorageDatatype::Float32)
+            || vector_config.datatype.is_some_and(|d| {
+                !matches!(
+                    d,
+                    VectorStorageDatatype::Float32 | VectorStorageDatatype::Float16
+                )
+            })
         {
             return Err(OperationError::service_error(
-                "LMI training supports dense float32 vectors only",
+                "LMI training supports dense float32 or float16 vectors",
             ));
         }
         if args.permit.num_cpus == 0 {
@@ -77,6 +80,24 @@ impl LmiIndex {
         let tracker = open.id_tracker.borrow();
         let storage = open.vector_storage.borrow();
         let total = storage.total_vector_count();
+        let storage_datatype = storage.datatype();
+        let storage_bytes_per_value = match storage_datatype {
+            VectorStorageDatatype::Float16 => 2_u64,
+            VectorStorageDatatype::Float32 => 4_u64,
+            _ => unreachable!("unsupported LMI datatype was rejected above"),
+        };
+        let stored_payload_bytes = u64::try_from(total)
+            .ok()
+            .and_then(|n| {
+                u64::try_from(dim)
+                    .ok()
+                    .and_then(|dimension| n.checked_mul(dimension))
+            })
+            .and_then(|n| n.checked_mul(storage_bytes_per_value))
+            .ok_or_else(|| OperationError::service_error("LMI storage size overflow"))?;
+        log::info!(
+            "LMI vector representation: storage={storage_datatype:?} values={total} dimension={dim} backing_payload_bytes={stored_payload_bytes} (not an extra anonymous-RAM allocation); sample/routing compute=f32; cached_labels=u16 when buckets <= 65536"
+        );
         // Physical slots provide a conservative pre-scan bound, including holes.
         let plan = super::build_plan::BuildPlan::estimate(total, dim, &config)?;
         log::info!("LMI build plan (physical-slot upper bound): {plan:?}");

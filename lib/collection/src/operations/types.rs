@@ -1470,9 +1470,11 @@ fn validate_lmi_vector_params(params: &VectorParams) -> Result<(), ValidationErr
         let message = if !segment::index::lmi_index::training_available() {
             Some("LMI construction requires a server built with lmi-training")
         } else if params.multivector_config.is_some()
-            || params.datatype.is_some_and(|d| d != Datatype::Float32)
+            || params
+                .datatype
+                .is_some_and(|d| !matches!(d, Datatype::Float32 | Datatype::Float16))
         {
-            Some("LMI supports dense float32 vectors only")
+            Some("LMI supports dense float32 or float16 vectors only")
         } else if params.hnsw_config.is_some() {
             Some("lmi_config and per-vector hnsw_config are mutually exclusive")
         } else {
