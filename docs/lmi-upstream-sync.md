@@ -1,6 +1,6 @@
 # LMI forward-port onto Qdrant 1.19.2
 
-Status: production segment-local LMI training is implemented and under validation; optimizer lifecycle remains unported.
+Status: Qdrant 1.19.2 static-LMI collection lifecycle and full SISAP300K revalidation are implemented and measured. G2 is separate.
 
 - Historical frozen LMI SHA: `4e0527388b98f16623ab3e5124baab4cd6022b87`
 - Historical branch: `thesis/lmi-integration`
@@ -26,18 +26,18 @@ Clean textual merges do not validate configuration serialization, scoring, or se
 |---|---|---|
 | `VectorIndexRead` / `VectorIndex` | Unchanged signatures | Current `lib/segment/src/index/vector_index_base.rs` still requires `search`, telemetry, indexed count, searchable bytes, IDF contribution, `is_index`, files and raw/decoded update methods. |
 | `VectorIndexEnum` | Same single-index model | Current enum has Plain, HNSW and sparse variants; add LMI deliberately and cover every exhaustive match. |
-| `VectorDataConfig` / `Indexes` | Review pending | Current `lib/segment/src/types.rs`; validate persisted representation before adding LMI. |
+| `VectorDataConfig` / `Indexes` | Validated below | Current `lib/segment/src/types.rs`; validate persisted representation before adding LMI. |
 | Candidate scorer and `RawScorer` | Semantics changed upstream | Batched deletion checks, batched HNSW search and graph-inline storage commits changed scorer-related code. Re-derive the candidate seam before porting. |
 | HNSW filter dispatch | Semantics changed upstream | Upstream commits `a764bfe6a`, `142227719`, `47386a410`; historical instrumentation overlaps textually. Keep current upstream planner as baseline. |
 | Vector storage and constructor | Semantics changed upstream | Combined-storage commit `0d6cd45e3` changed vector-index construction. Do not transplant old constructor paths. |
-| Optimizer and segment publication | Review pending | Several textual conflicts. Postings must be rebuilt for each target segment's offsets. |
-| Memory reporting | Review pending | Historical LMI hook and upstream graph-inline storage accounting require separate review. |
-| Snapshots, read-only open, telemetry | Review pending | Verify current file enumeration and loaded-index semantics. |
+| Optimizer and segment publication | Validated below | Several textual conflicts. Postings must be rebuilt for each target segment's offsets. |
+| Memory reporting | Validated below | Historical LMI hook and upstream graph-inline storage accounting require separate review. |
+| Snapshots, read-only open, telemetry | Validated below | Verify current file enumeration and loaded-index semantics. |
 | Cargo manifests / lockfile | Textual conflict | Keep upstream lockfile and add only required LMI dependencies/features. |
 
 ## Validation still required
 
-The production builder, Float16 route, parity and SISAP300K bounded-query gates are reported below. Optimizer lifecycle, full-query SISAP parity, G2 and 10.12M compatibility remain separate work. No synchronized branch push until these gates pass.
+The earlier segment-local measurements below are preserved as historical stages of this forward-port. The completed collection lifecycle and full-query SISAP300K measurements appear in the final section. G2 and a synchronized 10.12M build remain separate work.
 
 ## Historical science
 
@@ -817,4 +817,112 @@ The historical HDF5 files are read only. The conversion produces a 440 MiB `vect
 | Training-enabled compilation | `cargo check --workspace --features segment/lmi-training --locked` | Passed |
 | Format and diff | `rustfmt --edition 2024 --check` on touched Rust files; `git diff --check` | Passed |
 
-The optional `tch 0.18.1` dependency and its transitive packages are the only manifest/lockfile dependency addition; current upstream dependencies were not replaced. Qdrant's stable toolchain reports warnings for nightly-only rustfmt options in the existing formatting config, but changed-file formatting passed. These results authorize the separate optimizer/lifecycle implementation task. They do not establish collection publication or full SISAP query-set parity.
+The earlier segment port added optional `tch 0.18.1` and its transitive packages. The lifecycle port adds a test-only `half` dependency in collection; current upstream dependencies were not replaced. Qdrant's stable toolchain reports warnings for nightly-only rustfmt options in the existing formatting config, but changed-file formatting passed. These were the gates at the end of the earlier segment-local stage. The completed optimizer lifecycle and full-query measurements are recorded below.
+
+
+# Qdrant 1.19.2 optimizer lifecycle for LMI
+
+Status at the start of the lifecycle port: **VERIFIED source trace**, before collection configuration changes.
+
+| Stage | Current source and function | LMI consequence |
+|---|---|---|
+| Collection config to optimizer | `lib/collection/src/optimizers_builder.rs::build_segment_optimizer_config`, then `build_optimizers` | Current `VectorParams` maps to `DenseVectorOptimizerConfig`; before this port `indexed()` always selects HNSW. |
+| Candidate choice | `lib/shard/src/optimizers/{indexing,merge,config_mismatch}_optimizer.rs::plan_optimizations` | Indexing uses size/deferred thresholds, merge batches sources, mismatch checks target settings. All share the generic `SegmentOptimizer::optimized_segment_builder`. |
+| Source freeze and writes | `lib/shard/src/optimize.rs::execute_optimization` replaces selected originals with proxies and provides or finds a separate appendable COW segment | New/updated vectors go to an appendable segment; proxy records deletes and schema changes against frozen sources. The update-only writer change `c2aeb9011` must be preserved. |
+| Target offsets assigned | `lib/segment/src/segment_constructor/segment_builder.rs::SegmentBuilder::update` merges unique logical points, optionally defragments order, calls `merge_from`, then fills the target ID tracker over `new_internal_range` | Source offsets are neither stable nor valid in target. Target offsets become stable after `update` completes. Source A/B can contain identical external IDs but different internal offsets. |
+| Target index build | `SegmentBuilder::build` flushes target storage and tracker, creates payload index, then calls `build_vector_index` with target tracker and storage | This is the correct generic seam. `LmiIndex::build_trained` already reads this target only and validates exact target-local live coverage. No source postings should be copied. |
+| Disk staging and reopen | `SegmentBuilder::build(... ready=false)` writes config, renames the complete temp directory under `segments_path`, then `load_segment` reopens it | LMI payloads/state are complete before reopening. Without `SegmentVersion`, the target is not yet a restart-ready published generation. |
+| Concurrent change replay | `optimize_segment_propagate_changes` and `finish_optimization`; `ProxyChanges::propagate` | Proxy changes consist of point deletes, payload index changes and vector-name changes. Writes to vectors go to COW. Deletes may leave physical LMI postings but scorer/ID tracking must suppress them. |
+| Publication | `finish_optimization` takes update lock, replays final changes, flushes, saves `SegmentVersion`, calls `SegmentHolder::swap_new`, registers deferred source drop/WAL pin, then syncs segment manifest | Queries must see either proxies plus COW or complete target plus COW. Target data and LMI files are reopened before holder swap. Source removal is deferred until durable flush. |
+| Restart/snapshot | Segment loader/manifest and generic segment `files()`/`immutable_files()` paths | LMI's three files already enumerate as index-owned; actual collection snapshot and read-only restore remain to be validated. |
+
+The invariant is **postings are valid only for the exact target segment offsets used to build them**. The optimizer must never copy source LMI postings or reuse a router/postings pair under an assumed offset identity. The target trains/routes from its own storage after its target ID mapping exists and before publication.
+
+| Frozen-branch lifecycle assumption | Qdrant 1.19.2 status | Reason |
+|---|---|---|
+| SegmentBuilder finalizes target offsets before index build | UNCHANGED | Current `SegmentBuilder::update` precedes `SegmentBuilder::build` vector-index loop. |
+| Every indexed dense target is HNSW | NO LONGER VALID | `DenseVectorOptimizerConfig::indexed` must select LMI for configured fields. |
+| Optimizer can carry old postings into target | NO LONGER VALID | Target `merge_from` reassigns offsets; LMI state is target-local. |
+| Concurrent writes mutate optimizing source or target index | REPLACED | Current proxy/COW path and update-only writer leave optimizing targets alone. |
+| Publication immediately follows index build | CHANGED | Current replay, flush, ready marker, holder swap and manifest are distinct stages. |
+| Old collection/schema/storage structs can be copied | NO LONGER VALID | `memory`, ID tracker placement, combined storage and GraphInline semantics evolved upstream (`943b9c3a0`, `0d6cd45e3`, `fbbe4a5f2`, `9614dc0b0`). |
+| Generic optimizer memory admission covers all LMI work | NO LONGER VALID | Current CPU/IO resource permits and LMI's local build planner are separate; integration must be reviewed. |
+
+The current large-segment policy (`016328a3c`) and cached memory-loop fix (`3e634c19a`) remain upstream behavior; this port must retain them. Post-build proxy replay never adds a vector to the trained index: `LmiIndex::update_vector(Some(_))` rejects it, while point deletes are allowed and scored visibility is checked. This operational boundary still needs collection-level tests under concurrent writes.
+
+
+# Final static-LMI collection lifecycle and pre-G2 baseline
+
+This section supersedes the earlier "Remaining boundary" text, which records the state before the lifecycle port. Frozen historical source: `thesis/lmi-integration` at `4e0527388b98f16623ab3e5124baab4cd6022b87`. Fixed upstream source: Qdrant 1.19.2 at `016542aa5deb6c66380bb137badf73d54f742bde`. The interrupted WIP was preserved externally before resumption at `/home/nicoo/work/qdrant-sync-lifecycle-wip-2026-10-07/` (status, binary diffs, diff stat and the new test source); no frozen branch or canonical SISAP10M artifact was modified.
+
+## Ownership and publication
+
+**IMPLEMENTED / SOURCE-VALIDATED.** `VectorParams.lmi_config` is an optional per-dense-vector collection setting in JSON and gRPC. It flows through `build_segment_optimizer_config` into `DenseVectorOptimizerConfig`. Appendable segments use Plain. `indexed()` selects `Indexes::LmiTrained(config)` when requested, otherwise current HNSW. Indexing, merge and config-mismatch optimizers continue to use Qdrant's shared target builder. Build-affecting LMI config changes and LMI disablement select target rebuilds; the original index is never edited in place.
+
+`SegmentBuilder::update` deduplicates logical IDs and assigns the new target offsets. Only after target vector storage and ID tracker are complete does `SegmentBuilder::build` call `build_vector_index` with **target** storage/tracker. The production LMI builder samples, trains, routes and validates coverage against these handles. It does not read source postings. In the adversarial two-source fixture each input has local offsets `0..16`; the merged target's compact postings contain each offset `0..32` exactly once. Copying either source posting set would fail this assertion.
+
+The builder writes `lmi_router.bin` and `lmi_postings.bin` before the v3 `lmi_state.json` marker, reopens the staged target, and leaves it unready. `execute_optimization` uses proxies plus a fresh appendable COW segment during the slow build. The final update lock replays deletes/schema changes, flushes, saves `SegmentVersion`, and swaps the complete target into `SegmentHolder`. The current generic failure path unwraps proxies; cancellation cleans an unpublished target directory. This is an operational generation boundary, not a cryptographic token tying arbitrary copied files to a mapping. Manual cross-segment LMI file copying remains unsupported.
+
+**MEASURED.** A deterministic strategy wrapper paused after proxy installation. An insert (ID 100), update (ID 1) and delete (ID 2) were applied while the LMI target was pending. After publication exactly one current ID 1 with its new vector and one ID 100 were visible, and ID 2 was absent. The collection fixture separately exercised ordinary asynchronous indexing, a fresh Plain write segment, default/filter/exact/nondefault-parameter requests, and second and third trained generations. At each generation it checked target indexed count, distinct state hashes, current logical IDs, restart, and collection snapshot restore. The three LMI files survived restore byte-for-byte. The third generation indexed 95 current vectors after inserts, updates and deletes.
+
+**MEASURED.** A deliberately invalid generation-2 training config failed before publication. The valid first LMI generation and its 32 logical points remained in the holder. `LmiIndex::update_vector(Some(_))` still rejects in-place vector mutation; normal writes route to Plain COW storage. Source inspection confirms cancellation checks during sampling, spherical KMeans, MLP training/export, routing, posting construction and persistence. Dedicated training tests exercise cancellation within those stages; a deterministic mid-training collection cancellation test was not added.
+
+**IMPLEMENTED.** Collection creation and updates reject LMI with non-Cosine distance, multivectors, unsupported datatype, quantization and GraphInline. Collection-wide quantization/GraphInline changes are rejected before persistence while LMI is enabled. A default serving-only binary rejects new LMI collection configuration through validation and disables optimizers for an already persisted LMI collection, logging an explicit error rather than retrying training. Existing v3 state opens and searches without `tch` in the default build. Fresh builds require `segment/lmi-training`; the collection test feature forwards to it.
+
+**MEASURED / SOURCE-VALIDATED.** `indexed_vector_count` for a trained target is compact-postings population (target eligible vectors). `VectorIndexEnum::Lmi` reports its three persistence files with OnDisk intent plus decoded router/postings auxiliary heap. Authoritative vector storage is reported separately; it is not charged to the index a second time. The small target test checks three files and a positive auxiliary heap estimate. Memory admission still uses the LMI builder's explicit local resource plan, alongside Qdrant's generic CPU/IO permits; it is not a global resident-set guarantee.
+
+## Full SISAP300K synchronized collection gate
+
+**MEASURED.** A fresh collection at `work/upstream_sync/sisap300k/collection_full_2026_10_07_attempt2` ingested 300,000 Float16/Cosine 768-dimensional vectors through ordinary collection writes with optimization paused. The collection reported 300,000 points and zero indexed vectors before optimizer enablement. The optimizer then built one trained target, published 300,000 indexed postings, and the collection reopened without training. Build config: `B=548, S=32768, H=512, epochs=30, batch=256, routing_batch=256, KMeans iterations=5, nprobe=4, seed=42`. Ingestion took 35.79 s and the asynchronous target build 304.42 s in the debug test process; these are local systems diagnostics.
+
+The prior synchronized segment-local pilot used only the first 100 public queries. The final run used the **same 9,980 measured rows (20..9999)** as the accepted historical release, with one-based official IDs and conventional top-10 overlap. Query and gold binary inputs were extracted read-only from the official HDF5 files into `work/upstream_sync/sisap300k/full_queries_2026_10_07`. The test queries the optimizer-built, restarted target with current native `VectorIndexRead::search`; collection search was independently smoke-tested before restart. The persisted result is `work/upstream_sync/sisap300k/collection_full_2026_10_07_attempt2/summary.json`.
+
+| Full 9,980-query measure | Synchronized Qdrant 1.19.2 | Frozen accepted 300K |
+|---|---:|---:|
+| Mean returned Recall@10 | 0.798136273 | 0.797885772 |
+| Mean candidates | 3041.541 | 3041.216 |
+| Candidate p50 / p95 / p99 | 2923 / 4936 / 6040 | 2923 / 4938 / 6047.4 |
+| Mean candidate fraction | 1.013847% | 1.013739% |
+| State / router / postings bytes | 356 / 2,699,492 / 1,204,408 | 233 / 2,830,573 / 1,204,408 |
+| Query latency | Native debug p50 23.77 ms, p95 30.82 ms | HTTP p50 3.04 ms, p95 3.94 ms |
+
+The absolute recall difference is +0.000250501 and candidate-work difference +0.325 per query. They are very small relative to run-level route/scoring variation; full-set behavior is compatible with the accepted baseline. This is an empirical compatibility conclusion, not a claim of byte-identical router state or statistically isolated causes. The v3 state/export representation differs by design. Query latency is **not comparable** across native debug and historical optimized HTTP paths. No probe frontier was run and no optimal `nprobe` was selected.
+
+## Final source-contract audit
+
+| Contract | Final status | Evidence or boundary |
+|---|---|---|
+| Candidate scoring and RawScorer | VALIDATED | Current scorer and deletion/tie tests; six default-binary tests passed. |
+| Vector storage, constructor, combined storage | PORT COMPLETE | Generic current builder seam retained; target-only storage/tracker passed to index; GraphInline rejected for LMI. |
+| Index enum, static serving and v3 persistence | VALIDATED | Shell/static tests, default-binary reopen, three-file state and corrupt-open rejection. |
+| Training, Float16 and coverage | VALIDATED | Small Float32/Float16 builds, 100K system build, full 300K target coverage. |
+| Collection config and gRPC | PORT COMPLETE | Optional config/diff roundtrips, complete-proposal validation, persisted restart. |
+| Indexing, merge and mismatch optimizers | VALIDATED | Fresh target offsets, config A→B and LMI→Plain rebuild, repeated generations. |
+| Concurrent writes and publication | VALIDATED | Paused-proxy insert/update/delete test; collection search across immutable LMI and mutable Plain. |
+| Snapshot, restart, read-only | VALIDATED | Collection snapshot hash equality and restart; default serving and read-only segment opens. |
+| Memory and telemetry | SUPPORTED WITH LIMITATION | Indexed population and auxiliary heap/files reported; local build plan is not global memory admission. |
+| Cargo dependencies and lock | PORT COMPLETE | Upstream dependencies retained; optional Torch feature and one test-only `half` collection dependency added. |
+| DLI, CLI, co-resident indexes, G2 frontier | INTENTIONALLY UNSUPPORTED | Outside this static-LMI forward-port. |
+
+## Pre-G2 handoff
+
+Build a **fresh synchronized SISAP10M v3** state before G2. The historical v2 state cannot open under the explicit current v3 preprocessing/state contract; a read-only v2→v3 adapter would add compatibility code without providing a stronger scientific comparison. Preserve `/home/nicoo/work/qdrant` and its 10.12M artifact unchanged. Use a new synchronized collection and output path such as `/home/nicoo/work/lmi-sisap2023-storage/10m-f16-qdrant-119-sync` and `work/upstream_sync/sisap10m/pre_g2_119`; refuse to overwrite either path. The historical path `/home/nicoo/work/lmi-sisap2023-storage/10m-f16` and frozen repository are read-only. Capture source and state hashes. The frozen accepted config is exactly N=10,120,191, d=768, Cosine, Float16 on disk, B=3162, H=512, sample=250,000, 30 epochs, five KMeans iterations, training/routing batch=256, nprobe=4 and seed=42. The historical ingestion/consolidation ceiling was 32,000,000 KB. After that baseline passes restart and full-set returned Recall@10 checks, run the separate G2 `nprobe=1,2,4,8,16,32` sweep. Record returned Recall@10, candidate count/fraction, native and end-to-end latency under explicit warm/cold conditions, and Pareto comparisons without substituting candidate coverage for returned recall. Do not start G2 from an unvalidated 10M state.
+
+
+## Completed lifecycle validation and repository state
+
+The synchronized branch continues from `7c1dc3e44f231460e875e24dfd94f0434e6d1b3d`. The collection lifecycle and full-query gate are committed as `e00965326` (LMI: integrate optimizer lifecycle and full collection validation). The report commit follows this implementation. No historical repository or frozen 10M state was altered.
+
+| Final gate | Result |
+|---|---|
+| Collection LMI configuration, target rebuild, concurrent writes, three generations, restart, snapshot | `cargo test -p collection --features lmi-training lmi_ --locked`: 5 passed, full-data gate intentionally ignored in this short selection |
+| Fresh collection SISAP300K and all 9,980 measured query rows | Explicit ignored `sisap300k_full_collection_lifecycle_and_queries` gate: 1 passed; `summary.json` path above |
+| Segment candidate scoring, shell, static serving | 6 + 5 + 8 passed in default build |
+| Segment training unit tests | 25 passed; 1 optional benchmark ignored |
+| Small Float32 and Float16 production builds | 3 passed; two large opt-in gates ignored by default |
+| 100K synthetic target build and reopen | Explicit gate passed |
+| Plain exact, HNSW filtered, HNSW normal | 1 + 4 + 1 passed |
+| Default and training-enabled workspace checks | `cargo check --workspace --locked` and `cargo check --workspace --features segment/lmi-training --locked` both passed |
+| Changed-file whitespace | `git diff --check` passed |
+
+The generated gRPC Rust source retains the upstream generator's formatting convention; applying standalone rustfmt to that entire generated file would rewrite unrelated declarations. Hand-edited Rust files were checked separately. The final branch push and archival tag are verified separately from these code gates.
