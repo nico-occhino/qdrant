@@ -1,11 +1,19 @@
-//! Minimal LMI index shell for validating Qdrant 1.19 scoring ownership.
-//! Training, routing state, postings, persistence, and optimizer hooks are absent.
+//! Static LMI index: pure-Rust serving with optional build-only Torch training.
+//! Segment optimizer publication is outside this module and remains a separate stage.
 
+#[cfg(feature = "lmi-training")]
+mod build;
+#[cfg(feature = "lmi-training")]
+mod build_plan;
 mod config;
 mod postings;
 pub mod read_only;
 mod routing;
+#[cfg(feature = "lmi-training")]
+mod spherical_kmeans;
 mod state;
+#[cfg(feature = "lmi-training")]
+mod training;
 pub use config::LmiConfig;
 pub use postings::CompactPostings;
 pub use routing::{LinearLayer, LmiRoutingState, MlpRouter, RouterLayer};

@@ -134,10 +134,28 @@ pub(crate) fn build_vector_index<R: Rng + ?Sized>(
             quantized_vectors,
             payload_index,
         )),
-        Indexes::LmiTrained(_) => {
-            return Err(OperationError::service_error(
-                "Trained LMI build is not ported to Qdrant 1.19.2",
-            ));
+        Indexes::LmiTrained(_config) => {
+            #[cfg(feature = "lmi-training")]
+            {
+                VectorIndexEnum::Lmi(LmiIndex::build_trained(
+                    VectorIndexOpenArgs {
+                        path,
+                        id_tracker,
+                        vector_storage,
+                        payload_index,
+                        quantized_vectors,
+                    },
+                    vector_config,
+                    *_config,
+                    build_args,
+                )?)
+            }
+            #[cfg(not(feature = "lmi-training"))]
+            {
+                return Err(OperationError::service_error(
+                    "LMI construction requires the lmi-training Cargo feature",
+                ));
+            }
         }
         Indexes::Hnsw(hnsw_config) => VectorIndexEnum::Hnsw(HNSWIndex::build(
             HnswIndexOpenArgs {

@@ -1,7 +1,7 @@
-//! Versioned, serving-only persisted LMI state. Files belong to one segment generation.
+//! Versioned persisted LMI state. Files belong to one segment generation.
 use std::path::{Path, PathBuf};
 
-#[cfg(feature = "testing")]
+#[cfg(any(feature = "testing", feature = "lmi-training"))]
 use common::fs::{atomic_save_bin, atomic_save_json};
 use common::universal_io::{MmapFs, UniversalReadFs, read_bin_via, read_json_via};
 use serde::{Deserialize, Serialize};
@@ -41,6 +41,8 @@ pub struct LmiStateMetadata {
     pub datatype: VectorStorageDatatype,
     pub preprocessing: RouterPreprocessing,
     pub total_vectors: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexed_live_count: Option<usize>,
     pub router_format: u32,
     pub postings_format: u32,
 }
@@ -60,6 +62,7 @@ impl LmiStateMetadata {
             datatype,
             preprocessing: RouterPreprocessing::for_distance(vector_config.distance),
             total_vectors,
+            indexed_live_count: None,
             router_format: 1,
             postings_format: 1,
         }
@@ -127,6 +130,14 @@ impl LmiStateMetadata {
             ));
         }
         postings.validate()?;
+        if self
+            .indexed_live_count
+            .is_some_and(|count| count != postings.point_count())
+        {
+            return Err(OperationError::service_error(
+                "LMI indexed live count/posting count mismatch",
+            ));
+        }
         if postings
             .iter()
             .flatten()
@@ -194,7 +205,7 @@ pub fn load_local(
     )
 }
 
-/// Controlled fixture installation only. Future training owns production writes.
+/// Controlled fixture installation for tests; production uses `save_trained`.
 #[cfg(feature = "testing")]
 pub fn save_fixture_state(
     path: &Path,
@@ -210,6 +221,38 @@ pub fn save_fixture_state(
         routing.router(),
         routing.postings(),
     )?;
+    fs_err::create_dir_all(path)?;
+    atomic_save_bin(&path.join(LMI_ROUTER_FILE), routing.router())?;
+    atomic_save_bin(&path.join(LMI_POSTINGS_FILE), routing.postings())?;
+    atomic_save_json(&path.join(LMI_STATE_FILE), metadata)?;
+    Ok(())
+}
+
+/// Production writer: an empty staging index directory is required, so metadata
+/// is published only after both validated binary payloads exist.
+#[cfg(feature = "lmi-training")]
+pub(crate) fn save_trained(
+    path: &Path,
+    metadata: &LmiStateMetadata,
+    routing: &LmiRoutingState,
+    vector_config: &VectorDataConfig,
+) -> OperationResult<()> {
+    metadata.validate(
+        metadata.config,
+        vector_config,
+        metadata.datatype,
+        metadata.total_vectors,
+        routing.router(),
+        routing.postings(),
+    )?;
+    if path.join(LMI_STATE_FILE).exists()
+        || path.join(LMI_ROUTER_FILE).exists()
+        || path.join(LMI_POSTINGS_FILE).exists()
+    {
+        return Err(OperationError::service_error(
+            "LMI production build requires a fresh target index directory",
+        ));
+    }
     fs_err::create_dir_all(path)?;
     atomic_save_bin(&path.join(LMI_ROUTER_FILE), routing.router())?;
     atomic_save_bin(&path.join(LMI_POSTINGS_FILE), routing.postings())?;

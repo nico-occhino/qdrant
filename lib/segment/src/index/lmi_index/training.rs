@@ -1,0 +1,646 @@
+//! Build-only CPU training. No HDF5, Python orchestration or standalone scoring.
+use std::sync::Once;
+use std::sync::atomic::AtomicBool;
+
+use rand::rngs::StdRng;
+use rand::seq::SliceRandom;
+use rand::{RngExt, SeedableRng};
+use tch::nn::{Module, OptimizerConfig};
+use tch::{Device, Tensor, nn};
+
+use super::{LinearLayer, LmiConfig, MlpRouter, RouterLayer};
+use crate::common::operation_error::{OperationError, OperationResult, check_process_stopped};
+use crate::types::Distance;
+
+fn torch_error(err: tch::TchError) -> OperationError {
+    OperationError::service_error(format!("LMI training: {err}"))
+}
+
+/// Retained only during index construction; persistence still exports native weights.
+pub(super) struct TrainedRouter {
+    pub(super) native: MlpRouter,
+    first: nn::Linear,
+    last: nn::Linear,
+    _store: nn::VarStore,
+    input_dim: usize,
+    bucket_count: usize,
+}
+
+impl TrainedRouter {
+    #[cfg(test)]
+    pub(super) fn from_native_for_test(native: MlpRouter) -> OperationResult<Self> {
+        let [
+            RouterLayer::Linear(a),
+            RouterLayer::ReLU,
+            RouterLayer::Linear(b),
+        ] = native.layers.as_slice()
+        else {
+            return Err(OperationError::service_error(
+                "Expected two-layer LMI test model",
+            ));
+        };
+        let (input_dim, bucket_count) = native.validate()?;
+        let store = nn::VarStore::new(Device::Cpu);
+        let mut first = nn::linear(
+            &store.root() / "hidden",
+            a.in_features as i64,
+            a.out_features as i64,
+            Default::default(),
+        );
+        let mut last = nn::linear(
+            &store.root() / "output",
+            b.in_features as i64,
+            b.out_features as i64,
+            Default::default(),
+        );
+        let copy = |layer: &mut nn::Linear,
+                    weights: &[f32],
+                    bias: &[f32],
+                    outputs: usize,
+                    inputs: usize|
+         -> OperationResult<()> {
+            tch::no_grad(|| -> Result<(), tch::TchError> {
+                layer.ws.f_copy_(
+                    &Tensor::f_from_slice(weights)?.f_reshape([outputs as i64, inputs as i64])?,
+                )?;
+                layer
+                    .bs
+                    .as_mut()
+                    .unwrap()
+                    .f_copy_(&Tensor::f_from_slice(bias)?)?;
+                Ok(())
+            })
+            .map_err(torch_error)
+        };
+        copy(
+            &mut first,
+            &a.weights,
+            &a.bias,
+            a.out_features,
+            a.in_features,
+        )?;
+        copy(
+            &mut last,
+            &b.weights,
+            &b.bias,
+            b.out_features,
+            b.in_features,
+        )?;
+        Ok(Self {
+            native,
+            first,
+            last,
+            _store: store,
+            input_dim,
+            bucket_count,
+        })
+    }
+
+    /// Diagnostic only: expose raw Torch logits for margin and rank analysis.
+    #[cfg(test)]
+    pub(super) fn logits_for_test(
+        &self,
+        inputs: &[f32],
+    ) -> OperationResult<(Vec<f32>, Vec<usize>)> {
+        if !inputs.len().is_multiple_of(self.input_dim) || inputs.iter().any(|v| !v.is_finite()) {
+            return Err(OperationError::service_error(
+                "Invalid LMI diagnostic input",
+            ));
+        }
+        let rows = inputs.len() / self.input_dim;
+        let x = Tensor::f_from_slice(inputs)
+            .and_then(|t| t.f_reshape([rows as i64, self.input_dim as i64]))
+            .map_err(torch_error)?;
+        let logits = tch::no_grad(|| self.last.forward(&self.first.forward(&x).relu()));
+        let ids = Vec::<i64>::try_from(logits.argmax(-1, false)).map_err(torch_error)?;
+        let ids = ids.into_iter().map(|v| v as usize).collect();
+        let values =
+            Vec::<f32>::try_from(logits.f_view([-1]).map_err(torch_error)?).map_err(torch_error)?;
+        Ok((values, ids))
+    }
+
+    /// Experimental build-only fast path. Verify ambiguous rows with the
+    /// unchanged native arithmetic and smaller-ID tie rule.
+    pub(super) fn top_buckets_tie_safe(
+        &self,
+        inputs: &[f32],
+        stopped: &AtomicBool,
+        native: &mut super::routing::BuildRouter<'_>,
+    ) -> OperationResult<(Vec<usize>, usize)> {
+        check_process_stopped(stopped)?;
+        let (dim, buckets) = (self.input_dim, self.bucket_count);
+        if !inputs.len().is_multiple_of(dim) || inputs.iter().any(|v| !v.is_finite()) {
+            return Err(OperationError::service_error(
+                "Invalid LMI tch routing input",
+            ));
+        }
+        let rows = inputs.len() / dim;
+        if rows == 0 {
+            return Ok((Vec::new(), 0));
+        }
+        let x = Tensor::f_from_slice(inputs)
+            .and_then(|t| t.f_reshape([rows as i64, dim as i64]))
+            .map_err(torch_error)?;
+        let logits = tch::no_grad(|| self.last.forward(&self.first.forward(&x).relu()));
+        if logits.size() != [rows as i64, buckets as i64]
+            || logits.isfinite().all().int64_value(&[]) == 0
+        {
+            return Err(OperationError::service_error(
+                "Non-finite or malformed LMI tch logits",
+            ));
+        }
+        // The two largest values are sufficient to detect an ambiguous top-1;
+        // fallback itself always evaluates the full native model.
+        let (values, indices) = logits.topk(buckets.min(2) as i64, -1, true, true);
+        let values =
+            Vec::<f32>::try_from(values.f_view([-1]).map_err(torch_error)?).map_err(torch_error)?;
+        let indices = Vec::<i64>::try_from(indices.f_view([-1]).map_err(torch_error)?)
+            .map_err(torch_error)?;
+        let stride = buckets.min(2);
+        let mut result = Vec::with_capacity(rows);
+        let mut fallback_count = 0;
+        for row in 0..rows {
+            let id = usize::try_from(indices[row * stride])
+                .ok()
+                .filter(|&id| id < buckets)
+                .ok_or_else(|| OperationError::service_error("Invalid LMI tch bucket ID"))?;
+            let ambiguous = if stride == 2 {
+                let first = values[row * stride];
+                let second = values[row * stride + 1];
+                let margin = first - second;
+                !margin.is_finite()
+                    || margin <= 4.0 * f32::EPSILON * (1.0 + first.abs().max(second.abs()))
+            } else {
+                false
+            };
+            if ambiguous {
+                result.push(native.top_bucket(&inputs[row * dim..(row + 1) * dim], stopped)?);
+                fallback_count += 1;
+            } else {
+                result.push(id);
+            }
+        }
+        check_process_stopped(stopped)?;
+        Ok((result, fallback_count))
+    }
+
+    #[cfg(test)]
+    pub(super) fn top_buckets(
+        &self,
+        inputs: &[f32],
+        stopped: &AtomicBool,
+    ) -> OperationResult<Vec<usize>> {
+        check_process_stopped(stopped)?;
+        let (dim, buckets) = (self.input_dim, self.bucket_count);
+        if inputs.len() % dim != 0 || inputs.iter().any(|v| !v.is_finite()) {
+            return Err(OperationError::service_error(
+                "Invalid LMI tch routing input",
+            ));
+        }
+        let rows = inputs.len() / dim;
+        if rows == 0 {
+            return Ok(Vec::new());
+        }
+        let x = Tensor::f_from_slice(inputs)
+            .and_then(|t| t.f_reshape([rows as i64, dim as i64]))
+            .map_err(torch_error)?;
+        let logits = tch::no_grad(|| self.last.forward(&self.first.forward(&x).relu()));
+        if logits.size() != [rows as i64, buckets as i64]
+            || logits.isfinite().all().int64_value(&[]) == 0
+        {
+            return Err(OperationError::service_error(
+                "Non-finite or malformed LMI tch logits",
+            ));
+        }
+        // Argmax reduces the K×B logits immediately; no corpus-sized tensor survives.
+        let ids = Vec::<i64>::try_from(logits.argmax(-1, false)).map_err(torch_error)?;
+        let result = ids
+            .into_iter()
+            .map(|id| usize::try_from(id).ok().filter(|&id| id < buckets))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| OperationError::service_error("Invalid LMI tch bucket ID"))?;
+        check_process_stopped(stopped)?;
+        Ok(result)
+    }
+}
+
+/// Stable-Rust Lloyd clustering with seeded random-sample initialization.
+/// Empty clusters keep their previous centroid; ties prefer the first cluster.
+pub(super) fn cluster_with_centers(
+    data: &[f32],
+    dim: usize,
+    config: &LmiConfig,
+    stopped: &AtomicBool,
+) -> OperationResult<(Vec<i64>, Vec<Vec<f64>>)> {
+    let count = data.len() / dim;
+    let mut rng = StdRng::seed_from_u64(config.seed);
+    let mut order: Vec<_> = (0..count).collect();
+    order.shuffle(&mut rng);
+    let mut centers: Vec<Vec<f64>> = order[..config.n_buckets]
+        .iter()
+        .map(|&i| {
+            data[i * dim..(i + 1) * dim]
+                .iter()
+                .map(|&v| f64::from(v))
+                .collect()
+        })
+        .collect();
+    let assign = |row: &[f32], centers: &[Vec<f64>]| {
+        centers
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let d: f64 = row
+                    .iter()
+                    .zip(c)
+                    .map(|(&x, &y)| (f64::from(x) - y).powi(2))
+                    .sum();
+                (i, d)
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)))
+            .unwrap()
+            .0
+    };
+    let mut labels = vec![usize::MAX; count];
+    for _ in 0..config.kmeans_iterations {
+        check_process_stopped(stopped)?;
+        let mut sums = vec![vec![0.0f64; dim]; config.n_buckets];
+        let mut sizes = vec![0usize; config.n_buckets];
+        let mut changed = false;
+        for (i, row) in data.chunks_exact(dim).enumerate() {
+            check_process_stopped(stopped)?;
+            let label = assign(row, &centers);
+            changed |= labels[i] != label;
+            labels[i] = label;
+            sizes[label] += 1;
+            for (sum, &x) in sums[label].iter_mut().zip(row) {
+                *sum += f64::from(x);
+            }
+        }
+        for b in 0..config.n_buckets {
+            if sizes[b] > 0 {
+                for j in 0..dim {
+                    centers[b][j] = sums[b][j] / sizes[b] as f64;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    // Assign against the final centroids, including when the iteration limit was reached.
+    let mut result = Vec::with_capacity(count);
+    for row in data.chunks_exact(dim) {
+        check_process_stopped(stopped)?;
+        result.push(assign(row, &centers) as i64);
+    }
+    Ok((result, centers))
+}
+
+pub(super) fn cluster(
+    data: &[f32],
+    dim: usize,
+    config: &LmiConfig,
+    stopped: &AtomicBool,
+) -> OperationResult<Vec<i64>> {
+    cluster_with_centers(data, dim, config, stopped).map(|(labels, _)| labels)
+}
+
+#[cfg(test)]
+pub(super) static STAGE_SECONDS: std::sync::Mutex<[f64; 2]> = std::sync::Mutex::new([0.0; 2]);
+
+#[cfg(test)]
+pub(super) fn train(
+    data: &[f32],
+    dim: usize,
+    config: &LmiConfig,
+    distance: Distance,
+    stopped: &AtomicBool,
+) -> OperationResult<MlpRouter> {
+    train_with_tch(data, dim, config, distance, stopped).map(|trained| trained.native)
+}
+
+pub(super) fn train_with_tch(
+    data: &[f32],
+    dim: usize,
+    config: &LmiConfig,
+    distance: Distance,
+    stopped: &AtomicBool,
+) -> OperationResult<TrainedRouter> {
+    check_process_stopped(stopped)?;
+    let cluster_started = std::time::Instant::now();
+    let labels = match distance {
+        Distance::Cosine => {
+            let (labels, _, stats) =
+                super::spherical_kmeans::cluster_with_centers_qdrant(data, dim, config, stopped)?;
+            log::info!(
+                "LMI spherical teacher: iterations={} init_seconds={:.6} assignment_seconds={:?} accumulation_seconds={:?} normalization_seconds={:?} final_assignment_seconds={:.6} empty_buckets={} min_bucket={} max_bucket={}",
+                stats.iterations,
+                stats.initialization_seconds,
+                stats.assignment_seconds,
+                stats.accumulation_seconds,
+                stats.normalization_seconds,
+                stats.final_assignment_seconds,
+                stats.sizes.iter().filter(|&&size| size == 0).count(),
+                stats.sizes.iter().min().copied().unwrap_or(0),
+                stats.sizes.iter().max().copied().unwrap_or(0),
+            );
+            labels
+        }
+        // Preserve the existing teacher for non-cosine fields in this phase.
+        Distance::Euclid | Distance::Dot | Distance::Manhattan => {
+            cluster(data, dim, config, stopped)?
+        }
+    };
+    let cluster_seconds = cluster_started.elapsed().as_secs_f64();
+    let mlp_started = std::time::Instant::now();
+    let trained = train_labeled_with_tch(data, &labels, dim, config, stopped, None)?;
+    let mlp_seconds = mlp_started.elapsed().as_secs_f64();
+    log::info!(
+        "LMI training: sample={} dimensions={dim} buckets={} epochs={} teacher_seconds={cluster_seconds:.6} mlp_export_seconds={mlp_seconds:.6}",
+        labels.len(),
+        config.n_buckets,
+        config.epochs,
+    );
+    #[cfg(test)]
+    {
+        *STAGE_SECONDS.lock().unwrap() = [cluster_seconds, mlp_seconds];
+    }
+    Ok(trained)
+}
+
+/// Fixed-label seam for controlled teacher experiments; normal builds pass no observer.
+/// Observer receives epoch, post-epoch full-sample loss/accuracy, optimizer seconds.
+#[cfg(test)]
+pub(super) fn train_labeled(
+    data: &[f32],
+    labels: &[i64],
+    dim: usize,
+    config: &LmiConfig,
+    stopped: &AtomicBool,
+    observer: Option<&mut dyn FnMut(usize, f64, f64, f64)>,
+) -> OperationResult<MlpRouter> {
+    train_labeled_with_tch(data, labels, dim, config, stopped, observer)
+        .map(|trained| trained.native)
+}
+
+fn train_labeled_with_tch(
+    data: &[f32],
+    labels: &[i64],
+    dim: usize,
+    config: &LmiConfig,
+    stopped: &AtomicBool,
+    mut observer: Option<&mut dyn FnMut(usize, f64, f64, f64)>,
+) -> OperationResult<TrainedRouter> {
+    check_process_stopped(stopped)?;
+    // The only Torch consumer in Qdrant. Set the process-wide inter-op policy once.
+    // Intra-op settings are applied on each builder thread; never exceed one CPU.
+    static INIT: Once = Once::new();
+    INIT.call_once(|| tch::set_num_interop_threads(1));
+    tch::set_num_threads(1);
+    let store = nn::VarStore::new(Device::Cpu);
+    let options = nn::LinearConfig {
+        ws_init: nn::Init::Const(0.0),
+        bs_init: Some(nn::Init::Const(0.0)),
+        bias: true,
+    };
+    let mut first = nn::linear(
+        &store.root() / "hidden",
+        dim as i64,
+        config.hidden_dim as i64,
+        options,
+    );
+    let mut last = nn::linear(
+        &store.root() / "output",
+        config.hidden_dim as i64,
+        config.n_buckets as i64,
+        options,
+    );
+    // Local Rust RNG avoids process-global Torch seeds and cross-build interference.
+    let mut rng = StdRng::seed_from_u64(config.seed);
+    for (layer, input, output) in [
+        (&mut first, dim, config.hidden_dim),
+        (&mut last, config.hidden_dim, config.n_buckets),
+    ] {
+        let bound = (1.0 / input as f32).sqrt();
+        let weights: Vec<f32> = (0..input * output)
+            .map(|_| rng.random_range(-bound..bound))
+            .collect();
+        let biases: Vec<f32> = (0..output)
+            .map(|_| rng.random_range(-bound..bound))
+            .collect();
+        tch::no_grad(|| -> Result<(), tch::TchError> {
+            layer.ws.f_copy_(
+                &Tensor::f_from_slice(&weights)?.f_reshape([output as i64, input as i64])?,
+            )?;
+            layer
+                .bs
+                .as_mut()
+                .unwrap()
+                .f_copy_(&Tensor::f_from_slice(&biases)?)?;
+            Ok(())
+        })
+        .map_err(torch_error)?;
+    }
+    let x = Tensor::f_from_slice(data)
+        .and_then(|t| t.f_reshape([labels.len() as i64, dim as i64]))
+        .map_err(torch_error)?;
+    let y = Tensor::f_from_slice(&labels).map_err(torch_error)?;
+    let mut optimizer = nn::Adam::default()
+        .build(&store, 1e-3)
+        .map_err(torch_error)?;
+    let mut order: Vec<i64> = (0..labels.len() as i64).collect();
+    for epoch in 0..config.epochs {
+        let epoch_started = observer.as_ref().map(|_| std::time::Instant::now());
+        check_process_stopped(stopped)?;
+        order.shuffle(&mut rng);
+        for batch in order.chunks(config.batch_size) {
+            check_process_stopped(stopped)?;
+            let indices = Tensor::f_from_slice(batch).map_err(torch_error)?;
+            let bx = x.f_index_select(0, &indices).map_err(torch_error)?;
+            let by = y.f_index_select(0, &indices).map_err(torch_error)?;
+            let loss = last
+                .forward(&first.forward(&bx).relu())
+                .cross_entropy_for_logits(&by);
+            if !loss.double_value(&[]).is_finite() {
+                return Err(OperationError::service_error(
+                    "Non-finite LMI training loss",
+                ));
+            }
+            optimizer.backward_step(&loss);
+        }
+        if let Some(observe) = observer.as_mut() {
+            let optimizer_seconds = epoch_started.unwrap().elapsed().as_secs_f64();
+            let (loss, accuracy) = tch::no_grad(|| {
+                let logits = last.forward(&first.forward(&x).relu());
+                let loss = logits.cross_entropy_for_logits(&y).double_value(&[]);
+                let accuracy = logits
+                    .argmax(-1, false)
+                    .eq_tensor(&y)
+                    .to_kind(tch::Kind::Float)
+                    .mean(tch::Kind::Float)
+                    .double_value(&[]);
+                (loss, accuracy)
+            });
+            observe(epoch + 1, loss, accuracy, optimizer_seconds);
+        }
+        log::debug!("LMI training epoch {}/{}", epoch + 1, config.epochs);
+    }
+    let export = |layer: &nn::Linear, input, output| -> OperationResult<RouterLayer> {
+        Ok(RouterLayer::Linear(LinearLayer {
+            in_features: input,
+            out_features: output,
+            weights: Vec::<f32>::try_from(&layer.ws.f_view([-1]).map_err(torch_error)?)
+                .map_err(torch_error)?,
+            bias: Vec::<f32>::try_from(layer.bs.as_ref().unwrap()).map_err(torch_error)?,
+        }))
+    };
+    let router = MlpRouter {
+        layers: vec![
+            export(&first, dim, config.hidden_dim)?,
+            RouterLayer::ReLU,
+            export(&last, config.hidden_dim, config.n_buckets)?,
+        ],
+    };
+    router.validate()?;
+    // Validate the ownership/runtime boundary on up to 32 actual sampled inputs.
+    for row in data.chunks_exact(dim).take(32) {
+        check_process_stopped(stopped)?;
+        let input = Tensor::f_from_slice(row).map_err(torch_error)?;
+        let reference = tch::no_grad(|| last.forward(&first.forward(&input).relu()));
+        let reference = Vec::<f32>::try_from(reference).map_err(torch_error)?;
+        let native = router.forward(row)?;
+        if reference
+            .iter()
+            .zip(native)
+            .any(|(&a, b)| !a.is_finite() || (a - b).abs() > 1e-4 + 1e-4 * a.abs())
+        {
+            return Err(OperationError::service_error(
+                "LMI native/Torch export mismatch",
+            ));
+        }
+    }
+    check_process_stopped(stopped)?;
+    Ok(TrainedRouter {
+        native: router,
+        first,
+        last,
+        _store: store,
+        input_dim: dim,
+        bucket_count: config.n_buckets,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trained_export_has_finite_weights_and_torch_native_logits_agree() {
+        let config = LmiConfig {
+            n_buckets: 2,
+            sample_size: 8,
+            hidden_dim: 4,
+            epochs: 4,
+            batch_size: 4,
+            routing_batch_size: 3,
+            kmeans_iterations: 5,
+            nprobe: 1,
+            seed: 42,
+        };
+        let data = [
+            1.0,
+            0.0,
+            0.9,
+            0.4358899,
+            0.0,
+            1.0,
+            -1.0,
+            0.0,
+            -0.9,
+            -0.4358899,
+            0.0,
+            -1.0,
+            0.7,
+            0.71414286,
+            -0.7,
+            -0.71414286,
+        ];
+        let stopped = AtomicBool::new(false);
+        let trained = train_with_tch(&data, 2, &config, Distance::Cosine, &stopped).unwrap();
+        trained.native.validate().unwrap();
+        let (torch_logits, _) = trained.logits_for_test(&data).unwrap();
+        for (row, logits) in data.chunks_exact(2).zip(torch_logits.chunks_exact(2)) {
+            let native = trained.native.forward(row).unwrap();
+            for (&a, &b) in native.iter().zip(logits) {
+                assert!(a.is_finite() && b.is_finite());
+                assert!((a - b).abs() < 1e-4);
+            }
+        }
+        let again = train_with_tch(&data, 2, &config, Distance::Cosine, &stopped).unwrap();
+        assert_eq!(trained.native, again.native);
+    }
+
+    #[test]
+    fn tie_safe_torch_batches_match_native_for_every_vector() {
+        let native = MlpRouter {
+            layers: vec![
+                RouterLayer::Linear(LinearLayer {
+                    in_features: 2,
+                    out_features: 3,
+                    weights: vec![1.0, 0.0, 0.0, 1.0, -1.0, 1.0],
+                    bias: vec![0.0; 3],
+                }),
+                RouterLayer::ReLU,
+                RouterLayer::Linear(LinearLayer {
+                    in_features: 3,
+                    out_features: 3,
+                    weights: vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                    bias: vec![0.0; 3],
+                }),
+            ],
+        };
+        let trained = TrainedRouter::from_native_for_test(native.clone()).unwrap();
+        let stopped = AtomicBool::new(false);
+        let mut verifier = super::super::routing::BuildRouter::new(&native, &stopped).unwrap();
+        let mut rng = StdRng::seed_from_u64(311);
+        let mut rows = Vec::new();
+        rows.extend_from_slice(&[0.0, 0.0, 1.0, 1.0, -0.0, 0.0]);
+        for _ in 0..1024 {
+            rows.push(rng.random_range(-1.0..1.0));
+            rows.push(rng.random_range(-1.0..1.0));
+        }
+        let mut fallback_count = 0;
+        for batch in rows.chunks(2 * 31) {
+            let (torch, fallbacks) = trained
+                .top_buckets_tie_safe(batch, &stopped, &mut verifier)
+                .unwrap();
+            fallback_count += fallbacks;
+            for (row, &bucket) in batch.chunks_exact(2).zip(&torch) {
+                assert_eq!(bucket, native.top_buckets(row, 1).unwrap()[0]);
+            }
+        }
+        assert!(
+            fallback_count >= 2,
+            "exact ties must use native verification"
+        );
+    }
+
+    #[test]
+    fn lloyd_separates_clusters_and_obeys_cancellation() {
+        let config = LmiConfig {
+            n_buckets: 2,
+            sample_size: 4,
+            nprobe: 1,
+            kmeans_iterations: 10,
+            ..Default::default()
+        };
+        let data = [-10.0, -9.0, 9.0, 10.0];
+        let labels = cluster(&data, 1, &config, &AtomicBool::new(false)).unwrap();
+        assert_eq!(labels[0], labels[1]);
+        assert_eq!(labels[2], labels[3]);
+        assert_ne!(labels[0], labels[2]);
+        assert!(cluster(&data, 1, &config, &AtomicBool::new(true)).is_err());
+        assert!(train(&data, 1, &config, Distance::Euclid, &AtomicBool::new(true)).is_err());
+    }
+}
