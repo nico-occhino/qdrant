@@ -87,6 +87,7 @@ impl EdgeVectorParams {
                 .or_else(|| global_quantization_config.cloned()),
             multivector_config: *multivector_config,
             datatype: *datatype,
+            lmi_config: None,
         }
     }
 

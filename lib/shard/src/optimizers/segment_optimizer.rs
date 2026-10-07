@@ -165,6 +165,26 @@ pub trait SegmentOptimizer: Sync {
         &self,
         optimizing_segments: &[LockedSegment],
     ) -> OperationResult<SegmentBuilder> {
+        for (name, config) in &self.segment_optimizer_config().dense_vectors {
+            if config.lmi_config.is_some() {
+                if !segment::index::lmi_index::training_available() {
+                    return Err(OperationError::service_error(
+                        "LMI optimization requires the lmi-training feature",
+                    ));
+                }
+                if config.hnsw_config.inline_storage == Some(true) {
+                    return Err(OperationError::service_error(format!(
+                        "LMI vector {name} is incompatible with GraphInline",
+                    )));
+                }
+                if config.quantization_config.is_some() {
+                    return Err(OperationError::service_error(format!(
+                        "LMI vector {name} is incompatible with quantization",
+                    )));
+                }
+            }
+        }
+
         // Example:
         //
         // S1: {

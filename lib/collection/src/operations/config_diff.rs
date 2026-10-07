@@ -524,6 +524,23 @@ pub enum Disabled {
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 #[serde(untagged)]
+pub enum LmiConfigDiff {
+    Enabled(segment::index::lmi_index::LmiConfig),
+    Disabled(Disabled),
+}
+
+impl Validate for LmiConfigDiff {
+    fn validate(&self) -> Result<(), ValidationErrors> {
+        match self {
+            Self::Enabled(config) => config.validate(),
+            Self::Disabled(_) => Ok(()),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+#[serde(untagged)]
 pub enum QuantizationConfigDiff {
     Scalar(ScalarQuantization),
     Product(ProductQuantization),

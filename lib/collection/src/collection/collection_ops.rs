@@ -56,7 +56,19 @@ impl Collection {
     ) -> CollectionResult<()> {
         {
             let mut config = self.collection_config.write().await;
-            config.hnsw_config = config.hnsw_config.update(&hnsw_config_diff);
+            let updated = config.hnsw_config.update(&hnsw_config_diff);
+            if updated.inline_storage == Some(true)
+                && config
+                    .params
+                    .vectors
+                    .params_iter()
+                    .any(|(_, vector)| vector.lmi_config.is_some())
+            {
+                return Err(CollectionError::bad_input(
+                    "LMI is incompatible with collection-wide GraphInline",
+                ));
+            }
+            config.hnsw_config = updated;
         }
         self.collection_config.read().await.save(&self.path)?;
         Ok(())
@@ -73,10 +85,31 @@ impl Collection {
     ) -> CollectionResult<()> {
         let mut config = self.collection_config.write().await;
         update_vectors_diff.check_vector_names(&config.params)?;
-        config
+        use crate::operations::types::CollectionError;
+        use validator::Validate as _;
+
+        // Validate the complete effective configuration before publishing or persisting it.
+        // A diff may enable LMI while retaining incompatible collection-wide settings.
+        let mut updated = config.clone();
+        updated
             .params
             .update_vectors_from_diff(update_vectors_diff)?;
-        config.save(&self.path)?;
+        for (_, vector) in updated.params.vectors.params_iter() {
+            if vector.lmi_config.is_some() {
+                vector.validate().map_err(|error| {
+                    CollectionError::bad_input(format!("Invalid LMI vector configuration: {error}"))
+                })?;
+                if updated.quantization_config.is_some()
+                    || updated.hnsw_config.inline_storage == Some(true)
+                {
+                    return Err(CollectionError::bad_input(
+                        "LMI is incompatible with collection-wide quantization or GraphInline",
+                    ));
+                }
+            }
+        }
+        updated.save(&self.path)?;
+        *config = updated;
         Ok(())
     }
 
@@ -126,6 +159,19 @@ impl Collection {
     ) -> CollectionResult<()> {
         {
             let mut config = self.collection_config.write().await;
+            if !matches!(
+                quantization_config_diff,
+                QuantizationConfigDiff::Disabled(_)
+            ) && config
+                .params
+                .vectors
+                .params_iter()
+                .any(|(_, vector)| vector.lmi_config.is_some())
+            {
+                return Err(CollectionError::bad_input(
+                    "LMI is incompatible with collection-wide quantization",
+                ));
+            }
             match quantization_config_diff {
                 QuantizationConfigDiff::Scalar(scalar) => {
                     config

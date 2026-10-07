@@ -54,6 +54,27 @@ message VectorParams {
   // Overrides the deprecated `on_disk` flag if both are set.
   // `Pinned` is not supported for dense vector storage.
   optional Memory memory = 8;
+  // Static learned index for optimized segments.
+  optional LmiConfig lmi_config = 9;
+}
+
+message LmiConfig {
+  uint64 n_buckets = 1;
+  uint64 sample_size = 2;
+  uint64 hidden_dim = 3;
+  uint64 epochs = 4;
+  uint64 batch_size = 5;
+  uint64 routing_batch_size = 6;
+  uint64 kmeans_iterations = 7;
+  uint64 nprobe = 8;
+  uint64 seed = 9;
+}
+
+message LmiConfigDiff {
+  oneof change {
+    LmiConfig config = 1;
+    Disabled disabled = 2;
+  }
 }
 
 message VectorParamsDiff {
@@ -70,6 +91,7 @@ message VectorParamsDiff {
   // Overrides the deprecated `on_disk` flag if both are set.
   // `Pinned` is not supported for dense vector storage.
   optional Memory memory = 4;
+  optional LmiConfigDiff lmi_config = 5;
 }
 
 message VectorParamsMap {

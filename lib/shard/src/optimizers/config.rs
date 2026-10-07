@@ -28,6 +28,7 @@ pub struct DenseVectorOptimizerConfig {
     pub quantization_config: Option<QuantizationConfig>,
     pub multivector_config: Option<MultiVectorConfig>,
     pub datatype: Option<VectorStorageDatatype>,
+    pub lmi_config: Option<segment::index::lmi_index::LmiConfig>,
 }
 
 impl DenseVectorOptimizerConfig {
@@ -48,7 +49,8 @@ impl DenseVectorOptimizerConfig {
     /// Config for an indexed segment.
     pub fn indexed(&self) -> VectorDataConfig {
         self.vector_data_config(
-            Indexes::Hnsw(self.hnsw_config),
+            self.lmi_config
+                .map_or(Indexes::Hnsw(self.hnsw_config), Indexes::LmiTrained),
             self.quantization_config.clone(),
         )
     }

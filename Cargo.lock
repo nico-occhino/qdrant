@@ -1383,6 +1383,7 @@ dependencies = [
  "fs-err",
  "fs_extra",
  "futures",
+ "half 2.7.1",
  "hashring",
  "http 1.5.0",
  "indicatif",

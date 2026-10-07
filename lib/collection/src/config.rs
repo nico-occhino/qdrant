@@ -619,6 +619,7 @@ impl CollectionParams {
                 quantization_config,
                 on_disk,
                 memory,
+                lmi_config,
             } = update_params.clone();
 
             if let Some(hnsw_diff) = hnsw_config {
@@ -643,6 +644,13 @@ impl CollectionParams {
                     QuantizationConfigDiff::Turbo(turbo) => Some(QuantizationConfig::Turbo(turbo)),
                     QuantizationConfigDiff::Disabled(_) => None,
                 }
+            }
+
+            if let Some(lmi_diff) = lmi_config {
+                vector_params.lmi_config = match lmi_diff {
+                    crate::operations::config_diff::LmiConfigDiff::Enabled(config) => Some(config),
+                    crate::operations::config_diff::LmiConfigDiff::Disabled(_) => None,
+                };
             }
 
             if let Some(on_disk) = on_disk {
@@ -708,6 +716,7 @@ impl CollectionParams {
                     memory,
                     datatype,
                     multivector_config,
+                    lmi_config: _,
                 } = params;
 
                 let memory_placement = Memory::resolve(

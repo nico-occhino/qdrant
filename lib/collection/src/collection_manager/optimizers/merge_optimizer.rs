@@ -67,6 +67,7 @@ mod tests {
                     quantization_config: None,
                     multivector_config: vector_data.multivector_config,
                     datatype: vector_data.datatype,
+                    lmi_config: None,
                 },
             );
         }

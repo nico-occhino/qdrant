@@ -73,7 +73,15 @@ impl IndexingOptimizer {
                 let is_big_for_index = storage_size_bytes >= indexing_threshold_bytes;
                 let is_big_for_mmap = storage_size_bytes >= mmap_threshold_bytes;
 
-                let optimize_for_index = is_big_for_index && !is_indexed;
+                // A trained LMI requires at least one live target vector per bucket.
+                // Leave an undersized appendable source alone until a later merge can
+                // supply the missing population.
+                let enough_for_lmi = vector_cfg.lmi_config.is_none_or(|config| {
+                    segment
+                        .available_vector_count(vector_name)
+                        .is_ok_and(|count| count >= config.n_buckets)
+                });
+                let optimize_for_index = is_big_for_index && !is_indexed && enough_for_lmi;
                 let optimize_for_mmap = match vector_data.storage_type.memory() {
                     Some(memory) => {
                         let is_on_disk = memory.is_on_disk();

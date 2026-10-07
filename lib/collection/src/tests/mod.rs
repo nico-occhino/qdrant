@@ -5,6 +5,10 @@ mod facet;
 mod fix_payload_indices;
 pub mod fixtures;
 mod hw_metrics;
+#[cfg(feature = "lmi-training")]
+mod lmi_lifecycle;
+#[cfg(feature = "lmi-training")]
+mod lmi_sisap300k;
 mod payload;
 mod points_dedup;
 mod query_prefetch_offset_limit;

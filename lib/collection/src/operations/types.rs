@@ -29,6 +29,7 @@ use segment::common::operation_error::{CancelledError, OperationError};
 use segment::data_types::groups::GroupId;
 use segment::data_types::modifier::Modifier;
 use segment::data_types::vectors::{DEFAULT_VECTOR_NAME, DenseVector};
+use segment::index::lmi_index::LmiConfig;
 use segment::types::{
     Distance, Filter, HnswConfig, Memory, MultiVectorConfig, Payload, PayloadIndexInfo,
     PayloadKeyType, PointIdType, QuantizationConfig, SearchParams, SeqNumberType, ShardKey,
@@ -55,7 +56,7 @@ use validator::{Validate, ValidationError, ValidationErrors};
 use super::ClockTag;
 use crate::config::{CollectionConfigInternal, CollectionParams, WalConfig};
 use crate::operations::cluster_ops::ReshardingDirection;
-use crate::operations::config_diff::{HnswConfigDiff, QuantizationConfigDiff};
+use crate::operations::config_diff::{HnswConfigDiff, LmiConfigDiff, QuantizationConfigDiff};
 use crate::optimizers_builder::OptimizersConfig;
 use crate::shards::replica_set::replica_set_state::ReplicaState;
 use crate::shards::resharding::ReshardingStage;
@@ -1420,6 +1421,7 @@ impl From<Datatype> for VectorStorageDatatype {
 )]
 #[serde(rename_all = "snake_case")]
 #[anonymize(false)]
+#[validate(schema(function = "validate_lmi_vector_params"))]
 pub struct VectorParams {
     /// Size of a vectors used
     #[schemars(range(min = 1, max = 65536))]
@@ -1469,6 +1471,45 @@ pub struct VectorParams {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multivector_config: Option<MultiVectorConfig>,
+    /// Optional static learned index for optimized segments; appendable segments remain Plain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[validate(nested)]
+    pub lmi_config: Option<LmiConfig>,
+}
+
+fn validate_lmi_vector_params(params: &VectorParams) -> Result<(), ValidationError> {
+    if params.lmi_config.is_none() {
+        return Ok(());
+    }
+    let reason = if !segment::index::lmi_index::training_available() {
+        Some("LMI collection creation requires a training-enabled binary")
+    } else if params.distance != Distance::Cosine {
+        Some("LMI training supports Cosine only")
+    } else if params.multivector_config.is_some() {
+        Some("LMI requires a dense single-vector field")
+    } else if params
+        .datatype
+        .is_some_and(|datatype| !matches!(datatype, Datatype::Float32 | Datatype::Float16))
+    {
+        Some("LMI training supports Float32 and Float16 only")
+    } else if params.quantization_config.is_some() {
+        Some("LMI does not support quantized vector search")
+    } else if params
+        .hnsw_config
+        .as_ref()
+        .is_some_and(|config| config.inline_storage == Some(true))
+    {
+        Some("LMI is incompatible with GraphInline")
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
+        let mut error = ValidationError::new("invalid_lmi_vector");
+        error.message = Some(Cow::Borrowed(reason));
+        Err(error)
+    } else {
+        Ok(())
+    }
 }
 
 /// Validate the value is in `[1, 65536]` or `None`.
@@ -1791,6 +1832,7 @@ impl From<&VectorParams> for VectorParamsBase {
             memory: _,
             datatype: _,
             multivector_config: _,
+            lmi_config: _,
         } = params;
         Self {
             size: size.get() as _, // TODO!?
@@ -1839,6 +1881,10 @@ pub struct VectorParamsDiff {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[validate(custom(function = "validate_dense_vector_memory"))]
     pub memory: Option<Memory>,
+    /// Set a new LMI build config, or use "disabled" to return to HNSW/Plain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[validate(nested)]
+    pub lmi_config: Option<LmiConfigDiff>,
 }
 
 /// Vector update params for multiple vectors
@@ -1979,6 +2025,41 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn lmi_vector_json_roundtrip_and_validation() {
+        let mut value = json!({
+            "size": 4, "distance": "Cosine",
+            "lmi_config": {
+                "n_buckets": 2, "sample_size": 8, "hidden_dim": 4,
+                "epochs": 1, "batch_size": 4, "routing_batch_size": 2,
+                "kmeans_iterations": 1, "nprobe": 1, "seed": 7
+            }
+        });
+        let params: VectorParams = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&params).unwrap(), value);
+        assert_eq!(
+            params.validate().is_ok(),
+            segment::index::lmi_index::training_available()
+        );
+        value["distance"] = json!("Dot");
+        let wrong_distance: VectorParams = serde_json::from_value(value).unwrap();
+        assert!(wrong_distance.validate().is_err());
+    }
+
+    #[test]
+    fn lmi_vector_diff_json_roundtrip() {
+        let enabled = json!({"lmi_config": {
+            "n_buckets": 2, "sample_size": 8, "hidden_dim": 4,
+            "epochs": 1, "batch_size": 4, "routing_batch_size": 2,
+            "kmeans_iterations": 1, "nprobe": 1, "seed": 7
+        }});
+        let diff: VectorParamsDiff = serde_json::from_value(enabled.clone()).unwrap();
+        assert_eq!(serde_json::to_value(diff).unwrap(), enabled);
+        let disabled = json!({"lmi_config": "Disabled"});
+        let diff: VectorParamsDiff = serde_json::from_value(disabled.clone()).unwrap();
+        assert_eq!(serde_json::to_value(diff).unwrap(), disabled);
+    }
 
     #[test]
     fn test_resharding_info_serialization_omits_stage() {

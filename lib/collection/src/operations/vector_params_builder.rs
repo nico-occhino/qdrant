@@ -25,6 +25,7 @@ impl VectorParamsBuilder {
                 memory: None,
                 datatype: None,
                 multivector_config: None,
+                lmi_config: None,
             },
         }
     }

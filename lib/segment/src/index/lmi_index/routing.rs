@@ -180,6 +180,37 @@ pub struct LmiRoutingState {
 }
 
 impl LmiRoutingState {
+    pub(crate) fn heap_bytes(&self) -> usize {
+        let layers = self
+            .router
+            .layers
+            .capacity()
+            .saturating_mul(std::mem::size_of::<RouterLayer>());
+        let params = self.router.layers.iter().fold(0usize, |total, layer| {
+            if let RouterLayer::Linear(linear) = layer {
+                total
+                    .saturating_add(
+                        linear
+                            .weights
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<f32>()),
+                    )
+                    .saturating_add(
+                        linear
+                            .bias
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<f32>()),
+                    )
+            } else {
+                total
+            }
+        });
+        std::mem::size_of::<Self>()
+            .saturating_add(layers)
+            .saturating_add(params)
+            .saturating_add(self.postings.heap_bytes())
+    }
+
     pub fn router(&self) -> &MlpRouter {
         &self.router
     }

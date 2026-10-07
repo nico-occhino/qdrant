@@ -205,6 +205,7 @@ pub fn build_segment_optimizer_config(
                 memory,
                 datatype,
                 multivector_config,
+                lmi_config,
             } = params;
 
             (
@@ -221,6 +222,7 @@ pub fn build_segment_optimizer_config(
                         .cloned(),
                     multivector_config: *multivector_config,
                     datatype: datatype.map(VectorStorageDatatype::from),
+                    lmi_config: *lmi_config,
                 },
             )
         })
@@ -295,6 +297,18 @@ pub fn build_optimizers(
             optimizers_config.get_deferred_points_threshold_bytes(),
         ),
     );
+
+    if !segment::index::lmi_index::training_available()
+        && segment_config
+            .dense_vectors
+            .values()
+            .any(|config| config.lmi_config.is_some())
+    {
+        log::error!(
+            "LMI collection is serving without training support; optimizers are disabled to avoid repeated failed builds"
+        );
+        return Arc::new(Vec::new());
+    }
 
     Arc::new(vec![
         Arc::new(MergeOptimizer::new(

@@ -264,6 +264,27 @@ impl CreateCollectionOperation {
             StorageError::bad_input(validation::label_errors("Validation error in body", &errs))
         })?;
 
+        if create_collection
+            .vectors
+            .params_iter()
+            .any(|(_, params)| params.lmi_config.is_some())
+        {
+            if create_collection.quantization_config.is_some() {
+                return Err(StorageError::bad_input(
+                    "LMI is incompatible with collection-wide quantization",
+                ));
+            }
+            if create_collection
+                .hnsw_config
+                .as_ref()
+                .is_some_and(|config| config.inline_storage == Some(true))
+            {
+                return Err(StorageError::bad_input(
+                    "LMI is incompatible with collection-wide GraphInline",
+                ));
+            }
+        }
+
         // Apply the same vector-name validation that the
         // `PUT /collections/{name}/vectors/{vector_name}` endpoint enforces
         // (length 0..=200, no filesystem-unsafe characters), so both creation

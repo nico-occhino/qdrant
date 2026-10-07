@@ -14,6 +14,17 @@ pub struct CompactPostings {
 }
 
 impl CompactPostings {
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.boundaries
+            .capacity()
+            .saturating_mul(std::mem::size_of::<u64>())
+            .saturating_add(
+                self.points
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<PointOffsetType>()),
+            )
+    }
+
     pub fn from_buckets(buckets: Vec<Vec<PointOffsetType>>) -> OperationResult<Self> {
         let count = buckets
             .iter()

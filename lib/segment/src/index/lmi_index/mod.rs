@@ -15,6 +15,11 @@ mod state;
 #[cfg(feature = "lmi-training")]
 mod training;
 pub use config::LmiConfig;
+
+/// Whether this binary can build new trained LMI segments. Serving does not require it.
+pub const fn training_available() -> bool {
+    cfg!(feature = "lmi-training")
+}
 pub use postings::CompactPostings;
 pub use routing::{LinearLayer, LmiRoutingState, MlpRouter, RouterLayer};
 #[cfg(feature = "testing")]
@@ -114,6 +119,17 @@ impl LmiIndex {
 
     pub fn routing_state(&self) -> Option<&LmiRoutingState> {
         self.routing_state.as_ref()
+    }
+
+    /// Resident auxiliary index data only; authoritative vectors belong to VectorStorage.
+    pub(crate) fn auxiliary_heap_bytes(&self) -> u64 {
+        self.routing_state
+            .as_ref()
+            .map_or(0, |state| state.heap_bytes() as u64)
+    }
+
+    pub(crate) fn state_file_paths(&self) -> Vec<PathBuf> {
+        self.state_files.clone()
     }
 
     /// Install deterministic offsets only in test builds. They are never persisted.

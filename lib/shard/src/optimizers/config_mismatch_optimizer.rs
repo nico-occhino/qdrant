@@ -92,6 +92,36 @@ impl ConfigMismatchOptimizer {
                 .vector_data
                 .iter()
                 .any(|(vector_name, vector_data)| {
+                    // LMI state is valid only under its exact persisted build configuration.
+                    // Keep small appendable Plain segments Plain until the indexing threshold:
+                    // otherwise mismatch planning would rebuild them to Plain forever.
+                    if let Some(target) =
+                        self.segment_optimizer_config.dense_vectors.get(vector_name)
+                    {
+                        let vector_bytes = segment
+                            .available_vectors_size_in_bytes(vector_name)
+                            .unwrap_or_default();
+                        let enough_for_lmi = target.lmi_config.is_none_or(|config| {
+                            // Point count bounds named-vector count from above.
+                            segment.available_point_count() >= config.n_buckets
+                        });
+                        let should_index = enough_for_lmi
+                            && (vector_bytes
+                                >= self
+                                    .thresholds_config
+                                    .indexing_threshold_kb
+                                    .saturating_mul(1024)
+                                || segment.has_deferred_points());
+                        match (target.lmi_config, &vector_data.index) {
+                            (Some(expected), Indexes::LmiTrained(actual))
+                                if *actual == expected => {}
+                            (Some(_), Indexes::Plain {}) if !should_index => {}
+                            (Some(_), _) => return true,
+                            (None, Indexes::Lmi {} | Indexes::LmiTrained(_)) => return true,
+                            (None, _) => {}
+                        }
+                    }
+
                     // Check HNSW mismatch
                     match &vector_data.index {
                         Indexes::Plain {} | Indexes::Lmi {} | Indexes::LmiTrained(_) => {}

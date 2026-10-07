@@ -54,8 +54,8 @@ use crate::operations::cluster_ops::{
     RestartTransfer, RestartTransferOperation,
 };
 use crate::operations::config_diff::{
-    CollectionParamsDiff, HnswConfigDiff, OptimizersConfigDiff, QuantizationConfigDiff,
-    WalConfigDiff,
+    CollectionParamsDiff, HnswConfigDiff, LmiConfigDiff, OptimizersConfigDiff,
+    QuantizationConfigDiff, WalConfigDiff,
 };
 use crate::operations::point_ops::{FilterSelector, PointIdsList, PointsSelector, WriteOrdering};
 use crate::operations::shard_selector_internal::ShardSelectorInternal;
@@ -778,6 +778,43 @@ impl TryFrom<api::grpc::qdrant::vectors_config_diff::Config> for VectorsConfigDi
     }
 }
 
+fn lmi_config_from_grpc(
+    value: api::grpc::qdrant::LmiConfig,
+) -> Result<segment::index::lmi_index::LmiConfig, Status> {
+    let size = |value: u64| {
+        usize::try_from(value).map_err(|_| Status::invalid_argument("LMI parameter exceeds usize"))
+    };
+    let config = segment::index::lmi_index::LmiConfig {
+        n_buckets: size(value.n_buckets)?,
+        sample_size: size(value.sample_size)?,
+        hidden_dim: size(value.hidden_dim)?,
+        epochs: size(value.epochs)?,
+        batch_size: size(value.batch_size)?,
+        routing_batch_size: size(value.routing_batch_size)?,
+        kmeans_iterations: size(value.kmeans_iterations)?,
+        nprobe: size(value.nprobe)?,
+        seed: value.seed,
+    };
+    config
+        .check()
+        .map_err(|err| Status::invalid_argument(err.to_string()))?;
+    Ok(config)
+}
+
+fn lmi_config_to_grpc(value: segment::index::lmi_index::LmiConfig) -> api::grpc::qdrant::LmiConfig {
+    api::grpc::qdrant::LmiConfig {
+        n_buckets: value.n_buckets as u64,
+        sample_size: value.sample_size as u64,
+        hidden_dim: value.hidden_dim as u64,
+        epochs: value.epochs as u64,
+        batch_size: value.batch_size as u64,
+        routing_batch_size: value.routing_batch_size as u64,
+        kmeans_iterations: value.kmeans_iterations as u64,
+        nprobe: value.nprobe as u64,
+        seed: value.seed,
+    }
+}
+
 impl TryFrom<api::grpc::qdrant::VectorParams> for VectorParams {
     type Error = Status;
 
@@ -791,6 +828,7 @@ impl TryFrom<api::grpc::qdrant::VectorParams> for VectorParams {
             memory,
             datatype,
             multivector_config,
+            lmi_config,
         } = vector_params;
         Ok(Self {
             size: NonZeroU64::new(size).ok_or_else(|| {
@@ -807,6 +845,7 @@ impl TryFrom<api::grpc::qdrant::VectorParams> for VectorParams {
             multivector_config: multivector_config
                 .map(MultiVectorConfig::try_from)
                 .transpose()?,
+            lmi_config: lmi_config.map(lmi_config_from_grpc).transpose()?,
         })
     }
 }
@@ -832,6 +871,17 @@ pub fn convert_datatype_from_proto(datatype: Option<i32>) -> Result<Option<Datat
     }
 }
 
+fn lmi_diff_from_grpc(value: api::grpc::qdrant::LmiConfigDiff) -> Result<LmiConfigDiff, Status> {
+    use api::grpc::qdrant::lmi_config_diff::Change;
+    match value.change {
+        Some(Change::Config(config)) => Ok(LmiConfigDiff::Enabled(lmi_config_from_grpc(config)?)),
+        Some(Change::Disabled(_)) => Ok(LmiConfigDiff::Disabled(
+            crate::operations::config_diff::Disabled::Disabled,
+        )),
+        None => Err(Status::invalid_argument("LMI config diff is empty")),
+    }
+}
+
 impl TryFrom<api::grpc::qdrant::VectorParamsDiff> for VectorParamsDiff {
     type Error = Status;
 
@@ -841,12 +891,14 @@ impl TryFrom<api::grpc::qdrant::VectorParamsDiff> for VectorParamsDiff {
             quantization_config,
             on_disk,
             memory,
+            lmi_config,
         } = vector_params;
         Ok(Self {
             hnsw_config: hnsw_config.map(Into::into),
             quantization_config: quantization_config.map(TryInto::try_into).transpose()?,
             on_disk,
             memory: convert_memory_from_proto(memory)?,
+            lmi_config: lmi_config.map(lmi_diff_from_grpc).transpose()?,
         })
     }
 }
@@ -1470,6 +1522,7 @@ impl From<VectorParams> for api::grpc::qdrant::VectorParams {
             memory,
             datatype,
             multivector_config,
+            lmi_config,
         } = value;
         api::grpc::qdrant::VectorParams {
             size: size.get(),
@@ -1486,6 +1539,7 @@ impl From<VectorParams> for api::grpc::qdrant::VectorParams {
             memory: convert_memory_to_proto(memory),
             datatype: datatype.map(|dt| api::grpc::qdrant::Datatype::from(dt).into()),
             multivector_config: multivector_config.map(api::grpc::qdrant::MultiVectorConfig::from),
+            lmi_config: lmi_config.map(lmi_config_to_grpc),
         }
     }
 }

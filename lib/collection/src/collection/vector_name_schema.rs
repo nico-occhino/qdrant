@@ -112,6 +112,7 @@ fn dense_config_to_params(config: &DenseVectorConfig) -> VectorParams {
         memory: None,
         datatype: datatype.map(storage_datatype_to_collection),
         multivector_config: *multivector_config,
+        lmi_config: None,
     }
 }
 

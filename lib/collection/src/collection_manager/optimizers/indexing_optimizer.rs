@@ -118,6 +118,463 @@ mod tests {
             .collect()
     }
 
+    #[cfg(feature = "lmi-training")]
+    #[test]
+    fn lmi_optimizer_builds_fresh_merged_target() {
+        use segment::common::memory_usage::{FileStorageIntent, MemoryReporter};
+        use segment::index::VectorIndexEnum;
+        use segment::index::lmi_index::LmiConfig;
+        use shard::locked_segment::LockedSegment;
+
+        init();
+        let segments_dir = Builder::new()
+            .prefix("lmi_merged_segments")
+            .tempdir()
+            .unwrap();
+        let temp_dir = Builder::new().prefix("lmi_merged_temp").tempdir().unwrap();
+        let lmi = LmiConfig {
+            n_buckets: 2,
+            sample_size: 32,
+            hidden_dim: 8,
+            epochs: 1,
+            batch_size: 8,
+            routing_batch_size: 8,
+            kmeans_iterations: 1,
+            nprobe: 2,
+            seed: 7,
+        };
+        let mut params = VectorParamsBuilder::new(16, Distance::Cosine).build();
+        params.lmi_config = Some(lmi);
+        let collection_params = CollectionParams {
+            vectors: VectorsConfig::Single(params),
+            ..CollectionParams::empty()
+        };
+        let target_config =
+            build_segment_optimizer_config(&collection_params, &HnswConfig::default(), &None);
+        let mut holder = SegmentHolder::default();
+        holder.add_new(random_segment_with_config(
+            segments_dir.path(),
+            101,
+            16,
+            &target_config,
+        ));
+        holder.add_new(random_segment_with_config(
+            segments_dir.path(),
+            102,
+            16,
+            &target_config,
+        ));
+        let holder = LockedSegmentHolder::new(holder);
+        let optimizer = new_indexing_optimizer(
+            2,
+            OptimizerThresholds {
+                max_segment_size_kb: 100,
+                memmap_threshold_kb: 100,
+                indexing_threshold_kb: 1,
+                deferred_internal_id: None,
+            },
+            segments_dir.path().to_owned(),
+            temp_dir.path().to_owned(),
+            collection_params,
+            HnswConfig::default(),
+            HnswGlobalConfig::default(),
+            None,
+        );
+        let groups = optimizer.plan_optimizations_for_test(&holder);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].len(), 2);
+        optimizer.optimize_for_test(holder.clone(), groups[0].clone());
+
+        let mut found = 0;
+        for (_, locked) in holder.read().iter() {
+            let LockedSegment::Original(original) = locked else {
+                panic!("optimizer left a proxy segment");
+            };
+            let segment = original.read();
+            if let Indexes::LmiTrained(actual) =
+                segment.config().vector_data[DEFAULT_VECTOR_NAME].index
+            {
+                assert_eq!(actual, lmi);
+                let index = segment.vector_data[DEFAULT_VECTOR_NAME]
+                    .vector_index
+                    .borrow();
+                let memory = index.memory_usage();
+                assert_eq!(memory.files.len(), 3);
+                assert!(
+                    memory
+                        .files
+                        .iter()
+                        .all(|file| file.intent == FileStorageIntent::OnDisk)
+                );
+                assert!(memory.extra_ram_bytes.is_some_and(|bytes| bytes > 0));
+                let VectorIndexEnum::Lmi(index) = &*index else {
+                    panic!("trained target did not reopen as LMI");
+                };
+                let postings = index.routing_state().unwrap().postings();
+                assert_eq!(postings.point_count(), 32);
+                // Each source has offsets 0..16. Copying either source's postings
+                // would duplicate those offsets and omit 16..32 in the target.
+                let mut offsets: Vec<_> = postings.iter().flatten().copied().collect();
+                offsets.sort_unstable();
+                assert_eq!(offsets, (0..32).collect::<Vec<_>>());
+                assert_eq!(segment.available_point_count(), 32);
+                found += 1;
+            }
+        }
+        assert_eq!(found, 1);
+        assert!(optimizer.plan_optimizations_for_test(&holder).is_empty());
+
+        // A deterministic generation-2 training error must not publish a
+        // partial replacement or evict the valid first generation.
+        let invalid = LmiConfig {
+            n_buckets: 32,
+            sample_size: 8,
+            ..lmi
+        };
+        let mut invalid_params = VectorParamsBuilder::new(16, Distance::Cosine).build();
+        invalid_params.lmi_config = Some(invalid);
+        let invalid_collection = CollectionParams {
+            vectors: VectorsConfig::Single(invalid_params),
+            ..CollectionParams::empty()
+        };
+        let invalid_optimizer = new_config_mismatch_optimizer(
+            OptimizerThresholds {
+                max_segment_size_kb: 100,
+                memmap_threshold_kb: 100,
+                indexing_threshold_kb: 1,
+                deferred_internal_id: None,
+            },
+            segments_dir.path().to_owned(),
+            temp_dir.path().to_owned(),
+            invalid_collection,
+            HnswConfig::default(),
+            HnswGlobalConfig::default(),
+            None,
+        );
+        let invalid_groups = invalid_optimizer.plan_optimizations_for_test(&holder);
+        assert_eq!(invalid_groups.len(), 1);
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            invalid_optimizer.optimize_for_test(holder.clone(), invalid_groups[0].clone());
+        }));
+        assert!(failed.is_err());
+        assert!(holder.read().iter().any(|(_, locked)| {
+            matches!(locked.get().read().config().vector_data[DEFAULT_VECTOR_NAME].index,
+                Indexes::LmiTrained(actual) if actual == lmi)
+        }));
+        assert_eq!(
+            holder
+                .read()
+                .iter()
+                .map(|(_, locked)| locked.get().read().available_point_count())
+                .sum::<usize>(),
+            32,
+        );
+
+        // A build-affecting config change must rebuild the trained state.
+        let first_postings = holder
+            .read()
+            .iter()
+            .filter_map(|(_, locked)| match locked {
+                LockedSegment::Original(original) => {
+                    let segment = original.read();
+                    matches!(
+                        segment.config().vector_data[DEFAULT_VECTOR_NAME].index,
+                        Indexes::LmiTrained(_)
+                    )
+                    .then(|| {
+                        std::fs::read(segment.segment_path.join("vector_index/lmi_postings.bin"))
+                            .unwrap()
+                    })
+                }
+                LockedSegment::Proxy(_) => None,
+            })
+            .next()
+            .unwrap();
+        let changed = LmiConfig {
+            n_buckets: 3,
+            ..lmi
+        };
+        let mut params = VectorParamsBuilder::new(16, Distance::Cosine).build();
+        params.lmi_config = Some(changed);
+        let changed_params = CollectionParams {
+            vectors: VectorsConfig::Single(params),
+            ..CollectionParams::empty()
+        };
+        let mismatch = new_config_mismatch_optimizer(
+            OptimizerThresholds {
+                max_segment_size_kb: 100,
+                memmap_threshold_kb: 100,
+                indexing_threshold_kb: 1,
+                deferred_internal_id: None,
+            },
+            segments_dir.path().to_owned(),
+            temp_dir.path().to_owned(),
+            changed_params,
+            HnswConfig::default(),
+            HnswGlobalConfig::default(),
+            None,
+        );
+        let groups = mismatch.plan_optimizations_for_test(&holder);
+        assert_eq!(groups.len(), 1);
+        mismatch.optimize_for_test(holder.clone(), groups[0].clone());
+        let mut changed_postings = None;
+        for (_, locked) in holder.read().iter() {
+            let LockedSegment::Original(original) = locked else {
+                continue;
+            };
+            let segment = original.read();
+            if let Indexes::LmiTrained(actual) =
+                segment.config().vector_data[DEFAULT_VECTOR_NAME].index
+            {
+                assert_eq!(actual, changed);
+                changed_postings = Some(
+                    std::fs::read(segment.segment_path.join("vector_index/lmi_postings.bin"))
+                        .unwrap(),
+                );
+            }
+        }
+        assert_ne!(changed_postings.unwrap(), first_postings);
+        assert!(mismatch.plan_optimizations_for_test(&holder).is_empty());
+
+        // Disabling LMI with an indexing threshold above the segment size
+        // rebuilds an ordinary Plain target without active LMI state.
+        let plain_params = CollectionParams {
+            vectors: VectorsConfig::Single(VectorParamsBuilder::new(16, Distance::Cosine).build()),
+            ..CollectionParams::empty()
+        };
+        let to_plain = new_config_mismatch_optimizer(
+            OptimizerThresholds {
+                max_segment_size_kb: 100,
+                memmap_threshold_kb: 100,
+                indexing_threshold_kb: 1000,
+                deferred_internal_id: None,
+            },
+            segments_dir.path().to_owned(),
+            temp_dir.path().to_owned(),
+            plain_params,
+            HnswConfig::default(),
+            HnswGlobalConfig::default(),
+            None,
+        );
+        let groups = to_plain.plan_optimizations_for_test(&holder);
+        assert_eq!(groups.len(), 1);
+        to_plain.optimize_for_test(holder.clone(), groups[0].clone());
+        assert!(holder.read().iter().all(|(_, locked)| {
+            matches!(
+                locked.get().read().config().vector_data[DEFAULT_VECTOR_NAME].index,
+                Indexes::Plain {}
+            )
+        }));
+        assert!(to_plain.plan_optimizations_for_test(&holder).is_empty());
+    }
+
+    #[cfg(feature = "lmi-training")]
+    #[test]
+    fn lmi_optimizer_preserves_writes_while_target_builds() {
+        use std::sync::mpsc::{self, Receiver, SyncSender};
+        use std::time::Duration;
+
+        use common::budget::ResourceBudget;
+        use common::progress_tracker::ProgressTracker;
+        use common::types::DeferredBehavior;
+        use segment::common::operation_error::OperationResult;
+        use segment::data_types::vectors::only_default_vector;
+        use segment::index::lmi_index::LmiConfig;
+        use segment::segment_constructor::segment_builder::SegmentBuilder;
+        use segment::segment_constructor::simple_segment_constructor::build_simple_segment;
+        use shard::locked_segment::LockedSegment;
+        use shard::optimize::{OptimizationPaths, OptimizationStrategy, execute_optimization};
+        use shard::segment_manifest::NewSegmentToken;
+        use uuid::Uuid;
+
+        struct PausedStrategy<'a> {
+            optimizer: &'a IndexingOptimizer,
+            entered: SyncSender<()>,
+            release: Receiver<()>,
+        }
+        impl OptimizationStrategy for PausedStrategy<'_> {
+            fn create_segment_builder(
+                &self,
+                inputs: &[LockedSegment],
+            ) -> OperationResult<SegmentBuilder> {
+                self.entered.send(()).unwrap();
+                self.release.recv().unwrap();
+                self.optimizer.optimized_segment_builder(inputs)
+            }
+            fn create_temp_segment(&self) -> OperationResult<(LockedSegment, NewSegmentToken)> {
+                self.optimizer.temp_segment(false)
+            }
+            fn live_vector_names(&self) -> Option<std::collections::HashSet<VectorNameBuf>> {
+                self.optimizer
+                    .segment_optimizer_config()
+                    .live_vector_names()
+            }
+        }
+
+        let segments_dir = Builder::new()
+            .prefix("lmi_concurrent_segments")
+            .tempdir()
+            .unwrap();
+        let temp_dir = Builder::new()
+            .prefix("lmi_concurrent_temp")
+            .tempdir()
+            .unwrap();
+        let hw = HardwareCounterCell::new();
+        let mut source = build_simple_segment(segments_dir.path(), 16, Distance::Cosine).unwrap();
+        for id in 1..=32_u64 {
+            let mut vector = vec![0.0; 16];
+            vector[(id % 16) as usize] = 1.0;
+            source
+                .upsert_point(100, id.into(), only_default_vector(&vector), &hw)
+                .unwrap();
+        }
+        let mut raw_holder = SegmentHolder::default();
+        let source_id = raw_holder.add_new(source);
+        let holder = LockedSegmentHolder::new(raw_holder);
+        let mut params = VectorParamsBuilder::new(16, Distance::Cosine).build();
+        params.lmi_config = Some(LmiConfig {
+            n_buckets: 2,
+            sample_size: 32,
+            hidden_dim: 8,
+            epochs: 1,
+            batch_size: 8,
+            routing_batch_size: 8,
+            kmeans_iterations: 1,
+            nprobe: 2,
+            seed: 7,
+        });
+        let optimizer = std::sync::Arc::new(new_indexing_optimizer(
+            2,
+            OptimizerThresholds {
+                max_segment_size_kb: 100,
+                memmap_threshold_kb: 100,
+                indexing_threshold_kb: 1,
+                deferred_internal_id: None,
+            },
+            segments_dir.path().to_owned(),
+            temp_dir.path().to_owned(),
+            CollectionParams {
+                vectors: VectorsConfig::Single(params),
+                ..CollectionParams::empty()
+            },
+            HnswConfig::default(),
+            HnswGlobalConfig::default(),
+            None,
+        ));
+        let (entered_tx, entered_rx) = mpsc::sync_channel(0);
+        let (release_tx, release_rx) = mpsc::sync_channel(0);
+        let worker_holder = holder.clone();
+        let worker_optimizer = optimizer.clone();
+        let paths = OptimizationPaths {
+            segments_path: segments_dir.path().to_owned(),
+            temp_path: temp_dir.path().to_owned(),
+        };
+        let worker = std::thread::spawn(move || {
+            let strategy = PausedStrategy {
+                optimizer: &worker_optimizer,
+                entered: entered_tx,
+                release: release_rx,
+            };
+            let threads = worker_optimizer.num_indexing_threads();
+            let budget = ResourceBudget::new(threads, threads);
+            execute_optimization(
+                "indexing",
+                worker_holder,
+                vec![source_id],
+                Uuid::new_v4(),
+                None,
+                &paths,
+                budget.try_acquire(0, threads).unwrap(),
+                budget,
+                &std::sync::atomic::AtomicBool::new(false),
+                ProgressTracker::new_for_test(),
+                worker_optimizer.get_telemetry_counter(),
+                &strategy,
+                Box::new(|| {}),
+            )
+        });
+        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        // The source is now a proxy and a fresh Plain segment is available.
+        assert!(
+            holder
+                .read()
+                .iter()
+                .any(|(_, segment)| matches!(segment, LockedSegment::Proxy(_)))
+        );
+        let batch = BatchPersisted {
+            ids: vec![100_u64.into(), 1_u64.into()],
+            vectors: BatchVectorStructPersisted::Single(vec![
+                {
+                    let mut v = vec![0.0; 16];
+                    v[0] = 1.0;
+                    v
+                },
+                {
+                    let mut v = vec![0.0; 16];
+                    v[1] = 1.0;
+                    v
+                },
+            ]),
+            payloads: None,
+        };
+        process_point_operation(
+            &holder.read(),
+            101,
+            PointOperations::UpsertPoints(PointInsertOperationsInternal::from(batch)),
+            None,
+            &hw,
+        )
+        .unwrap();
+        process_point_operation(
+            &holder.read(),
+            102,
+            PointOperations::DeletePoints {
+                ids: vec![2_u64.into()],
+            },
+            None,
+            &hw,
+        )
+        .unwrap();
+        release_tx.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+        let segments = holder.read();
+        for (id, expected) in [(1_u64, 1), (2, 0), (100, 1)] {
+            let visible = segments
+                .iter()
+                .filter(|(_, segment)| {
+                    segment
+                        .get()
+                        .read()
+                        .has_point(id.into(), DeferredBehavior::VisibleOnly)
+                })
+                .count();
+            assert_eq!(
+                visible, expected,
+                "wrong post-publication visibility for ID {id}"
+            );
+        }
+        let updated = segments
+            .iter()
+            .find_map(|(_, segment)| {
+                segment
+                    .get()
+                    .read()
+                    .vector(DEFAULT_VECTOR_NAME, 1_u64.into(), &hw)
+                    .unwrap()
+            })
+            .unwrap();
+        let VectorInternal::Dense(updated) = updated else {
+            panic!("expected dense vector")
+        };
+        assert_eq!(updated[1], 1.0);
+        assert!(segments.iter().any(|(_, segment)| {
+            matches!(
+                segment.get().read().config().vector_data[DEFAULT_VECTOR_NAME].index,
+                Indexes::LmiTrained(_)
+            )
+        }));
+    }
+
     #[test]
     fn test_multi_vector_optimization() {
         init();
@@ -254,6 +711,7 @@ mod tests {
                     on_disk: None,
                     datatype: None,
                     multivector_config: Some(MultiVectorConfig::default()),
+                    lmi_config: None,
                 },
             )])),
             ..CollectionParams::empty()
@@ -1030,6 +1488,7 @@ mod tests {
                 memory: params.vectors_memory,
                 datatype: None,
                 multivector_config: None,
+                lmi_config: None,
             };
             let collection_params = CollectionParams {
                 vectors: VectorsConfig::Single(vector_params),
