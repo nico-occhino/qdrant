@@ -1,6 +1,6 @@
 # LMI forward-port onto Qdrant 1.19.2
 
-Status: in progress. This branch is not validated for thesis development.
+Status: production segment-local LMI training is implemented and under validation; optimizer lifecycle remains unported.
 
 - Historical frozen LMI SHA: `4e0527388b98f16623ab3e5124baab4cd6022b87`
 - Historical branch: `thesis/lmi-integration`
@@ -37,11 +37,11 @@ Clean textual merges do not validate configuration serialization, scoring, or se
 
 ## Validation still required
 
-Layered LMI compile and test gates; Plain/HNSW regressions; persistence and optimizer lifecycle; Float16 and routing parity; Phase G semantics; SISAP300K real-data comparison; old persisted format compatibility; bounded 10.12M read-only confirmation if compatible. No synchronized branch push until these gates pass.
+The production builder, Float16 route, parity and SISAP300K bounded-query gates are reported below. Optimizer lifecycle, full-query SISAP parity, G2 and 10.12M compatibility remain separate work. No synchronized branch push until these gates pass.
 
 ## Historical science
 
-The accepted 300K, 10.12M and Phase G measurements remain historical results on the frozen branch. No result has yet been revalidated on this synchronized branch.
+The accepted 10.12M and Phase G measurements remain historical results on the frozen branch. A new SISAP300K build and bounded-query evaluation are reported below; they do not replace the accepted full-query historical result.
 # Upstream / historical LMI conflict matrix
 
 Merge base: `74f3e85b9473c62560006c043e13737ce6b48412`
@@ -702,3 +702,119 @@ Validation run for this stage:
 | `git diff --cached --check` before implementation commit | Passed |
 
 The test-only fixture writer is guarded by the segment `testing` feature. The production `LmiTrained` open/search path has no Torch, KMeans, model fitting, or synthetic model generation. Production build of `LmiTrained` remains explicitly unsupported until database-owned training and full segment-builder lifecycle are ported.
+
+
+## Production LMI build on Qdrant 1.19.2
+
+Status labels in this section refer only to this forward-port stage. They do not establish optimizer lifecycle correctness or a G2 recall/latency frontier.
+
+### Historical implementation selection
+
+| Build subsystem | Final frozen implementation | Superseded implementation | Current adaptation | Decision |
+|---|---|---|---|---|
+| Sample and teacher | `7029bcd0f` database-owned sample, then `7110beb66` metric-correct spherical teacher | Earlier Euclidean teacher for Cosine | Reservoir over current target tracker/storage, final spherical KMeans | Port and adapt |
+| Training and export | `7029bcd0f` CE-trained Torch MLP, final `e360295aa` Float16 support | Early data-import prototypes | Optional `lmi-training` feature with `tch 0.18.1`; pure-Rust serving router | Port |
+| Corpus routing | `b147c1c91` tie-safe Torch/native equivalence, diagnostic `f7b613262` | Scalar route `3cbffecb3`, native batch `be40920e9`, prototype Torch batch `6927a51f6` | Bounded Torch batches with native verification/fallback for ambiguous top-1 | Port final path |
+| Postings | `6d9a87d4e` cached `u16` labels and compact CSR | `02e8fda85` vector-decode two-pass build, `6f7085b9c` earlier contiguous form | Cached labels for every valid `B <= 65,536`; one vector route pass and one offset-only fill pass | Port final path; retain two-pass as test reference |
+| Memory planning | `e0f855eda` bounded resource model | Unbounded native corpus materialization | Explicit per-component estimate before sampling/training, physical and eligible counts | Port and adapt |
+| Persistence | Final `e360295aa` train/build/persist shape | Fixture-only state writer | Existing v3 router/postings/state format; atomic payload files then metadata; target-segment path | Adapt |
+
+The frozen reference is `4e0527388b98f16623ab3e5124baab4cd6022b87`. The synchronized branch began this stage at `a9ff37231686dfabf38b2f745dd7e0a890f83322` on upstream `016542aa5deb6c66380bb137badf73d54f742bde`.
+
+### Contract and eligible population
+
+**IMPLEMENTED.** `Indexes::LmiTrained(config)` builds only when `lmi-training` is compiled. It consumes the immutable target segment's `VectorStorageRead`, `IdTrackerRead`, vector config, CPU permit, progress/cancellation context and index path. The constructor does not receive an external vector array. Only dense single-vector Float32/Float16 Cosine is accepted for production training. Serving without `lmi-training` still compiles and reopens existing trained state.
+
+An eligible target offset is one returned by `point_mappings().filter_deferred_and_deleted(0..physical_count, VisibleOnly)`, within the tracker deleted-point bitmap, whose vector storage reports `!is_deleted_vector(offset)`. Thus physical slots include possible gaps/tombstones; the postings population is the live visible mapped vectors. Deleted points, deleted vectors, deferred/shadowed mappings and unused physical slots are excluded. The target `SegmentBuilder` compacts source points into its own segment-local offsets before LMI construction; source offsets are never copied into the new postings.
+
+The constructor refuses fewer than `B` eligible vectors. The reservoir uses one seeded `StdRng`, keeps at most `min(S, physical_count)` offsets, and then loads only those selected rows into an `S × d` f32 matrix. Float16 decoding occurs for those rows and for at most `routing_batch_size × d` elements during routing. No corpus-wide f32 copy is created. The fixed seed makes the resulting router/postings byte-identical in the small deterministic integration fixture; it does not promise identical floating-point results across different Torch/CPU implementations.
+
+The teacher uses normalized/angular geometry for Cosine, seeded initialization, five iterations at the accepted SISAP setting, deterministic tie handling and empty-cluster recovery. The MLP has `d → H → B` linear/ReLU/linear logits and learns the teacher's single bucket pseudo-label by cross entropy. The corpus partition remains MLP top-1; query routing remains MLP top-`nprobe`; Qdrant's current candidate scorer performs exact metric scoring and top-k. No retrieval-aware objective was added.
+
+**IMPLEMENTED.** Torch routes the full eligible corpus in bounded batches. Native `MlpRouter` verifies ambiguous/tied results; the tie-safe batch path returns native-compatible top-1 bucket IDs. The margin threshold is an operational ambiguity rule, not a formal floating-point error bound for all dimensions or hardware. Deterministic fixtures verify exact Torch/native top-1 agreement, including ties; the 300K corpus had zero fallback rows, but no exhaustive native re-route of all 300K rows was performed. All valid configurations have `B <= 65,536`; labels therefore fit `u16`. The cached-label builder counts bucket sizes, allocates compact boundaries/offsets, then replays eligible offsets in the same order to fill each posting. It does not decode vectors a second time. A two-pass builder remains as a reference for test equality and is not the production default.
+
+**IMPLEMENTED.** Before persistence, coverage checks posting count equals eligible count, each posting offset is inside the target physical range and appears once, and every eligible offset is present. Together these prove exactly-one membership for this build. The metadata additionally records optional `indexed_live_count`; existing v3 states without the field remain readable. It validates dimensions, metric, preprocessing, datatype, physical count, router shape, bucket count and posting count. State files are saved in the target index directory, with router/postings written atomically before the metadata marker, then reopened without calling Torch. This does not provide a durable mapping-generation token for arbitrary later segment mutation; the immutable target segment lifecycle remains a separate gate.
+
+The resource planner bounds sample matrix, model/optimizer, Torch copy, routing batch, cached labels, postings and validation bitmap before training. Its estimate is incremental LMI build memory, not total process RSS. The 100K synthetic run estimated 35,670,657 bytes, while process `VmHWM` was 182,600 KiB including Qdrant, Torch and test harness allocations.
+
+### Validation for this stage
+
+**MEASURED.** The small real-constructor tests build Float32 and true Float16 segments, verify 11 postings after one deleted source point, reopen persisted state, and compare fixed-seed router/posting bytes. The explicit 100K synthetic gate passed: 100,000 points, 8 dimensions, 32 buckets, sample 2,048, hidden 32, two epochs. Build took 0.450 s and reopen 0.083 s in this local debug test; state/router/postings were 351/5,460/400,280 bytes. Sample selection took 0.0375 s, teacher 0.0505 s, MLP/export 0.0466 s, routing/count/alloc/fill 0.0992 s, coverage 0.0399 s and persistence 0.0044 s. These are systems diagnostics, not ANN benchmark timings.
+
+**MEASURED.** Unit gates cover seeded sparse reservoir sampling, empty/cancellation, spherical teacher behavior, native/Torch logits and top-1 parity (including ties), cached-label versus reference postings, malformed postings, exact coverage omissions/duplicates/out-of-range, and plan rejection. Focused count and broader regression commands/results belong in the final validation log below.
+
+### SISAP300K synchronized gate
+
+The read-only source is `/mnt/c/datasets/sisap2023/laion2B-en-clip768v2-n=300K.h5`; fresh input conversion and segment output live under `work/upstream_sync/sisap300k/` in this synchronized worktree. The test constructs a new target segment from 300,000 Float16 768-dimensional Cosine vectors via the production constructor with `B=548`, `S=32,768`, `H=512`, 30 epochs, batch 256, routing batch 256, five KMeans iterations, `nprobe=4`, seed 42. It checks 300,000 indexed live offsets, restarts without training, and evaluates 100 public queries against gold top-10. The historical accepted 300K result was full-set Recall@10 0.7978858 with mean candidates 3,041.2; a 100-query synchronized measurement is diagnostic and cannot establish full-set parity.
+
+**FUTURE.** The separate optimizer/lifecycle stage must establish mutable-to-immutable publication, rebuild under updates, snapshot/reopen behavior and segment-generation safety. G2 remains blocked until that lifecycle and a full returned-recall/latency frontier are measured. The present stage does not run 10.12M, 100M, DLI, CLI or pgvector.
+
+
+### Real-data result and comparison
+
+**MEASURED.** The synchronized constructor completed on 300,000 Float16/Cosine vectors of dimension 768. It found 300,000 eligible target offsets and built 300,000 postings with zero tie fallbacks. Exact coverage passed. The resulting index reopened without training and served through the StaticLearned path. The `lmi_state.json`, `lmi_router.bin` and `lmi_postings.bin` files were 356, 2,699,492 and 1,204,408 bytes. The frozen historical 300K files were 233, 2,830,573 and 1,204,408 bytes. The equal posting byte count follows the equal corpus size and compact `u32` posting representation; router size and metadata differ because the synchronized format and export are not byte-identical to the frozen branch.
+
+| Measure | Synchronized 300K | Frozen accepted 300K | Comparison |
+|---|---:|---:|---|
+| Mean Recall@10 | 0.8330 on first 100 public queries | 0.7978858 on full accepted query set | Different query sets; cannot claim improvement or parity |
+| Mean candidates | 3,181.8 on first 100 public queries | 3,041.2 on full accepted query set | Different query sets; diagnostic only |
+| Training and export | 352.06 s in debug test | ~37.82 s in historical optimized workflow | Not a speed comparison |
+| Full corpus route / postings | 12.20 s | Historical final implementation | Current measurement only |
+| Exact coverage | 300,000 of 300,000, once each | Accepted historical build | Target-local proof |
+| Restart | 0.929 s, no retraining | Historical restart validated | Current measurement only |
+
+The current test's load and target build took 21.804 s and 368.750 s; 100 query searches took 4.173 s. The spherical teacher consumed 312.557 s of training, with five assignment passes of about 51–53 s and a final assignment of 51.126 s; MLP training/export consumed 39.501 s. These timings are from a debug test process and include no controlled latency benchmark. The first-100 gold file uses one-based IDs, verified by zero matches under the zero-based interpretation and 833 of 1,000 top-10 matches under one-based interpretation.
+
+**INFERRED.** The bounded recall and candidate count are compatible with a working learned route at the accepted probe count. They are insufficient to diagnose a full-set regression, choose an optimal probe count or close G2.
+
+### Remaining boundary
+
+**UNSUPPORTED.** Current code does not publish LMI through collection optimizers, prove behavior under later segment mutations, or validate collection snapshots. No 10.12M rebuild was attempted. The v3 state still relies on target segment locality rather than a stable mapping-generation token. It is safe to begin a separate optimizer/lifecycle port only after the outstanding compile and upstream regression gates below are green; that port must independently prove target-offset rebuilding and atomic publication.
+
+
+### Reproduce this stage
+
+Use a fresh checkout or remove only a prior synchronized test output after preserving its results. The ignored real-data gate deliberately refuses to overwrite `work/upstream_sync/sisap300k/synchronized_run`.
+
+```bash
+python tools/lmi/prepare_sisap300k.py \
+  --dataset-dir /mnt/c/datasets/sisap2023 \
+  --output work/upstream_sync/sisap300k
+
+export LIBTORCH=/home/nicoo/miniconda3/envs/lmi-starterpack/lib/python3.12/site-packages/torch
+export LD_LIBRARY_PATH="$LIBTORCH/lib"
+export LIBTORCH_BYPASS_VERSION_CHECK=1
+export CXX=clang++
+export CXXFLAGS=-g0
+
+cargo test -p segment --features lmi-training --lib index::lmi_index:: --locked
+cargo test -p segment --features lmi-training \
+  --test lmi_training_119 --locked
+cargo test -p segment --features lmi-training \
+  --test lmi_training_119 medium_100k_synthetic_build_restarts_with_complete_postings \
+  --locked -- --ignored --nocapture
+cargo test -p segment --features lmi-training \
+  --test lmi_training_119 sisap300k_production_build_and_bounded_recall \
+  --locked -- --ignored --nocapture
+```
+
+The historical HDF5 files are read only. The conversion produces a 440 MiB `vectors.f16` file plus bounded query/gold files; Git ignores this local input and the new segment output. The training feature requires a local LibTorch installation compatible with `tch 0.18.1`. Normal serving builds do not require it.
+
+
+### Final validation log
+
+| Gate | Command or fixture | Result |
+|---|---|---|
+| Sampling, spherical teacher, Torch/native parity, cached postings, coverage, planner | `cargo test -p segment --features lmi-training --lib index::lmi_index:: --locked` | 25 passed; one explicit benchmark ignored |
+| Small production build, Float16, deterministic bytes | `cargo test -p segment --features lmi-training --test lmi_training_119 --locked` | 3 passed; 100K and SISAP gates explicitly ignored by default |
+| 100K synthetic systems gate | same target, `medium_100k_synthetic_build_restarts_with_complete_postings -- --ignored --nocapture` | 1 passed; timings above |
+| SISAP300K production gate | same target, `sisap300k_production_build_and_bounded_recall -- --ignored --nocapture` | 1 passed; 100-query metrics above |
+| Existing Qdrant scorer and LMI serving | `cargo test -p segment --features lmi-training --test candidate_scoring_119 --test lmi_shell_119 --test lmi_static_119 --locked` | 6 + 5 + 8 passed |
+| Plain exact | `cargo test -p segment --test integration exact_search_test --locked` | 1 passed |
+| HNSW filtered | `cargo test -p segment --test integration test_filterable_hnsw --locked` | 4 passed |
+| HNSW normal build/search | `cargo test -p segment --test integration hnsw_incremental_build --locked` | 1 passed |
+| Default serving compilation | `cargo check -p segment -p collection --locked`; `cargo check --workspace --locked` | Both passed |
+| Training-enabled compilation | `cargo check --workspace --features segment/lmi-training --locked` | Passed |
+| Format and diff | `rustfmt --edition 2024 --check` on touched Rust files; `git diff --check` | Passed |
+
+The optional `tch 0.18.1` dependency and its transitive packages are the only manifest/lockfile dependency addition; current upstream dependencies were not replaced. Qdrant's stable toolchain reports warnings for nightly-only rustfmt options in the existing formatting config, but changed-file formatting passed. These results authorize the separate optimizer/lifecycle implementation task. They do not establish collection publication or full SISAP query-set parity.
