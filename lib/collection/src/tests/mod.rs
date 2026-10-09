@@ -9,6 +9,16 @@ mod hw_metrics;
 mod lmi_lifecycle;
 #[cfg(feature = "lmi-training")]
 mod lmi_sisap300k;
+#[cfg(feature = "lmi-training")]
+mod lmi_sisap10m;
+#[cfg(feature = "lmi-training")]
+mod lmi_sisap10m_resume;
+#[cfg(feature = "lmi-training")]
+mod lmi_g2_fixed;
+#[cfg(feature = "lmi-training")]
+mod lmi_g2_latency_panel;
+#[cfg(feature = "lmi-training")]
+mod lmi_g2_candidate_budget;
 mod payload;
 mod points_dedup;
 mod query_prefetch_offset_limit;
