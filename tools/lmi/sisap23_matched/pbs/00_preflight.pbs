@@ -1,0 +1,14 @@
+#!/bin/bash
+#PBS -N sisap23-preflight
+#PBS -l select=1:ncpus=4:mem=32gb:scratch_local=80gb
+#PBS -l walltime=12:00:00
+#PBS -j oe
+set -euo pipefail
+WORKSPACE=${WORKSPACE:-/storage/budejovice1/home/nico/lmi-metacentrum}
+QDRANT_DIR=${QDRANT_DIR:-$WORKSPACE/qdrant}
+SISAP_SOURCE=${SISAP_SOURCE:-/storage/brno12-cerit/home/prochazka/datasets/sisap23}
+SISAP23_BENCH_ROOT=${SISAP23_BENCH_ROOT:?set a new, non-existing benchmark root}
+source "$WORKSPACE/envs/py312-torch251/bin/activate"
+export TMPDIR="${SCRATCHDIR:-$WORKSPACE/tmp}"
+mkdir -p "$TMPDIR"
+python "$QDRANT_DIR/tools/lmi/sisap23_matched/preflight.py" --source "$SISAP_SOURCE" --out "$SISAP23_BENCH_ROOT"

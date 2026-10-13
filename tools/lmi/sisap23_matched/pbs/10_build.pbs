@@ -1,0 +1,34 @@
+#!/bin/bash
+#PBS -N sisap23-build
+#PBS -l select=1:ncpus=16:mem=96gb:scratch_local=200gb
+#PBS -l walltime=48:00:00
+#PBS -j oe
+set -euo pipefail
+WORKSPACE=${WORKSPACE:-/storage/budejovice1/home/nico/lmi-metacentrum}
+QDRANT_DIR=${QDRANT_DIR:-$WORKSPACE/qdrant}
+SISAP23_BENCH_ROOT=${SISAP23_BENCH_ROOT:?set the prepared benchmark root}
+SISAP23_VARIANT=${SISAP23_VARIANT:?set plain, lmi, hnsw-a, or hnsw-b}
+PROTOBUF_MODULE=${PROTOBUF_MODULE:-protobuf}
+module load "$PROTOBUF_MODULE"
+source "$WORKSPACE/envs/py312-torch251/bin/activate"
+source /storage/brno2/home/nico/.cargo/env
+export PATH="/storage/brno2/home/nico/.cargo/bin:$PATH"
+export LIBTORCH="$WORKSPACE/envs/py312-torch251/lib/python3.12/site-packages/torch"
+export LD_LIBRARY_PATH="$LIBTORCH/lib:${LD_LIBRARY_PATH:-}"
+export LIBTORCH_BYPASS_VERSION_CHECK=1
+export QDRANT_LMI_SAMPLE_BUDGET_BYTES=${QDRANT_LMI_SAMPLE_BUDGET_BYTES:-768000000}
+export RUST_BACKTRACE=1
+export SISAP23_BENCH_ROOT SISAP23_VARIANT
+test -f "$SISAP23_BENCH_ROOT/manifest.json"
+test "$(git -C "$QDRANT_DIR" branch --show-current)" = "thesis/sisap23-matched-bench" || { echo "checkout thesis/sisap23-matched-bench first" >&2; exit 2; }
+test -f "$QDRANT_DIR/lib/collection/src/tests/lmi_sisap23_matched.rs"
+RUN="$SISAP23_BENCH_ROOT/runs/$SISAP23_VARIANT"
+mkdir -p "$SISAP23_BENCH_ROOT/runs"
+mkdir "$RUN" || { echo "refusing existing build run: $RUN" >&2; exit 2; }
+export TMPDIR="${SCRATCHDIR:?PBS scratch allocation required}"
+mkdir -p "$TMPDIR"
+export SISAP23_CORPUS_PATH="$TMPDIR/corpus.f16le"
+cp "$SISAP23_BENCH_ROOT/corpus.f16le" "$SISAP23_CORPUS_PATH"
+cd "$QDRANT_DIR"
+RUST_LOG=info /usr/bin/time -v -o "$RUN/build.resources.txt" cargo test -p collection --release --features lmi-training sisap23_matched_build --locked -- --ignored --nocapture > "$RUN/build.log" 2>&1
+test -f "$RUN/build.complete.json"

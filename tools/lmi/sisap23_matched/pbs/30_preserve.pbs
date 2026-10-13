@@ -1,0 +1,16 @@
+#!/bin/bash
+#PBS -N sisap23-preserve
+#PBS -l select=1:ncpus=4:mem=16gb
+#PBS -l walltime=12:00:00
+#PBS -j oe
+set -euo pipefail
+WORKSPACE=${WORKSPACE:-/storage/budejovice1/home/nico/lmi-metacentrum}
+QDRANT_DIR=${QDRANT_DIR:-$WORKSPACE/qdrant}
+SISAP23_BENCH_ROOT=${SISAP23_BENCH_ROOT:?set the prepared benchmark root}
+source "$WORKSPACE/envs/py312-torch251/bin/activate"
+python "$QDRANT_DIR/tools/lmi/sisap23_matched/validate.py" --root "$SISAP23_BENCH_ROOT" > "$SISAP23_BENCH_ROOT/validation.log"
+OUT="$SISAP23_BENCH_ROOT/results.sha256"
+test ! -e "$OUT" || { echo "preservation inventory already exists; refusing overwrite" >&2; exit 2; }
+cd "$SISAP23_BENCH_ROOT"
+find manifest.json hardware.txt runs validation.json validation.log -type f -print0 | sort -z | xargs -0 sha256sum > "$OUT"
+printf 'SISAP23 matched benchmark results preserved at %s\n' "$SISAP23_BENCH_ROOT"

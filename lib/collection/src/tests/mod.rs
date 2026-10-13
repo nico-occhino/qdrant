@@ -19,6 +19,8 @@ mod lmi_g2_fixed;
 mod lmi_g2_latency_panel;
 #[cfg(feature = "lmi-training")]
 mod lmi_g2_candidate_budget;
+#[cfg(feature = "lmi-training")]
+mod lmi_sisap23_matched;
 mod payload;
 mod points_dedup;
 mod query_prefetch_offset_limit;
