@@ -16,7 +16,7 @@ def write_array(path,a,dtype):
  with open(path,"xb") as f: a.astype(dtype,copy=False).tofile(f); f.flush(); os.fsync(f.fileno())
  return {"path":path.name,"bytes":path.stat().st_size,"sha256":digest(path,"sha256")}
 def main():
- ap=argparse.ArgumentParser(); ap.add_argument("--source",type=Path,required=True); ap.add_argument("--out",type=Path,required=True); a=ap.parse_args()
+ ap=argparse.ArgumentParser(); ap.add_argument("--source",type=Path,required=True); ap.add_argument("--out",type=Path,required=True); ap.add_argument("--source-commit",required=True); a=ap.parse_args()
  if a.out.exists(): raise SystemExit(f"refusing existing output directory: {a.out}")
  try: import h5py,numpy as np
  except ImportError as e: raise SystemExit("Python requires h5py and numpy") from e
@@ -46,7 +46,7 @@ def main():
   outputs["panel_rows"]=write_array(a.out/"panel_rows.u32le",rows,"<u4")
  with h5py.File(a.source/EXPECTED["gold"][0],"r") as hf:
   outputs["official_gold_top10"]=write_array(a.out/"gold_20_9999_top10.i32le",np.asarray(hf["knns"][20:10000,:10]),"<i4")
- manifest={"format":"sisap23-matched-v1","qdrant_commit":"97c20f5f0bd7d65239970285a848706f39458c84","dataset":{"corpus_count":N,"dimension":DIM,"query_rows":[20,9999],"measured_queries":9980,"metric":"Cosine","storage":"Float16","external_id_mapping":"corpus row i has one-based ID i+1"},"sources":sources,"prepared":outputs,"panel_seed":SEED,"note":"All variants ingest this identical little-endian Float16 corpus file."}
+ manifest={"format":"sisap23-matched-v1","source_commit":a.source_commit,"dataset":{"corpus_count":N,"dimension":DIM,"query_rows":[20,9999],"measured_queries":9980,"metric":"Cosine","storage":"Float16","external_id_mapping":"corpus row i has one-based ID i+1"},"sources":sources,"prepared":outputs,"panel_seed":SEED,"note":"All variants ingest this identical little-endian Float16 corpus file."}
  with open(a.out/"manifest.json","x",encoding="utf-8") as f: json.dump(manifest,f,indent=2,sort_keys=True); f.write("\n"); f.flush(); os.fsync(f.fileno())
  print(json.dumps({"manifest":str(a.out/"manifest.json"),"prepared":outputs},indent=2))
 if __name__=="__main__": main()

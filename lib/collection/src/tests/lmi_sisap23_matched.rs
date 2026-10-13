@@ -215,7 +215,7 @@ async fn sisap23_matched_build() {
         hnsw.m = m;
         hnsw.ef_construct = ef;
         hnsw.max_indexing_threads = 1;
-        hnsw.memory = Some(segment::types::Memory::Cold);
+        hnsw.memory = Some(segment::types::Memory::Cached);
     }
     let config = CollectionConfigInternal {
         params: CollectionParams {
@@ -375,10 +375,15 @@ async fn sisap23_matched_build() {
         assert_eq!(lmi.routing_state().unwrap().postings().point_count(), N);
     }
     let (m, ef) = variant.params();
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(root().join("manifest.json")).unwrap()).unwrap();
+    let source_commit = manifest["source_commit"]
+        .as_str()
+        .expect("source commit missing");
     let marker = serde_json::json!({
         "format": "sisap23-build-v1",
         "variant": variant.name(),
-        "qdrant_commit": "97c20f5f0bd7d65239970285a848706f39458c84",
+        "source_commit": source_commit,
         "point_count": N,
         "dimension": DIM,
         "datatype": "float16",
@@ -489,6 +494,9 @@ fn search_one(
 }
 fn write_chunk(path: &Path, rows: &[serde_json::Value]) {
     let tmp = path.with_extension("jsonl.tmp");
+    if tmp.exists() {
+        fs::remove_file(&tmp).expect("cannot remove incomplete chunk temporary");
+    }
     let mut out = BufWriter::new(
         File::options()
             .write(true)
@@ -589,6 +597,9 @@ fn run_setting(
         return;
     }
     let tmp = dest.join("rows.jsonl.tmp");
+    if tmp.exists() {
+        fs::remove_file(&tmp).expect("cannot remove incomplete assembly temporary");
+    }
     let mut out = BufWriter::new(
         File::options()
             .write(true)
@@ -621,9 +632,12 @@ fn sisap23_matched_evaluate() {
     )
     .unwrap();
     assert_eq!(build["variant"], v.name());
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(root().join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(build["source_commit"], manifest["source_commit"]);
     assert_eq!(
-        build["qdrant_commit"],
-        "97c20f5f0bd7d65239970285a848706f39458c84"
+        manifest["source_commit"].as_str(),
+        std::env::var("SISAP23_REVIEWED_COMMIT").ok().as_deref()
     );
     let segment_path = PathBuf::from(build["segment_path"].as_str().unwrap());
     let segment = load_index(&segment_path);
@@ -642,8 +656,6 @@ fn sisap23_matched_evaluate() {
         expected,
         "index generation does not match requested algorithm"
     );
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(root().join("manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["format"], "sisap23-matched-v1");
     let queries = read_f32(&root().join("queries_20_9999.f32le"), 9980);
     let warm = read_f32(&root().join("queries_warmup.f32le"), 20);

@@ -9,38 +9,62 @@ QDRANT_DIR=${QDRANT_DIR:-$WORKSPACE/qdrant}
 SISAP23_BENCH_ROOT=${SISAP23_BENCH_ROOT:?set the preflight output root}
 PROTOBUF_MODULE=${PROTOBUF_MODULE:-protobuf}
 module load "$PROTOBUF_MODULE"
-source "$WORKSPACE/envs/py312-torch251/bin/activate"
-source /storage/brno2/home/nico/.cargo/env
-export PATH="/storage/brno2/home/nico/.cargo/bin:$PATH"
-export LIBTORCH="$WORKSPACE/envs/py312-torch251/lib/python3.12/site-packages/torch"
-export LD_LIBRARY_PATH="$LIBTORCH/lib:${LD_LIBRARY_PATH:-}"
-export LIBTORCH_BYPASS_VERSION_CHECK=1
-export CXX=clang++
-export CXXFLAGS=-g0
+source "$QDRANT_DIR/tools/lmi/sisap23_matched/pbs/common-env.sh"
+verify_benchmark_checkout
+setup_benchmark_build_env
 export QDRANT_LMI_SAMPLE_BUDGET_BYTES=${QDRANT_LMI_SAMPLE_BUDGET_BYTES:-768000000}
 export RUST_BACKTRACE=1 SISAP23_BENCH_ROOT
-export TMPDIR="${SCRATCHDIR:?PBS scratch allocation required}"
-export SISAP23_CORPUS_PATH="$TMPDIR/corpus.f16le"
 test -f "$SISAP23_BENCH_ROOT/manifest.json"
-test "$(git -C "$QDRANT_DIR" branch --show-current)" = "thesis/sisap23-matched-bench"
-test ! -e "$SISAP23_BENCH_ROOT/runs" || { echo "run directory exists; use a new benchmark root" >&2; exit 2; }
-mkdir -p "$TMPDIR"
+python -c "import json,sys; assert json.load(open(sys.argv[1]))['source_commit'] == sys.argv[2]" "$SISAP23_BENCH_ROOT/manifest.json" "$SISAP23_REVIEWED_COMMIT"
+manifest_sha=$(sha256sum "$SISAP23_BENCH_ROOT/manifest.json" | awk '{print $1}')
+fingerprint=$(printf '%s|%s|%s' "$(hostname)" "$(lscpu | awk -F: '/Model name/ {gsub(/^ +/,"",$2); print $2; exit}')" "$(stat -f -c %T "$SISAP23_BENCH_ROOT")")
+if test -f "$SISAP23_BENCH_ROOT/suite.state"; then
+  grep -Fxq "source_commit=$SISAP23_REVIEWED_COMMIT" "$SISAP23_BENCH_ROOT/suite.state" || { echo "resume source commit differs" >&2; exit 2; }
+  grep -Fxq "manifest_sha256=$manifest_sha" "$SISAP23_BENCH_ROOT/suite.state" || { echo "prepared inputs changed since interrupted suite" >&2; exit 2; }
+  grep -Fxq "hardware_fingerprint=$fingerprint" "$SISAP23_BENCH_ROOT/suite.state" || { echo "resume must use the same node class, host, and persistent filesystem; start a new run root for matched panels" >&2; exit 2; }
+else
+  test ! -e "$SISAP23_BENCH_ROOT/runs" || { echo "runs exist without suite state; refusing unsafe resume" >&2; exit 2; }
+  mkdir "$SISAP23_BENCH_ROOT/runs"
+  {
+    printf 'source_commit=%s\nmanifest_sha256=%s\nhardware_fingerprint=%s\n' "$SISAP23_REVIEWED_COMMIT" "$manifest_sha" "$fingerprint"
+  } > "$SISAP23_BENCH_ROOT/suite.state"
+  {
+    printf 'hostname=%s\ndate=%s\nfilesystem=%s\n' "$(hostname)" "$(date -Is)" "$(stat -f -c %T "$SISAP23_BENCH_ROOT")"
+    lscpu
+    df -P "$SISAP23_BENCH_ROOT"
+    mount | grep -F "$SISAP23_BENCH_ROOT" || true
+  } > "$SISAP23_BENCH_ROOT/hardware.txt"
+fi
+test ! -f "$SISAP23_BENCH_ROOT/suite.complete.json" || { echo "suite already complete; refusing to rerun" >&2; exit 2; }
+export SISAP23_CORPUS_PATH="$TMPDIR/corpus.f16le"
+ATTEMPT=${PBS_JOBID:-manual}
 cp "$SISAP23_BENCH_ROOT/corpus.f16le" "$SISAP23_CORPUS_PATH"
-mkdir "$SISAP23_BENCH_ROOT/runs"
-{
-  hostname
-  date -Is
-  lscpu
-  df -P "$SISAP23_BENCH_ROOT"
-  mount | grep -F "$SISAP23_BENCH_ROOT" || true
-} > "$SISAP23_BENCH_ROOT/hardware.txt"
 cd "$QDRANT_DIR"
 for variant in plain lmi hnsw-a hnsw-b; do
   export SISAP23_VARIANT="$variant"
   RUN="$SISAP23_BENCH_ROOT/runs/$variant"
-  mkdir "$RUN"
-  RUST_LOG=info /usr/bin/time -v -o "$RUN/build.resources.txt" cargo test -p collection --release --features lmi-training sisap23_matched_build --locked -- --ignored --nocapture > "$RUN/build.log" 2>&1
-  test -f "$RUN/build.complete.json"
-  RUST_LOG=info /usr/bin/time -v -o "$RUN/evaluate.resources.txt" cargo test -p collection --release --features lmi-training sisap23_matched_evaluate --locked -- --ignored --nocapture > "$RUN/evaluate.log" 2>&1
-  grep -q "sisap23_native_evaluation_complete variant=$variant" "$RUN/evaluate.log"
+  if test -f "$RUN/build.complete.json"; then
+    grep -Fq "\"source_commit\": \"$SISAP23_REVIEWED_COMMIT\"" "$RUN/build.complete.json" || { echo "build marker commit mismatch: $variant" >&2; exit 2; }
+  else
+    if test -e "$RUN/collection"; then echo "partial collection exists for $variant; preserving it and refusing rebuild" >&2; exit 2; fi
+    mkdir -p "$RUN"
+    RUST_LOG=info /usr/bin/time -v -o "$RUN/build.resources.$ATTEMPT.txt" cargo test -p collection --release --features lmi-training sisap23_matched_build --locked -- --ignored --nocapture > "$RUN/build.$ATTEMPT.log" 2>&1
+    test -f "$RUN/build.complete.json"
+  fi
+  RUST_LOG=info /usr/bin/time -v -o "$RUN/evaluate.resources.$ATTEMPT.txt" cargo test -p collection --release --features lmi-training sisap23_matched_evaluate --locked -- --ignored --nocapture > "$RUN/evaluate.$ATTEMPT.log" 2>&1
+  grep -q "sisap23_native_evaluation_complete variant=$variant" "$RUN/evaluate.$ATTEMPT.log"
 done
+python "$QDRANT_DIR/tools/lmi/sisap23_matched/validate.py" --root "$SISAP23_BENCH_ROOT" >> "$SISAP23_BENCH_ROOT/validation.log"
+python - "$SISAP23_BENCH_ROOT" "$SISAP23_REVIEWED_COMMIT" "$manifest_sha" "$fingerprint" <<'PY'
+import json, os, sys
+from pathlib import Path
+root=Path(sys.argv[1])
+marker={"source_commit":sys.argv[2],"manifest_sha256":sys.argv[3],"hardware_fingerprint":sys.argv[4],"validation":"passed"}
+tmp=root/"suite.complete.json.tmp"
+if tmp.exists():
+    tmp.unlink()
+with open(tmp,"x") as f:
+    json.dump(marker,f,indent=2,sort_keys=True); f.write("\n"); f.flush(); os.fsync(f.fileno())
+os.replace(tmp,root/"suite.complete.json")
+PY
+printf 'sisap23_matched_suite_complete source_commit=%s\n' "$SISAP23_REVIEWED_COMMIT"
