@@ -8,7 +8,12 @@ WORKSPACE=${WORKSPACE:-/storage/budejovice1/home/nico/lmi-metacentrum}
 QDRANT_DIR=${QDRANT_DIR:-$WORKSPACE/qdrant}
 SISAP_SOURCE=${SISAP_SOURCE:-/storage/brno12-cerit/home/prochazka/datasets/sisap23}
 SISAP23_BENCH_ROOT=${SISAP23_BENCH_ROOT:?set a new, non-existing benchmark root}
-source "$WORKSPACE/envs/py312-torch251/bin/activate"
+ENV_DIR="$WORKSPACE/envs/py312-torch251"
+test -x "$ENV_DIR/bin/python" || {
+    echo "Missing Python executable: $ENV_DIR/bin/python" >&2
+    exit 2
+}
+export PATH="$ENV_DIR/bin:$PATH"
 python -c "import sys; assert sys.version_info[:2] == (3, 12), f'expected Python 3.12, found {sys.version}'"
 source "$QDRANT_DIR/tools/lmi/sisap23_matched/pbs/common-env.sh"
 export TMPDIR="${SCRATCHDIR:?PBS scratch allocation required}/tmp"
