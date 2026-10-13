@@ -1,40 +1,46 @@
 //! Opt-in matched SISAP23 Plain/HNSW/LMI benchmark using native Qdrant index paths.
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter, Read, Seek, Write};
+use std::io::{self, BufReader, BufWriter, Read, Seek, Write};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use ahash::AHashMap;
 use common::budget::ResourceBudget;
 use common::counter::hardware_accumulator::HwMeasurementAcc;
+use common::storage_version::StorageVersion;
+use common::universal_io::MmapFs;
 use half::f16;
 use segment::data_types::query_context::VectorQueryContext;
-use segment::data_types::vectors::{QueryVector, DEFAULT_VECTOR_NAME};
+use segment::data_types::vectors::{DEFAULT_VECTOR_NAME, QueryVector};
 use segment::id_tracker::IdTrackerRead;
+use segment::index::VectorIndexRead;
 use segment::index::candidate_scoring::score_candidates;
 use segment::index::lmi_index::{LmiConfig, LmiStateMetadata};
-use segment::index::VectorIndexEnum;
-use segment::index::VectorIndexRead;
+use segment::index::{VectorIndex, VectorIndexEnum};
+use segment::segment::SegmentVersion;
 use segment::segment_constructor::load_segment;
-use segment::types::{Distance, HnswConfig, PointIdType, SearchParams};
+use segment::types::{
+    Distance, HnswConfig, Indexes, PointIdType, SearchParams, VectorStorageDatatype,
+};
+use segment::vector_storage::VectorStorageRead;
 use sha2::{Digest, Sha256};
+use shard::operations::CollectionUpdateOperations;
 use shard::operations::point_ops::{
     PointInsertOperationsInternal, PointOperations, PointStructPersisted, VectorStructPersisted,
 };
-use shard::operations::CollectionUpdateOperations;
 use uuid::Uuid;
 
 use crate::collection::Collection;
 use crate::config::{CollectionConfigInternal, CollectionParams};
+use crate::operations::OperationWithClockTag;
 use crate::operations::shard_selector_internal::ShardSelectorInternal;
 use crate::operations::shared_storage_config::SharedStorageConfig;
 use crate::operations::types::{Datatype, VectorsConfig};
 use crate::operations::vector_params_builder::VectorParamsBuilder;
-use crate::operations::OperationWithClockTag;
 use crate::optimizers_builder::OptimizersConfig;
 use crate::shards::channel_service::ChannelService;
 use crate::shards::collection_shard_distribution::CollectionShardDistribution;
@@ -118,7 +124,9 @@ fn write_json_new(path: &Path, value: &serde_json::Value) {
     serde_json::to_writer_pretty(&mut f, value).unwrap();
     f.write_all(b"\n").unwrap();
     f.sync_all().unwrap();
-    fs::rename(tmp, path).unwrap();
+    // Atomic create-new; never replace an accepted marker.
+    fs::hard_link(&tmp, path).expect("refuse to replace an existing completion marker");
+    fs::remove_file(tmp).unwrap();
 }
 fn find_named(path: &Path, name: &str, out: &mut Vec<PathBuf>) {
     for e in fs::read_dir(path).unwrap() {
@@ -145,15 +153,136 @@ fn load_index(path: &Path) -> segment::segment::Segment {
     let uuid = Uuid::parse_str(path.file_name().unwrap().to_str().unwrap()).unwrap();
     load_segment(path, uuid, None, &AtomicBool::new(false), false).unwrap()
 }
-fn count_bytes(path: &Path) -> u64 {
-    if path.is_file() {
-        return fs::metadata(path).unwrap().len();
-    }
-    fs::read_dir(path)
-        .unwrap()
-        .map(|e| count_bytes(&e.unwrap().path()))
-        .sum()
+fn path_error(path: &Path, action: &str, err: io::Error) -> io::Error {
+    io::Error::new(err.kind(), format!("{action} {}: {err}", path.display()))
 }
+
+fn count_bytes(path: &Path) -> io::Result<u64> {
+    let metadata = fs::symlink_metadata(path).map_err(|e| path_error(path, "stat", e))?;
+    if metadata.is_file() {
+        return Ok(metadata.len());
+    }
+    if !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unexpected non-file, non-directory: {}", path.display()),
+        ));
+    }
+    let mut total = 0u64;
+    for entry in fs::read_dir(path).map_err(|e| path_error(path, "read directory", e))? {
+        let entry = entry.map_err(|e| path_error(path, "read entry in", e))?;
+        let child = entry.path();
+        total = total.checked_add(count_bytes(&child)?).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("byte count overflow in {}", path.display()),
+            )
+        })?;
+    }
+    Ok(total)
+}
+
+fn index_directory_bytes(
+    segment_path: &Path,
+    variant: Variant,
+    required_files: &[PathBuf],
+) -> io::Result<u64> {
+    let path = segment_path.join("vector_index");
+    match fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound && variant == Variant::Plain => return Ok(0),
+        Err(e) => return Err(path_error(&path, "stat index directory", e)),
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("index path is not a directory: {}", path.display()),
+            ));
+        }
+        Ok(_) => {}
+    }
+    if variant != Variant::Plain {
+        if required_files.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} has no persisted index files", path.display()),
+            ));
+        }
+        for file in required_files {
+            let metadata = fs::symlink_metadata(file)
+                .map_err(|e| path_error(file, "stat required index file", e))?;
+            if !metadata.is_file() || metadata.len() == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "required index file is empty or not regular: {}",
+                        file.display()
+                    ),
+                ));
+            }
+        }
+    }
+    let bytes = count_bytes(&path)?;
+    if variant != Variant::Plain && bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("required index directory is empty: {}", path.display()),
+        ));
+    }
+    Ok(bytes)
+}
+
+fn vector_index_bytes(
+    segment_path: &Path,
+    variant: Variant,
+    index: &VectorIndexEnum,
+) -> io::Result<u64> {
+    let files = match index {
+        VectorIndexEnum::Lmi(lmi) => lmi.files(),
+        VectorIndexEnum::Hnsw(hnsw) => hnsw.files(),
+        _ => Vec::new(),
+    };
+    index_directory_bytes(segment_path, variant, &files)
+}
+
+#[test]
+fn sisap23_index_byte_accounting_is_variant_aware() {
+    let temp = tempfile::tempdir().unwrap();
+    let segment = temp.path();
+    assert_eq!(
+        index_directory_bytes(segment, Variant::Plain, &[]).unwrap(),
+        0
+    );
+    let missing = index_directory_bytes(
+        segment,
+        Variant::Lmi,
+        &[segment.join("vector_index/lmi_state.json")],
+    )
+    .unwrap_err();
+    assert!(missing.to_string().contains("vector_index"));
+    fs::create_dir(segment.join("vector_index")).unwrap();
+    let missing_file = segment.join("vector_index/lmi_state.json");
+    let err = index_directory_bytes(segment, Variant::Lmi, &[missing_file.clone()]).unwrap_err();
+    assert!(err.to_string().contains("lmi_state.json"));
+    fs::write(&missing_file, b"metadata").unwrap();
+    assert_eq!(
+        index_directory_bytes(segment, Variant::Lmi, &[missing_file]).unwrap(),
+        8
+    );
+    let err = index_directory_bytes(segment, Variant::HnswA, &[]).unwrap_err();
+    assert!(err.to_string().contains("no persisted index files"));
+}
+#[test]
+fn sisap23_completion_marker_cannot_be_replaced() {
+    let temp = tempfile::tempdir().unwrap();
+    let marker = temp.path().join("build.complete.json");
+    write_json_new(&marker, &serde_json::json!({"verified": true}));
+    let first = fs::read(&marker).unwrap();
+    let second = std::panic::catch_unwind(|| {
+        write_json_new(&marker, &serde_json::json!({"verified": false}));
+    });
+    assert!(second.is_err(), "existing marker must not be replaced");
+    assert_eq!(fs::read(&marker).unwrap(), first);
+}
+
 fn index_kind(index: &VectorIndexEnum) -> &'static str {
     match index {
         VectorIndexEnum::Plain(_) => "plain",
@@ -397,14 +526,214 @@ async fn sisap23_matched_build() {
         "ingest_seconds": ingest_s,
         "index_build_seconds": index_build_s,
         "corpus_sha256": corpus_sha,
-        "collection_bytes": count_bytes(&collection_path),
-        "segment_bytes": count_bytes(&segment_path),
-        "vector_index_bytes": count_bytes(&segment_path.join("vector_index")),
+        "collection_bytes": count_bytes(&collection_path).expect("cannot count collection bytes"),
+        "segment_bytes": count_bytes(&segment_path).expect("cannot count segment bytes"),
+        "vector_index_bytes": vector_index_bytes(&segment_path, variant, &index)
+            .expect("cannot count physical vector index bytes"),
         "generation": "directory is immutable after this marker; all sweeps reuse this path"
     });
     drop(index);
     drop(segment);
     write_json_new(&run.join("build.complete.json"), &marker);
+}
+
+fn sha256_file(path: &Path) -> io::Result<String> {
+    let mut input = BufReader::new(File::open(path).map_err(|e| path_error(path, "open", e))?);
+    let mut hash = Sha256::new();
+    let mut buf = [0u8; 1024 * 1024];
+    loop {
+        let n = input
+            .read(&mut buf)
+            .map_err(|e| path_error(path, "read", e))?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buf[..n]);
+    }
+    Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Verify the interrupted Plain generation without rebuilding or changing its files.
+fn verify_existing_plain() -> serde_json::Value {
+    let root = root();
+    let run = run_dir(Variant::Plain);
+    assert!(
+        !run.join("build.complete.json").exists(),
+        "Plain build marker already exists"
+    );
+    let collection_path = run.join("collection");
+    assert!(
+        collection_path.is_dir(),
+        "Plain collection missing: {}",
+        collection_path.display()
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["format"], "sisap23-matched-v1");
+    let source_commit = manifest["source_commit"]
+        .as_str()
+        .expect("source commit missing");
+    assert_eq!(
+        source_commit, "42a163701a51078ec24983b3a93f96ab7d661489",
+        "recovery is restricted to the frozen failed generation"
+    );
+    let prepared = manifest["prepared"]
+        .as_object()
+        .expect("prepared manifest missing");
+    for (name, entry) in prepared {
+        let input = root.join(entry["path"].as_str().expect("prepared path missing"));
+        assert_eq!(
+            fs::metadata(&input).unwrap().len(),
+            entry["bytes"].as_u64().unwrap(),
+            "prepared input size mismatch: {name}"
+        );
+        assert_eq!(
+            sha256_file(&input).unwrap(),
+            entry["sha256"].as_str().unwrap(),
+            "prepared input hash mismatch: {name}"
+        );
+    }
+    let corpus_sha = prepared["corpus"]["sha256"].as_str().unwrap();
+    let segment_path = locate_segment(&collection_path);
+    assert_eq!(
+        SegmentVersion::load_universal(&MmapFs, &segment_path).unwrap(),
+        Some(SegmentVersion::current()),
+        "recovery refuses a segment version migration that could rewrite collection files"
+    );
+    let segment = load_index(&segment_path);
+    assert_eq!(
+        segment.segment_config.vector_data.len(),
+        1,
+        "expected one dense vector field"
+    );
+    assert!(
+        segment.segment_config.sparse_vector_data.is_empty(),
+        "unexpected sparse vector field"
+    );
+    let config = &segment.segment_config.vector_data[DEFAULT_VECTOR_NAME];
+    assert_eq!(config.size, DIM, "wrong stored vector dimension");
+    assert_eq!(config.distance, Distance::Cosine, "wrong stored distance");
+    assert_eq!(
+        config.datatype,
+        Some(VectorStorageDatatype::Float16),
+        "wrong stored datatype"
+    );
+    assert!(
+        matches!(config.index, Indexes::Plain {}),
+        "segment config is not Plain"
+    );
+    assert!(
+        config.quantization_config.is_none(),
+        "unexpected vector quantization"
+    );
+    let data = &segment.vector_data[DEFAULT_VECTOR_NAME];
+    let index = data.vector_index.borrow();
+    assert_eq!(index_kind(&index), "plain", "wrong reopened physical index");
+    let storage = data.vector_storage.borrow();
+    assert_eq!(storage.datatype(), VectorStorageDatatype::Float16);
+    assert_eq!(storage.distance(), Distance::Cosine);
+    assert!(storage.is_on_disk(), "Plain vectors are not on disk");
+    assert_eq!(
+        storage.total_vector_count(),
+        N,
+        "wrong total stored vectors"
+    );
+    assert_eq!(
+        storage.available_vector_count(),
+        N,
+        "deleted or unavailable vectors"
+    );
+    let tracker = segment.id_tracker.borrow();
+    assert_eq!(tracker.total_point_count(), N, "wrong total point count");
+    assert_eq!(
+        tracker.available_point_count(),
+        N,
+        "deleted or unavailable points"
+    );
+    let mut seen = vec![false; N];
+    let mut mapped = 0usize;
+    for (external, internal) in tracker.point_mappings().iter_from(None) {
+        let PointIdType::NumId(id) = external else {
+            panic!("non-numeric SISAP point ID")
+        };
+        assert!(
+            (1..=N as u64).contains(&id),
+            "out-of-range SISAP point ID: {id}"
+        );
+        let slot = &mut seen[(id - 1) as usize];
+        assert!(!*slot, "duplicate SISAP point ID: {id}");
+        *slot = true;
+        assert_eq!(
+            tracker.external_id(internal),
+            Some(external),
+            "mapping is not reversible"
+        );
+        assert!(
+            tracker.internal_version(internal).is_some(),
+            "point lacks persisted version"
+        );
+        assert!(
+            !storage.is_deleted_vector(internal),
+            "mapped vector is deleted"
+        );
+        mapped += 1;
+    }
+    assert_eq!(mapped, N, "not every one-based SISAP ID is mapped");
+    drop(tracker);
+    drop(storage);
+    drop(index);
+    let warm = read_f32(&root.join("queries_warmup.f32le"), 20);
+    let (hits, scanned) = search_one(&segment, Variant::Plain, 0, &warm[0]);
+    assert_eq!(
+        hits.len(),
+        10,
+        "reopened Plain exact search did not return top ten"
+    );
+    assert_eq!(scanned, Some(N));
+    assert!(hits.iter().all(|id| (1..=N as u64).contains(id)));
+    drop(segment);
+    let recovery_commit = std::env::var("SISAP23_RECOVERY_COMMIT")
+        .expect("SISAP23_RECOVERY_COMMIT must identify the repair executable");
+    assert_eq!(
+        recovery_commit.len(),
+        40,
+        "recovery commit must be a full SHA"
+    );
+    serde_json::json!({
+        "format": "sisap23-build-v1", "variant": "plain",
+        "source_commit": source_commit, "recovery_commit": recovery_commit,
+        "recovered_after_verified_reopen": true,
+        "point_count": N, "dimension": DIM, "datatype": "float16", "distance": "cosine",
+        "segment_path": segment_path, "segment_count": 1, "index_kind": "plain",
+        "lmi": serde_json::Value::Null, "hnsw_m": serde_json::Value::Null,
+        "ef_construct": serde_json::Value::Null,
+        "ingest_seconds": serde_json::Value::Null,
+        "index_build_seconds": serde_json::Value::Null,
+        "corpus_sha256": corpus_sha,
+        "collection_bytes": count_bytes(&collection_path).expect("cannot count collection bytes"),
+        "segment_bytes": count_bytes(&segment_path).expect("cannot count segment bytes"),
+        "vector_index_bytes": index_directory_bytes(&segment_path, Variant::Plain, &[])
+            .expect("cannot count Plain index bytes"),
+        "generation": "original frozen build; recovered metadata after independent validation"
+    })
+}
+
+#[test]
+#[ignore = "explicit validation of the interrupted 10M Plain generation, then marker publication"]
+fn sisap23_matched_recover_plain() {
+    let marker = verify_existing_plain();
+    if std::env::var("SISAP23_RECOVERY_DRY_RUN").as_deref() == Ok("1") {
+        println!("sisap23_plain_recovery_verified_dry_run {}", marker);
+        return;
+    }
+    assert_eq!(
+        std::env::var("SISAP23_RECOVERY_PUBLISH").as_deref(),
+        Ok("1"),
+        "set SISAP23_RECOVERY_PUBLISH=1 to create the completion marker"
+    );
+    let path = run_dir(Variant::Plain).join("build.complete.json");
+    write_json_new(&path, &marker);
+    println!("sisap23_plain_recovery_complete marker={}", path.display());
 }
 
 fn selected_settings(v: Variant) -> Vec<(String, usize)> {
