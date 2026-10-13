@@ -1,0 +1,21 @@
+#!/bin/bash
+#PBS -N sisap23-compile-smoke
+#PBS -l select=1:ncpus=8:mem=32gb:scratch_local=80gb
+#PBS -l walltime=08:00:00
+#PBS -j oe
+set -euo pipefail
+WORKSPACE=${WORKSPACE:-/storage/budejovice1/home/nico/lmi-metacentrum}
+QDRANT_DIR=${QDRANT_DIR:-$WORKSPACE/qdrant}
+SISAP23_BENCH_ROOT=${SISAP23_BENCH_ROOT:?set the prepared benchmark root}
+PROTOBUF_MODULE=${PROTOBUF_MODULE:-protobuf}
+module load "$PROTOBUF_MODULE"
+source "$QDRANT_DIR/tools/lmi/sisap23_matched/pbs/common-env.sh"
+verify_benchmark_checkout
+test -f "$SISAP23_BENCH_ROOT/manifest.json"
+python -c "import json,sys; assert json.load(open(sys.argv[1]))['source_commit'] == sys.argv[2]" "$SISAP23_BENCH_ROOT/manifest.json" "$SISAP23_REVIEWED_COMMIT"
+setup_benchmark_build_env
+cd "$QDRANT_DIR"
+LOG="$SISAP23_BENCH_ROOT/provenance/compile-smoke-${PBS_JOBID:-manual}.log"
+RESOURCES="$SISAP23_BENCH_ROOT/provenance/compile-smoke-${PBS_JOBID:-manual}.resources.txt"
+/usr/bin/time -v -o "$RESOURCES" cargo check -p collection --tests --features lmi-training --locked > "$LOG" 2>&1
+printf 'collection lmi-training compile smoke passed for %s\n' "$SISAP23_REVIEWED_COMMIT"

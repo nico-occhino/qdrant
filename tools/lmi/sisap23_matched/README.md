@@ -42,7 +42,7 @@ Preparation writes only to a new output root and fails if it already exists. Eac
 
 The matched suite requests 96 GB RAM, 16 CPUs, 200 GB local scratch, and up to 96 hours. Standalone build jobs request 200 GB scratch; standalone evaluation requests 80 GB scratch, 48 GB RAM, and 8 CPUs. Preflight requests 32 GB RAM. Confirm site limits and the exact protobuf module name before submission. These are initial resource requests, not measured requirements or a scheduling guarantee.
 
-Rust 1.98.0, Python 3.12, and PyTorch 2.5.1 are checked on compute nodes. The scripts require `protoc` from the loaded protobuf module and verify the selected `clang++` by compiling and running a small probe. No LibTorch version-check bypass is set. Cargo's `CARGO_TARGET_DIR`, `TMPDIR`, and the source corpus copy use PBS local scratch; logs, manifests, result chunks, and finished collection generations stay on persistent storage. The suite records tool versions and compiler details below `provenance/`.
+Rust 1.98.0, Python 3.12, and the PyTorch 2.5.1 CPU package are checked on compute nodes. Rustup and Cargo use `/storage/brno2/home/nico/.rustup` and `/storage/brno2/home/nico/.cargo`. The scripts set `LIBTORCH_USE_PYTORCH=1`, add the installed Torch library directory to `LD_LIBRARY_PATH`, and leave `LIBTORCH_BYPASS_VERSION_CHECK` unset. They require `protoc` from the loaded protobuf module and verify `g++` by compiling and running a small probe. Cargo's `CARGO_TARGET_DIR`, `TMPDIR`, and the source corpus copy use PBS local scratch; logs, manifests, result chunks, and finished collection generations stay on persistent storage. The suite records tool versions and compiler details below `provenance/`.
 
 The scripts require the exact experimental branch and commit SHA. Fetch the branch and fast-forward an existing local branch, then record its reviewed HEAD once; pass the same SHA to every job. A job stops before compute if its checkout differs. If the local branch is new, create it to track the fetched branch instead.
 
@@ -58,6 +58,12 @@ SISAP23_REVIEWED_COMMIT=$(git -C "$QDRANT_DIR" rev-parse HEAD)
 test "$SISAP23_REVIEWED_COMMIT" = "$(git -C "$QDRANT_DIR" rev-parse origin/thesis/sisap23-matched-bench)"
 export WORKSPACE QDRANT_DIR SISAP_SOURCE SISAP23_BENCH_ROOT SISAP23_REVIEWED_COMMIT
 qsub -v WORKSPACE,QDRANT_DIR,SISAP_SOURCE,SISAP23_BENCH_ROOT,SISAP23_REVIEWED_COMMIT,PROTOBUF_MODULE=protobuf "$QDRANT_DIR/tools/lmi/sisap23_matched/pbs/00_preflight.pbs"
+```
+
+After preflight, an optional compilation smoke job checks the `collection` test targets with `lmi-training` using the same setup as the suite. It runs `cargo check`, so it does not link the final test binary or build a 10M index. Review its persistent log under `provenance/` before submitting the suite.
+
+```bash
+qsub -v WORKSPACE,QDRANT_DIR,SISAP23_BENCH_ROOT,SISAP23_REVIEWED_COMMIT,PROTOBUF_MODULE=protobuf "$QDRANT_DIR/tools/lmi/sisap23_matched/pbs/05_compile_smoke.pbs"
 ```
 
 Submit one suite only after preflight succeeds. Preserve only after the suite has completed validation. PBS `afterok` ensures the preservation job cannot run after a failed or interrupted suite:
