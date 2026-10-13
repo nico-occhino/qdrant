@@ -11,7 +11,12 @@ verify_benchmark_checkout() {
 setup_benchmark_build_env() {
   local tool_log="$SISAP23_BENCH_ROOT/provenance/toolchain-${PBS_JOBID:-manual}.txt"
   local metacentrum_rust_home=/storage/brno2/home/nico
-  source "$WORKSPACE/envs/py312-torch251/bin/activate"
+  ENV_DIR="$WORKSPACE/envs/py312-torch251"
+  test -x "$ENV_DIR/bin/python" || {
+      echo "Missing Python executable: $ENV_DIR/bin/python" >&2
+      exit 2
+  }
+  export PATH="$ENV_DIR/bin:$PATH"
   export RUSTUP_HOME="$metacentrum_rust_home/.rustup"
   export CARGO_HOME="$metacentrum_rust_home/.cargo"
   export PATH="$CARGO_HOME/bin:$PATH"
