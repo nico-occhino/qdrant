@@ -9,6 +9,9 @@ QDRANT_DIR=${QDRANT_DIR:-$WORKSPACE/qdrant}
 SISAP_SOURCE=${SISAP_SOURCE:-/storage/brno12-cerit/home/prochazka/datasets/sisap23}
 SISAP23_BENCH_ROOT=${SISAP23_BENCH_ROOT:?set a new, non-existing benchmark root}
 source "$WORKSPACE/envs/py312-torch251/bin/activate"
-export TMPDIR="${SCRATCHDIR:-$WORKSPACE/tmp}"
+python -c "import sys; assert sys.version_info[:2] == (3, 12), f'expected Python 3.12, found {sys.version}'"
+source "$QDRANT_DIR/tools/lmi/sisap23_matched/pbs/common-env.sh"
+export TMPDIR="${SCRATCHDIR:?PBS scratch allocation required}/tmp"
 mkdir -p "$TMPDIR"
-python "$QDRANT_DIR/tools/lmi/sisap23_matched/preflight.py" --source "$SISAP_SOURCE" --out "$SISAP23_BENCH_ROOT"
+verify_benchmark_checkout
+python "$QDRANT_DIR/tools/lmi/sisap23_matched/preflight.py" --source "$SISAP_SOURCE" --out "$SISAP23_BENCH_ROOT" --source-commit "$SISAP23_REVIEWED_COMMIT"
