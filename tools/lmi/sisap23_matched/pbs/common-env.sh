@@ -10,34 +10,40 @@ verify_benchmark_checkout() {
 }
 setup_benchmark_build_env() {
   local tool_log="$SISAP23_BENCH_ROOT/provenance/toolchain-${PBS_JOBID:-manual}.txt"
+  local metacentrum_rust_home=/storage/brno2/home/nico
   source "$WORKSPACE/envs/py312-torch251/bin/activate"
-  source /storage/brno2/home/nico/.cargo/env
-  export PATH="/storage/brno2/home/nico/.cargo/bin:$PATH"
+  export RUSTUP_HOME="$metacentrum_rust_home/.rustup"
+  export CARGO_HOME="$metacentrum_rust_home/.cargo"
+  export PATH="$CARGO_HOME/bin:$PATH"
   export TMPDIR="${SCRATCHDIR:?PBS scratch allocation required}/tmp"
   export CARGO_TARGET_DIR="${SCRATCHDIR:?PBS scratch allocation required}/cargo-target"
   mkdir -p "$TMPDIR" "$CARGO_TARGET_DIR" "$(dirname "$tool_log")"
-  local rustv pytorch torch_root protocv cxx_path
+  local rustv pytorch torch_root torch_lib_dir protocv cxx_path
   rustv=$(rustc --version)
   [[ "$rustv" == "rustc 1.98.0 "* ]] || { echo "expected Rust 1.98.0, found $rustv" >&2; exit 2; }
   python -c "import sys; assert sys.version_info[:2] == (3, 12), f'expected Python 3.12, found {sys.version}'" || exit 2
-  python -c "import torch; assert torch.__version__.split('+')[0] == '2.5.1', f'expected PyTorch 2.5.1, found {torch.__version__}'" || exit 2
+  python -c "import torch; assert torch.__version__.split('+')[0] == '2.5.1' and torch.version.cuda is None, f'expected PyTorch 2.5.1 CPU, found {torch.__version__}'" || exit 2
   pytorch=$(python -c "import torch; print(torch.__version__)")
   torch_root=$(python -c "import pathlib,torch; print(pathlib.Path(torch.__file__).parent)")
-  export LIBTORCH="$torch_root"
-  export LD_LIBRARY_PATH="$LIBTORCH/lib:${LD_LIBRARY_PATH:-}"
-  export CXX=clang++ CXXFLAGS=-g0
-  cxx_path=$(command -v "$CXX") || { echo "clang++ is required by the selected torch-sys setup" >&2; exit 2; }
+  torch_lib_dir="$torch_root/lib"
+  test -d "$torch_lib_dir" || { echo "PyTorch library directory missing: $torch_lib_dir" >&2; exit 2; }
+  unset LIBTORCH LIBTORCH_BYPASS_VERSION_CHECK
+  export LIBTORCH_USE_PYTORCH=1
+  export LD_LIBRARY_PATH="$torch_lib_dir:${LD_LIBRARY_PATH:-}"
+  export CXX=g++ CXXFLAGS=-g0
+  cxx_path=$(command -v "$CXX") || { echo "g++ is required by the MetaCentrum build setup" >&2; exit 2; }
   protocv=$(protoc --version) || { echo "protoc is required; load the site protobuf module" >&2; exit 2; }
   "$CXX" --version > "$TMPDIR/cxx-version.txt"
   printf 'int main() { return 0; }\n' | "$CXX" -x c++ - -o "$TMPDIR/cxx-probe"
   "$TMPDIR/cxx-probe"
   {
     printf 'reviewed_commit=%s\n' "$SISAP23_REVIEWED_COMMIT"
+    printf 'rustup_home=%s\ncargo_home=%s\n' "$RUSTUP_HOME" "$CARGO_HOME"
     printf 'rust=%s\n' "$rustv"
     printf 'cargo=%s\n' "$(cargo --version)"
     printf 'python=%s\n' "$(python --version 2>&1)"
     printf 'pytorch=%s\n' "$pytorch"
-    printf 'libtorch=%s\n' "$LIBTORCH"
+    printf 'libtorch_use_pytorch=%s\ntorch_lib_dir=%s\n' "$LIBTORCH_USE_PYTORCH" "$torch_lib_dir"
     printf 'protoc=%s\n' "$protocv"
     printf 'cxx=%s (%s)\n' "$CXX" "$cxx_path"
     cat "$TMPDIR/cxx-version.txt"
