@@ -105,3 +105,132 @@ Accept only if all four build markers identify the expected physical index and p
 ## Local validation boundary
 
 Allowed local checks are source formatting, Python/Bash syntax, a synthetic validator test, and bounded Rust compilation. No full corpus ingest, 10M build, 9,980-query sweep, SSH, or PBS job submission is part of implementation.
+
+## Recovery of the interrupted 2026-10-13 Plain generation
+
+Job `24633011.pbs-m1.metacentrum.cz` ingested all 10,120,191 vectors but failed while counting
+`vector_index/` for Plain. Qdrant's Plain index opens directly from vector storage and has no
+required `vector_index/` directory. The reported stack reaches the completion marker after
+`stop_gracefully`, segment discovery, reopening, and index-kind verification. The collection
+is **not accepted yet**: its point mappings, storage, inputs, and exact-search behavior still
+require the independent recovery test on MetaCentrum.
+
+The repair branch is `thesis/sisap23-matched-recovery`. It adds variant-aware index-size
+accounting and the opt-in `sisap23_matched_recover_plain` test. Dry-run verifies manifest
+hashes for every prepared input, one reopened Plain segment, Float16/Cosine/768 storage,
+10,120,191 live vectors and points, every one-based ID and reverse mapping, persisted point
+versions, no deleted vectors, and one native Plain top-10 search. Publication repeats all checks,
+then creates `build.complete.json` with an atomic create-new link. The marker retains the
+original `source_commit` and records `recovery_commit` separately; missing historical timing
+is null, never invented. If validation fails, no marker is created. The recovered collection
+generation is never rebuilt or rewritten by the test. Keep the recovery logs and original
+build resources report alongside the marker.
+
+The existing suite must subsequently run from frozen branch
+`thesis/sisap23-matched-bench` at
+`42a163701a51078ec24983b3a93f96ab7d661489`. Its manifest and `suite.state`
+remain pinned to that generation commit. The suite reuses the recovered Plain marker, builds
+the remaining variants with the original code, and validates all results. The suite's exact
+hostname/CPU/filesystem fingerprint is unchanged; it will reject a new host before copying
+the corpus or starting a build. A resume is scientifically matched only if PBS allocates
+`adan12.grid.cesnet.cz` with the same fingerprint. If this is unavailable, keep the recovered
+Plain collection for correctness evidence and start a new matched run root; do not edit
+`suite.state` or relabel cross-host latency as paired.
+
+### Commands for the owner to run on MetaCentrum
+
+The commands below are instructions; they have **not** been executed here. Run them after
+logging in yourself. The first block only reads small metadata on the frontend:
+
+```bash
+WORKSPACE=/storage/budejovice1/home/nico/lmi-metacentrum
+QDRANT_DIR="$WORKSPACE/qdrant"
+SISAP23_BENCH_ROOT="$WORKSPACE/results/sisap23-matched-20261013-02"
+ORIGINAL=42a163701a51078ec24983b3a93f96ab7d661489
+export WORKSPACE QDRANT_DIR SISAP23_BENCH_ROOT
+git -C "$QDRANT_DIR" status --short --branch
+git -C "$QDRANT_DIR" rev-parse HEAD
+cat "$SISAP23_BENCH_ROOT/suite.state"
+test -d "$SISAP23_BENCH_ROOT/runs/plain/collection"
+test ! -e "$SISAP23_BENCH_ROOT/runs/plain/build.complete.json"
+find "$SISAP23_BENCH_ROOT/runs/plain/collection" -name segment.json -print
+test ! -e "$SISAP23_BENCH_ROOT/suite.complete.json"
+qstat -x 24633011.pbs-m1.metacentrum.cz
+qstat -x 24633013.pbs-m1.metacentrum.cz
+```
+
+The following block updates the **source checkout**, not the collection. Run only with a
+clean checkout, and confirm the reviewed recovery SHA against the published GitHub branch.
+Do not change the manifest, suite state, or result files:
+
+```bash
+test -z "$(git -C "$QDRANT_DIR" status --porcelain)"
+git -C "$QDRANT_DIR" fetch origin thesis/sisap23-matched-recovery
+git -C "$QDRANT_DIR" switch --track -c thesis/sisap23-matched-recovery origin/thesis/sisap23-matched-recovery
+SISAP23_RECOVERY_COMMIT=$(git -C "$QDRANT_DIR" rev-parse HEAD)
+test "$SISAP23_RECOVERY_COMMIT" = "$(git -C "$QDRANT_DIR" rev-parse origin/thesis/sisap23-matched-recovery)"
+export SISAP23_RECOVERY_COMMIT
+```
+
+The first PBS job is a dry run. It compiles and checks the collection on a compute node,
+hashes the prepared inputs, and runs one exact query, but creates **no** marker:
+
+```bash
+qsub -v WORKSPACE,QDRANT_DIR,SISAP23_BENCH_ROOT,SISAP23_RECOVERY_COMMIT,PROTOBUF_MODULE=protobuf   "$QDRANT_DIR/tools/lmi/sisap23_matched/pbs/15_recover_plain.pbs"
+```
+
+After it finishes successfully, inspect
+`$SISAP23_BENCH_ROOT/runs/plain/recovery.dry-run.*.log` and the matching resources file.
+Confirm the `sisap23_plain_recovery_verified_dry_run` line and absence of a marker.
+The next submission repeats verification and creates the marker; it does **not** build an index:
+
+```bash
+test ! -e "$SISAP23_BENCH_ROOT/runs/plain/build.complete.json"
+qsub -v WORKSPACE,QDRANT_DIR,SISAP23_BENCH_ROOT,SISAP23_RECOVERY_COMMIT,SISAP23_RECOVERY_PUBLISH=1,PROTOBUF_MODULE=protobuf   "$QDRANT_DIR/tools/lmi/sisap23_matched/pbs/15_recover_plain.pbs"
+```
+
+Inspect the publish log and marker. Preserve the original five-hour build log to
+document ingest time. The following checks read only small result files:
+
+```bash
+ls -ltr "$SISAP23_BENCH_ROOT/runs/plain"/recovery.*.log
+tail -n 80 "$SISAP23_BENCH_ROOT/runs/plain"/recovery.publish.*.log
+python - "$SISAP23_BENCH_ROOT" "$ORIGINAL" "$SISAP23_RECOVERY_COMMIT" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+m = json.loads((root / "runs/plain/build.complete.json").read_text())
+assert m["source_commit"] == sys.argv[2]
+assert m["recovery_commit"] == sys.argv[3]
+assert m["point_count"] == 10120191
+assert m["index_kind"] == "plain" and m["segment_count"] == 1
+assert m["vector_index_bytes"] == 0
+assert m["recovered_after_verified_reopen"] is True
+print("recovered Plain marker verified")
+PY
+```
+
+Only after these checks, return the source checkout to the original frozen commit. This
+does not touch the benchmark collection:
+
+```bash
+test -z "$(git -C "$QDRANT_DIR" status --porcelain)"
+git -C "$QDRANT_DIR" switch thesis/sisap23-matched-bench
+test "$(git -C "$QDRANT_DIR" rev-parse HEAD)" = "$ORIGINAL"
+SISAP23_REVIEWED_COMMIT="$ORIGINAL"
+export SISAP23_REVIEWED_COMMIT
+```
+
+Submit the existing suite only if `adan12.grid.cesnet.cz` can be allocated again under
+the existing PBS resource request. The suite itself checks the recorded fingerprint and
+fails closed on a different host. It will reuse Plain and start LMI next. Submit
+preservation only with an `afterok` dependency on the new suite job:
+
+```bash
+SUITE_JOB=$(qsub -v WORKSPACE,QDRANT_DIR,SISAP23_BENCH_ROOT,SISAP23_REVIEWED_COMMIT,PROTOBUF_MODULE=protobuf   "$QDRANT_DIR/tools/lmi/sisap23_matched/pbs/40_suite.pbs")
+qsub -W depend=afterok:"$SUITE_JOB"   -v WORKSPACE,QDRANT_DIR,SISAP23_BENCH_ROOT,SISAP23_REVIEWED_COMMIT   "$QDRANT_DIR/tools/lmi/sisap23_matched/pbs/30_preserve.pbs"
+```
+
+After completion, check `suite.complete.json`, `validation.json`,
+`results.sha256`, and `sha256sum -c "$SISAP23_BENCH_ROOT/results.sha256"` on a
+compute node. Do not run the 15 GB input hash or Rust build on a frontend.

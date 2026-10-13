@@ -1,0 +1,45 @@
+#!/bin/bash
+#PBS -N sisap23-recover-plain
+#PBS -l select=1:ncpus=16:mem=96gb:scratch_local=200gb
+#PBS -l walltime=24:00:00
+#PBS -j oe
+set -euo pipefail
+WORKSPACE=${WORKSPACE:-/storage/budejovice1/home/nico/lmi-metacentrum}
+QDRANT_DIR=${QDRANT_DIR:-$WORKSPACE/qdrant}
+SISAP23_BENCH_ROOT=${SISAP23_BENCH_ROOT:?set the interrupted benchmark root}
+SISAP23_RECOVERY_COMMIT=${SISAP23_RECOVERY_COMMIT:?set the reviewed repair commit SHA}
+SISAP23_REVIEWED_COMMIT=42a163701a51078ec24983b3a93f96ab7d661489
+PROTOBUF_MODULE=${PROTOBUF_MODULE:-protobuf}
+module load "$PROTOBUF_MODULE"
+source "$QDRANT_DIR/tools/lmi/sisap23_matched/pbs/common-env.sh"
+test "$(git -C "$QDRANT_DIR" branch --show-current)" = thesis/sisap23-matched-recovery
+test "$(git -C "$QDRANT_DIR" rev-parse HEAD)" = "$SISAP23_RECOVERY_COMMIT"
+test -z "$(git -C "$QDRANT_DIR" status --porcelain)" || { echo "recovery checkout is dirty" >&2; exit 2; }
+setup_benchmark_build_env
+test -f "$SISAP23_BENCH_ROOT/suite.state"
+grep -Fxq "source_commit=$SISAP23_REVIEWED_COMMIT" "$SISAP23_BENCH_ROOT/suite.state"
+manifest_sha=$(sha256sum "$SISAP23_BENCH_ROOT/manifest.json" | cut -d ' ' -f 1)
+grep -Fxq "manifest_sha256=$manifest_sha" "$SISAP23_BENCH_ROOT/suite.state"
+test -d "$SISAP23_BENCH_ROOT/runs/plain/collection"
+test ! -e "$SISAP23_BENCH_ROOT/runs/plain/build.complete.json"
+export SISAP23_BENCH_ROOT SISAP23_RECOVERY_COMMIT RUST_BACKTRACE=1
+ATTEMPT=${PBS_JOBID:-manual}
+MODE=dry-run
+if test "${SISAP23_RECOVERY_PUBLISH:-0}" = 1; then
+  export SISAP23_RECOVERY_PUBLISH=1
+  MODE=publish
+else
+  export SISAP23_RECOVERY_DRY_RUN=1
+fi
+cd "$QDRANT_DIR"
+LOG="$SISAP23_BENCH_ROOT/runs/plain/recovery.$MODE.$ATTEMPT.log"
+RUST_LOG=info /usr/bin/time -v -o "$SISAP23_BENCH_ROOT/runs/plain/recovery.$MODE.$ATTEMPT.resources.txt" \
+  cargo test -p collection --release --features lmi-training sisap23_matched_recover_plain --locked -- --ignored --nocapture > "$LOG" 2>&1
+if test "$MODE" = publish; then
+  grep -q sisap23_plain_recovery_complete "$LOG"
+  test -f "$SISAP23_BENCH_ROOT/runs/plain/build.complete.json"
+else
+  grep -q sisap23_plain_recovery_verified_dry_run "$LOG"
+  test ! -e "$SISAP23_BENCH_ROOT/runs/plain/build.complete.json"
+fi
+printf 'Plain recovery %s completed: %s\n' "$MODE" "$LOG"
