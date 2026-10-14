@@ -20,9 +20,10 @@ Zenith previously resolved HOME to a nonexistent path and produced PBS start fai
 
 ```bash
 ssh nico@perian.metacentrum.cz
+set -euo pipefail
 WORKSPACE=/storage/budejovice1/home/nico/lmi-metacentrum
 ROOT=$WORKSPACE/results/sisap23-matched-20261013-02
-DIAG_SHA=<published-diagnostic-commit>
+DIAG_SHA='PASTE_PUBLISHED_DIAGNOSTIC_SHA_HERE'
 cd "$WORKSPACE/qdrant"
 git fetch origin thesis/sisap23-matched-diagnostics
 git switch thesis/sisap23-matched-diagnostics || git switch --track origin/thesis/sisap23-matched-diagnostics
