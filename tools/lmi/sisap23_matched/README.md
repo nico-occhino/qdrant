@@ -238,3 +238,7 @@ compute node. Do not run the 15 GB input hash or Rust build on a frontend.
 ## Interrupted Plain collection diagnostic
 
 See [DIAGNOSTIC.md](DIAGNOSTIC.md) for the opt-in scratch-copy investigation of the 1,679-slot count discrepancy.
+
+## Plain WAL recovery experiment
+
+See [WAL_REPLAY.md](WAL_REPLAY.md) for the two-stage scratch-copy WAL inspection and optional full collection replay.
