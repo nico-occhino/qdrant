@@ -1,0 +1,85 @@
+#!/bin/bash
+#PBS -N sisap23-plain-wal
+#PBS -l select=1:ncpus=16:mem=96gb:scratch_local=200gb
+#PBS -l walltime=24:00:00
+set -euo pipefail
+SISAP23_WAL_MODE=${SISAP23_WAL_MODE:?set inspect or replay explicitly}
+case "$SISAP23_WAL_MODE" in inspect|replay) ;; *) echo "invalid WAL mode" >&2; exit 2;; esac
+WORKSPACE=/storage/budejovice1/home/nico/lmi-metacentrum
+QDRANT_DIR=${QDRANT_DIR:?pass isolated WAL worktree}
+test "$QDRANT_DIR" = "$WORKSPACE/qdrant-sisap23-wal-replay" || {
+  echo "refuse a non-isolated development checkout" >&2; exit 2;
+}
+SISAP23_BENCH_ROOT=${SISAP23_BENCH_ROOT:?set original interrupted run root}
+SISAP23_WAL_COMMIT=${SISAP23_WAL_COMMIT:?pin reviewed WAL implementation commit}
+SISAP23_REVIEWED_COMMIT=$SISAP23_WAL_COMMIT
+ORIGINAL=42a163701a51078ec24983b3a93f96ab7d661489
+test "$(git -C "$QDRANT_DIR" branch --show-current)" = thesis/sisap23-matched-wal-replay
+test "$(git -C "$QDRANT_DIR" rev-parse HEAD)" = "$SISAP23_WAL_COMMIT"
+test -z "$(git -C "$QDRANT_DIR" status --porcelain)"
+test -f "$SISAP23_BENCH_ROOT/manifest.json"
+test -f "$SISAP23_BENCH_ROOT/suite.state"
+grep -Fxq "source_commit=$ORIGINAL" "$SISAP23_BENCH_ROOT/suite.state"
+manifest_sha=$(sha256sum "$SISAP23_BENCH_ROOT/manifest.json" | cut -d ' ' -f 1)
+grep -Fxq "manifest_sha256=$manifest_sha" "$SISAP23_BENCH_ROOT/suite.state"
+SOURCE="$SISAP23_BENCH_ROOT/runs/plain/collection"
+test -d "$SOURCE"
+test -f "$SOURCE/0/wal/first-index"
+test ! -e "$SISAP23_BENCH_ROOT/runs/plain/build.complete.json"
+test ! -e "$SISAP23_BENCH_ROOT/suite.complete.json"
+test -z "$(find "$SOURCE" -type l -print -quit)" || { echo "source has symlink" >&2; exit 2; }
+PROTOBUF_MODULE=${PROTOBUF_MODULE:-protobuf}
+module load "$PROTOBUF_MODULE"
+source "$QDRANT_DIR/tools/lmi/sisap23_matched/pbs/common-env.sh"
+setup_benchmark_build_env
+corpus_expected=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["prepared"]["corpus"]["sha256"])' "$SISAP23_BENCH_ROOT/manifest.json")
+corpus_actual=$(sha256sum "$SISAP23_BENCH_ROOT/corpus.f16le" | cut -d ' ' -f 1)
+test "$corpus_actual" = "$corpus_expected" || { echo "prepared corpus hash mismatch" >&2; exit 2; }
+ATTEMPT=${PBS_JOBID:?PBS job ID required}
+REPORT_DIR="$SISAP23_BENCH_ROOT/diagnostics/wal-replay"
+mkdir -p "$REPORT_DIR"
+PREFIX="$REPORT_DIR/plain.$ATTEMPT.$SISAP23_WAL_MODE"
+SISAP23_WAL_PRE_REPORT="$PREFIX.pre.json"
+SISAP23_WAL_POST_REPORT="$PREFIX.post.json"
+LOG="$PREFIX.log"
+STATUS="$PREFIX.exit-status.txt"
+FILES="$PREFIX.source-files.tsv"
+COPY_DIFF="$PREFIX.copy-diff.txt"
+RESOURCES="$PREFIX.resources.txt"
+SOURCE_HASH_BEFORE="$PREFIX.original-before.sha256"
+SOURCE_HASH_AFTER="$PREFIX.original-after.sha256"
+for path in "$SISAP23_WAL_PRE_REPORT" "$SISAP23_WAL_POST_REPORT" "$LOG" "$STATUS" "$FILES" "$COPY_DIFF" "$RESOURCES" "$SOURCE_HASH_BEFORE" "$SOURCE_HASH_AFTER"; do
+  test ! -e "$path" || { echo "refuse existing diagnostic output: $path" >&2; exit 2; }
+done
+trap 'exit_code=$?; if test -f "$SOURCE_HASH_BEFORE"; then
+  find "$SOURCE" -type f -print0 | sort -z | xargs -0 sha256sum > "$SOURCE_HASH_AFTER" || exit_code=3
+  cmp "$SOURCE_HASH_BEFORE" "$SOURCE_HASH_AFTER" || exit_code=3
+fi
+printf "%s\n" "$exit_code" > "$STATUS"; exit "$exit_code"' EXIT
+find "$SOURCE" -type f -printf '%P\t%s\n' > "$FILES"
+find "$SOURCE" -type f -print0 | sort -z | xargs -0 sha256sum > "$SOURCE_HASH_BEFORE"
+SISAP23_WAL_INSPECTION_PATH="${SCRATCHDIR:?PBS scratch required}/plain-inspection"
+SISAP23_WAL_COLLECTION_PATH="${SCRATCHDIR:?PBS scratch required}/plain-replay"
+test ! -e "$SISAP23_WAL_INSPECTION_PATH"
+test ! -e "$SISAP23_WAL_COLLECTION_PATH"
+cp -a "$SOURCE" "$SISAP23_WAL_INSPECTION_PATH"
+cp -a "$SOURCE" "$SISAP23_WAL_COLLECTION_PATH"
+diff -qr "$SOURCE" "$SISAP23_WAL_INSPECTION_PATH" > "$COPY_DIFF" || {
+  echo "inspection copy differs from original" >&2; exit 2;
+}
+diff -qr "$SOURCE" "$SISAP23_WAL_COLLECTION_PATH" >> "$COPY_DIFF" || {
+  echo "replay copy differs from original" >&2; exit 2;
+}
+export SISAP23_WAL_MODE SISAP23_WAL_COMMIT SISAP23_WAL_COLLECTION_PATH SISAP23_WAL_INSPECTION_PATH
+export SISAP23_WAL_PRE_REPORT SISAP23_WAL_POST_REPORT SISAP23_BENCH_ROOT SCRATCHDIR RUST_BACKTRACE=1
+cd "$QDRANT_DIR"
+/usr/bin/time -v -o "$RESOURCES" cargo test -p collection --release --features lmi-training \
+  sisap23_matched_inspect_or_replay_plain_wal --locked -- --ignored --nocapture > "$LOG" 2>&1
+grep -q sisap23_wal_pre_report "$LOG"
+test -f "$SISAP23_WAL_PRE_REPORT"
+if [ "$SISAP23_WAL_MODE" = replay ]; then
+  grep -q sisap23_wal_post_report "$LOG"
+  test -f "$SISAP23_WAL_POST_REPORT"
+fi
+test ! -e "$SISAP23_BENCH_ROOT/runs/plain/build.complete.json"
+printf 'WAL reports: %s\n' "$PREFIX"

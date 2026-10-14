@@ -1436,3 +1436,6 @@ fn read_query_at(path: &Path, row: usize) -> Vec<f32> {
         .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
         .collect()
 }
+
+#[path = "lmi_sisap23_matched_wal_replay.rs"]
+mod wal_replay;
