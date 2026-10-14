@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use ahash::AHashMap;
 use common::budget::ResourceBudget;
 use common::counter::hardware_accumulator::HwMeasurementAcc;
+use common::generic_consts::Random;
 use common::storage_version::StorageVersion;
 use common::universal_io::MmapFs;
 use half::f16;
@@ -734,6 +735,379 @@ fn sisap23_matched_recover_plain() {
     let path = run_dir(Variant::Plain).join("build.complete.json");
     write_json_new(&path, &marker);
     println!("sisap23_plain_recovery_complete marker={}", path.display());
+}
+
+#[derive(Default)]
+struct MappingAudit {
+    seen: Vec<bool>,
+    iterated: usize,
+    duplicate_ids: usize,
+    invalid_ids: usize,
+    missing_slots: usize,
+    outside_offsets: std::collections::HashSet<u32>,
+    min_id: Option<u64>,
+    max_id: Option<u64>,
+    min_offset: Option<u32>,
+    max_offset: Option<u32>,
+    duplicate_samples: Vec<u64>,
+    invalid_samples: Vec<u64>,
+    missing_slot_samples: Vec<(u64, u32)>,
+}
+
+fn sample_push<T>(items: &mut Vec<T>, value: T) {
+    if items.len() < 16 {
+        items.push(value);
+    }
+}
+
+impl MappingAudit {
+    fn new(expected: usize) -> Self {
+        Self {
+            seen: vec![false; expected],
+            ..Self::default()
+        }
+    }
+    fn observe(&mut self, id: u64, offset: u32, physical_count: usize) {
+        self.iterated += 1;
+        self.min_id = Some(self.min_id.map_or(id, |v| v.min(id)));
+        self.max_id = Some(self.max_id.map_or(id, |v| v.max(id)));
+        self.min_offset = Some(self.min_offset.map_or(offset, |v| v.min(offset)));
+        self.max_offset = Some(self.max_offset.map_or(offset, |v| v.max(offset)));
+        if !(1..=self.seen.len() as u64).contains(&id) {
+            self.invalid_ids += 1;
+            sample_push(&mut self.invalid_samples, id);
+        } else {
+            let seen = &mut self.seen[(id - 1) as usize];
+            if *seen {
+                self.duplicate_ids += 1;
+                sample_push(&mut self.duplicate_samples, id);
+            }
+            *seen = true;
+        }
+        if offset as usize >= physical_count {
+            self.missing_slots += 1;
+            self.outside_offsets.insert(offset);
+            sample_push(&mut self.missing_slot_samples, (id, offset));
+        }
+    }
+    fn finish(&self) -> serde_json::Value {
+        let mut missing = 0usize;
+        let mut missing_samples = Vec::new();
+        let mut first_missing = None;
+        let mut last_missing = None;
+        for (i, seen) in self.seen.iter().enumerate() {
+            if !seen {
+                let id = (i + 1) as u64;
+                missing += 1;
+                first_missing.get_or_insert(id);
+                last_missing = Some(id);
+                sample_push(&mut missing_samples, id);
+            }
+        }
+        let missing_contiguous_tail = match first_missing {
+            Some(first) => missing == self.seen.len() + 1 - first as usize,
+            None => false,
+        };
+        let min_outside = self.outside_offsets.iter().min().copied();
+        let max_outside = self.outside_offsets.iter().max().copied();
+        serde_json::json!({
+            "iterated_mappings": self.iterated,
+            "min_external_id": self.min_id, "max_external_id": self.max_id,
+            "min_internal_offset": self.min_offset, "max_internal_offset": self.max_offset,
+            "duplicate_ids": self.duplicate_ids, "duplicate_samples": self.duplicate_samples,
+            "invalid_ids": self.invalid_ids, "invalid_samples": self.invalid_samples,
+            "missing_external_ids": missing, "missing_external_samples": missing_samples,
+            "first_missing_external_id": first_missing, "last_missing_external_id": last_missing,
+            "missing_ids_are_contiguous_tail": missing_contiguous_tail,
+            "mappings_outside_physical_slots": self.missing_slots,
+            "unique_outside_offsets": self.outside_offsets.len(),
+            "outside_offset_range":[min_outside,max_outside],
+            "outside_offsets_are_contiguous":match (min_outside,max_outside) {
+                (Some(lo),Some(hi)) => hi as usize - lo as usize + 1 == self.outside_offsets.len(),
+                _ => false
+            },
+            "missing_slot_samples": self.missing_slot_samples
+        })
+    }
+}
+
+#[test]
+fn sisap23_mapping_diagnostic_classifies_tail_and_gaps() {
+    let mut tail = MappingAudit::new(5);
+    for i in 1..=3 {
+        tail.observe(i, (i - 1) as u32, 3);
+    }
+    let report = tail.finish();
+    assert_eq!(report["missing_external_ids"], 2);
+    assert_eq!(report["missing_ids_are_contiguous_tail"], true);
+    let mut gap = MappingAudit::new(5);
+    for i in [1, 2, 4, 5] {
+        gap.observe(i, (i - 1) as u32, 3);
+    }
+    let report = gap.finish();
+    assert_eq!(report["missing_external_ids"], 1);
+    assert_eq!(report["missing_ids_are_contiguous_tail"], false);
+    assert_eq!(report["mappings_outside_physical_slots"], 2);
+    gap.observe(4, 1, 3);
+    assert_eq!(gap.finish()["duplicate_ids"], 1);
+}
+
+fn vector_file_metadata(path: &Path) -> io::Result<Vec<serde_json::Value>> {
+    let mut files = Vec::new();
+    fn walk(base: &Path, path: &Path, out: &mut Vec<serde_json::Value>) -> io::Result<()> {
+        for entry in fs::read_dir(path).map_err(|e| path_error(path, "read directory", e))? {
+            let entry = entry.map_err(|e| path_error(path, "read entry in", e))?;
+            let child = entry.path();
+            let meta = fs::symlink_metadata(&child).map_err(|e| path_error(&child, "stat", e))?;
+            if meta.is_dir() {
+                walk(base, &child, out)?;
+            } else if meta.is_file() {
+                out.push(serde_json::json!({
+                    "path": child.strip_prefix(base).unwrap().to_string_lossy(),
+                    "bytes": meta.len()
+                }));
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unexpected symlink or special file: {}", child.display()),
+                ));
+            }
+        }
+        Ok(())
+    }
+    walk(path, path, &mut files)?;
+    files.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+    Ok(files)
+}
+
+fn diagnostic_destination_is_safe(output: &Path, copied_collection: &Path) -> bool {
+    !output.exists()
+        && !output.starts_with(copied_collection)
+        && output
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".json"))
+        && !output.to_string_lossy().contains("build.complete")
+}
+
+#[test]
+fn sisap23_diagnostic_rejects_completion_marker_destinations() {
+    let copied = Path::new("/scratch/copied-collection");
+    assert!(!diagnostic_destination_is_safe(
+        Path::new("/results/runs/plain/build.complete.json"),
+        copied
+    ));
+    assert!(!diagnostic_destination_is_safe(
+        Path::new("/scratch/copied-collection/report.json"),
+        copied
+    ));
+    assert!(diagnostic_destination_is_safe(
+        Path::new("/results/diagnostics/plain.job.json"),
+        copied
+    ));
+}
+
+#[test]
+#[ignore = "explicit diagnostic on a verified scratch copy; never writes a completion marker"]
+fn sisap23_matched_diagnose_plain() {
+    assert_eq!(std::env::var("SISAP23_DIAG_MODE").as_deref(), Ok("1"));
+    let scratch = PathBuf::from(std::env::var("SCRATCHDIR").expect("PBS scratch required"));
+    let collection_path = PathBuf::from(
+        std::env::var("SISAP23_DIAG_COLLECTION_PATH").expect("verified scratch copy path required"),
+    );
+    assert!(collection_path.starts_with(&scratch) && collection_path != scratch);
+    let output =
+        PathBuf::from(std::env::var("SISAP23_DIAG_OUTPUT").expect("diagnostic output required"));
+    assert!(
+        diagnostic_destination_is_safe(&output, &collection_path),
+        "unsafe diagnostic report destination"
+    );
+    let segment_path = locate_segment(&collection_path);
+    assert_eq!(
+        SegmentVersion::load_universal(&MmapFs, &segment_path).unwrap(),
+        Some(SegmentVersion::current()),
+        "refuse segment migration even on scratch copy"
+    );
+    let segment = load_index(&segment_path);
+    let config = &segment.segment_config.vector_data[DEFAULT_VECTOR_NAME];
+    let index = segment.vector_data[DEFAULT_VECTOR_NAME]
+        .vector_index
+        .borrow();
+    let storage = segment.vector_data[DEFAULT_VECTOR_NAME]
+        .vector_storage
+        .borrow();
+    let tracker = segment.id_tracker.borrow();
+    let physical = storage.total_vector_count();
+    let mut mappings = MappingAudit::new(N);
+    let mut bad_reverse = 0usize;
+    let mut missing_versions = 0usize;
+    let mut min_version = None::<u64>;
+    let mut max_version = None::<u64>;
+    let mut deleted_references = 0usize;
+    let mut absent_vectors = 0usize;
+    let mut bad_reverse_samples = Vec::new();
+    let mut missing_version_samples = Vec::new();
+    let mut deleted_samples = Vec::new();
+    let mut absent_samples = Vec::new();
+    let selected = [
+        1usize,
+        2,
+        3,
+        N / 2,
+        physical.saturating_sub(2),
+        physical.saturating_sub(1),
+        physical,
+        physical + 1,
+        N - 2,
+        N - 1,
+        N,
+    ];
+    let mut selected_offsets = Vec::new();
+    for (external, internal) in tracker.point_mappings().iter_from(None) {
+        let id = match external {
+            PointIdType::NumId(v) => v,
+            PointIdType::Uuid(_) => 0,
+        };
+        mappings.observe(id, internal, physical);
+        if tracker.external_id(internal) != Some(external) {
+            bad_reverse += 1;
+            sample_push(&mut bad_reverse_samples, (id, internal));
+        }
+        if let Some(version) = tracker.internal_version(internal) {
+            min_version = Some(min_version.map_or(version, |v| v.min(version)));
+            max_version = Some(max_version.map_or(version, |v| v.max(version)));
+        } else {
+            missing_versions += 1;
+            sample_push(&mut missing_version_samples, (id, internal));
+        }
+        if (internal as usize) < physical && storage.is_deleted_vector(internal) {
+            deleted_references += 1;
+            sample_push(&mut deleted_samples, (id, internal));
+        }
+        if (internal as usize) < physical && storage.get_vector_opt::<Random>(internal).is_none() {
+            absent_vectors += 1;
+            sample_push(&mut absent_samples, (id, internal));
+        }
+        if selected.contains(&(id as usize)) {
+            selected_offsets.push((id, internal));
+        }
+    }
+    let mapping_report = mappings.finish();
+    let mut comparisons = Vec::new();
+    let corpus_path = root().join("corpus.f16le");
+    let mut corpus = File::open(&corpus_path).unwrap();
+    for (id, offset) in selected_offsets {
+        if id == 0 || id > N as u64 || offset as usize >= physical {
+            continue;
+        }
+        let mut raw = vec![0u8; DIM * 2];
+        corpus
+            .seek(std::io::SeekFrom::Start((id - 1) * (DIM * 2) as u64))
+            .unwrap();
+        corpus.read_exact(&mut raw).unwrap();
+        let source: Vec<f32> = raw
+            .chunks_exact(2)
+            .map(|b| f16::from_bits(u16::from_le_bytes([b[0], b[1]])).to_f32())
+            .collect();
+        let normalized = Distance::Cosine.preprocess_vector::<f32>(source.clone());
+        let expected: Vec<f32> = normalized
+            .iter()
+            .map(|x| f16::from_f32(*x).to_f32())
+            .collect();
+        let Some(stored) = storage.get_vector_opt::<Random>(offset) else {
+            comparisons.push(serde_json::json!({"id":id,"offset":offset,"status":"vector_absent"}));
+            continue;
+        };
+        let stored = stored.to_owned();
+        let segment::data_types::vectors::VectorInternal::Dense(actual) = stored else {
+            panic!("diagnostic expected dense vector")
+        };
+        let max_abs_error = actual
+            .iter()
+            .zip(expected.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        let raw_max_abs_error = actual
+            .iter()
+            .zip(source.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        comparisons.push(serde_json::json!({
+            "id":id,"offset":offset,"dimension":actual.len(),
+            "max_abs_error_vs_cosine_normalized_float16":max_abs_error,
+            "max_abs_error_vs_input_float16":raw_max_abs_error,
+            "within_normalized_tolerance_0_002":max_abs_error <= 0.002
+        }));
+    }
+    let vector_dir = segment_path.join("vector_storage").join("vectors");
+    let persisted_chunk_config = fs::read(vector_dir.join("config.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let status_bytes = fs::read(vector_dir.join("status.dat")).ok();
+    let persisted_status_len = status_bytes.as_ref().and_then(|bytes| {
+        (bytes.len() == std::mem::size_of::<usize>())
+            .then(|| usize::from_ne_bytes(bytes.as_slice().try_into().unwrap()))
+    });
+    let file_metadata = vector_file_metadata(&segment_path.join("vector_storage"))
+        .expect("cannot inspect copied vector storage files");
+    let safe_to_search = mappings.missing_slots == 0
+        && absent_vectors == 0
+        && bad_reverse == 0
+        && missing_versions == 0;
+    drop(tracker);
+    drop(storage);
+    drop(index);
+    let plain_search = if safe_to_search
+        && index_kind(
+            &segment.vector_data[DEFAULT_VECTOR_NAME]
+                .vector_index
+                .borrow(),
+        ) == "plain"
+    {
+        let warm = read_f32(&root().join("queries_warmup.f32le"), 20);
+        let (ids, _) = search_one(&segment, Variant::Plain, 0, &warm[0]);
+        let all_ids_valid = ids
+            .iter()
+            .all(|id| (1..=N as u64).contains(id) && mappings.seen[(*id - 1) as usize]);
+        let distinct_ids = ids.iter().collect::<std::collections::HashSet<_>>().len() == ids.len();
+        serde_json::json!({"status":"completed","returned_ids_1_based":ids,
+            "returned_count":ids.len(),"all_returned_ids_mapped":all_ids_valid,
+            "distinct_returned_ids":distinct_ids,
+            "storage_available_vectors":physical.saturating_sub(segment.vector_data[DEFAULT_VECTOR_NAME].vector_storage.borrow().deleted_vector_count()),
+            "independent_full_corpus_reference":"not_run",
+            "note":"successful native search does not prove corpus completeness or exact recall"})
+    } else {
+        serde_json::json!({"status":"skipped","reason":"unsafe or inconsistent mappings, or index is not Plain"})
+    };
+    let report = serde_json::json!({
+        "format":"sisap23-plain-diagnostic-v1",
+        "source_commit":std::env::var("SISAP23_DIAG_COMMIT").unwrap(),
+        "expected_points":N,"segment_path":segment_path,
+        "segment_config":{"dimension":config.size,"distance":format!("{:?}",config.distance),
+            "datatype":format!("{:?}",config.datatype),"storage_type":format!("{:?}",config.storage_type),
+            "index_kind":index_kind(&segment.vector_data[DEFAULT_VECTOR_NAME].vector_index.borrow())},
+        "storage":{"total_vectors":physical,"available_vectors":segment.vector_data[DEFAULT_VECTOR_NAME].vector_storage.borrow().available_vector_count(),
+            "deleted_vectors":segment.vector_data[DEFAULT_VECTOR_NAME].vector_storage.borrow().deleted_vector_count(),
+            "offset_range":if physical == 0 { serde_json::Value::Null } else { serde_json::json!([0,physical-1]) },
+            "persisted_status_len":persisted_status_len,"persisted_status_bytes":status_bytes.as_ref().map(Vec::len),
+            "persisted_chunk_config":persisted_chunk_config,"files":file_metadata},
+        "tracker":{"total_points":segment.id_tracker.borrow().total_point_count(),
+            "available_points":segment.id_tracker.borrow().available_point_count(),
+            "deleted_points":segment.id_tracker.borrow().deleted_point_count(),
+            "mapping_audit":mapping_report,
+            "reverse_mapping_failures":bad_reverse,"reverse_mapping_samples":bad_reverse_samples,
+            "missing_versions":missing_versions,"missing_version_samples":missing_version_samples,
+            "point_version_range":[min_version,max_version],
+            "deleted_vector_references":deleted_references,"deleted_vector_samples":deleted_samples,
+            "absent_in_range_vectors":absent_vectors,"absent_vector_samples":absent_samples},
+        "vector_comparisons":{"selection":"first, midpoint, physical boundary, and final IDs",
+            "compared":comparisons.len(),"items":comparisons},
+        "plain_search":plain_search,
+        "conclusion":"diagnostic only; no completion marker; acceptance requires independent review"
+    });
+    drop(segment);
+    write_json_new(&output, &report);
+    println!("sisap23_plain_diagnostic_report={}", output.display());
 }
 
 fn selected_settings(v: Variant) -> Vec<(String, usize)> {
