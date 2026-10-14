@@ -234,3 +234,7 @@ qsub -W depend=afterok:"$SUITE_JOB"   -v WORKSPACE,QDRANT_DIR,SISAP23_BENCH_ROOT
 After completion, check `suite.complete.json`, `validation.json`,
 `results.sha256`, and `sha256sum -c "$SISAP23_BENCH_ROOT/results.sha256"` on a
 compute node. Do not run the 15 GB input hash or Rust build on a frontend.
+
+## Interrupted Plain collection diagnostic
+
+See [DIAGNOSTIC.md](DIAGNOSTIC.md) for the opt-in scratch-copy investigation of the 1,679-slot count discrepancy.
