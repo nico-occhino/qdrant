@@ -65,8 +65,10 @@ accepted generation path from its report.
 
 The new suite uses a different run root and copies the original prepared
 inputs with hash verification. It records the original manifest separately.
-Plain uses an imported.generation.json record identifying its original data
-commit and accepted preservation generation. It does not claim a new build.
+Plain is copied and hash-verified into the new persistent run root. Its
+imported.generation.json record identifies the original data commit and
+accepted preservation generation. Query execution uses this copy, leaving
+the accepted generation untouched. It does not claim a new build.
 LMI and HNSW-A/B are built under the reviewed commit with the original fixed
 grids. All four query sweeps and paired panels run on the same node and
 persistent filesystem. The suite checks the new source commit, manifest hash

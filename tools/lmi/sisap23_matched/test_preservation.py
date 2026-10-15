@@ -102,6 +102,10 @@ class PreservationTests(unittest.TestCase):
         self.assertEqual(marker["source_commit"], "42a163701a51078ec24983b3a93f96ab7d661489")
         self.assertFalse((new / "runs/plain/build.complete.json").exists())
         self.assertEqual(json.loads((new / "manifest.json").read_text())["source_commit"], "reviewed")
+        self.assertTrue((new / "runs/plain/collection/0/segments/id/segment.json").is_file())
+        (new / "runs/plain/collection/0/segments/id/segment.json").write_bytes(b"changed")
+        mutated = subprocess.run(cmd, capture_output=True, text=True)
+        self.assertNotEqual(mutated.returncode, 0, "changed matched Plain copy must fail closed")
 
 if __name__ == "__main__":
     unittest.main()

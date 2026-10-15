@@ -78,12 +78,19 @@ def main():
                 raise ValueError(f"prepared input copy changed: {key}")
         save_new(a.new_root / "manifest.json", expected)
         (a.new_root / "runs").mkdir()
-        (a.new_root / "runs" / "plain").mkdir()
+        plain_run = a.new_root / "runs" / "plain"
+        plain_run.mkdir()
+        shutil.copytree(a.generation / "collection", plain_run / "collection")
+        if inventory(plain_run / "collection") != generation["collection_files"]:
+            raise ValueError("matched Plain copy differs from accepted generation")
+        imported_segments = list((plain_run / "collection").rglob("segment.json"))
+        if len(imported_segments) != 1:
+            raise ValueError("copied Plain must contain one segment")
         save_new(a.new_root / "runs/plain/imported.generation.json", {
             "format": "sisap23-imported-plain-v1", "variant": "plain",
             "source_commit": ORIGINAL_COMMIT, "verification_commit": a.commit,
             "point_count": N, "segment_count": 1, "index_kind": "plain",
-            "segment_path": str(segments[0].parent),
+            "segment_path": str(imported_segments[0].parent),
             "generation_path": str(a.generation),
             "generation_json_sha256": hashlib.sha256(generation_bytes).hexdigest(),
             "construction_time": None,
@@ -95,6 +102,11 @@ def main():
     imported = json.loads((a.new_root / "runs/plain/imported.generation.json").read_text())
     if imported["generation_json_sha256"] != hashlib.sha256(generation_bytes).hexdigest():
         raise ValueError("import marker changed")
+    if inventory(a.new_root / "runs/plain/collection") != generation["collection_files"]:
+        raise ValueError("matched Plain collection changed")
+    copied_segments = list((a.new_root / "runs/plain/collection").rglob("segment.json"))
+    if len(copied_segments) != 1 or str(copied_segments[0].parent) != imported["segment_path"]:
+        raise ValueError("imported segment path differs from verified copy")
 
 if __name__ == "__main__":
     main()

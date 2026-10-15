@@ -1532,7 +1532,7 @@ fn sisap23_matched_evaluate() {
         assert_eq!(generation["preservation_commit"], manifest["source_commit"]);
         assert_eq!(
             build["segment_path"],
-            locate_segment(&generation_path.join("collection"))
+            locate_segment(&run.join("collection"))
                 .to_string_lossy()
                 .as_ref()
         );
