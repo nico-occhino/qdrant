@@ -242,3 +242,11 @@ See [DIAGNOSTIC.md](DIAGNOSTIC.md) for the opt-in scratch-copy investigation of 
 ## Plain WAL recovery experiment
 
 See [WAL_REPLAY.md](WAL_REPLAY.md) for the two-stage scratch-copy WAL inspection and optional full collection replay.
+
+
+## Recovered Plain generation and separate matched run
+
+The original interrupted 10M Plain run remains frozen. For the proven WAL
+recovery, persistent generation verification, and a scientifically separate
+matched Plain/LMI/HNSW run, follow [FINAL_PRESERVATION.md](FINAL_PRESERVATION.md).
+This workflow never creates a completion marker in the original run.
