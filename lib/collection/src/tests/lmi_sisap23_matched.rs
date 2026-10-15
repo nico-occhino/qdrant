@@ -231,6 +231,158 @@ fn index_directory_bytes(
     Ok(bytes)
 }
 
+fn hash_index_tree(segment_path: &Path) -> Vec<(PathBuf, String)> {
+    let dir = segment_path.join("vector_index");
+    if !dir.exists() {
+        return Vec::new();
+    }
+    fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let kind = fs::symlink_metadata(&path).unwrap();
+            assert!(!kind.file_type().is_symlink(), "index symlink is forbidden");
+            if kind.is_dir() {
+                walk(&path, files);
+            } else {
+                assert!(kind.is_file(), "unexpected index file type");
+                files.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(&dir, &mut files);
+    files.sort();
+    files
+        .into_iter()
+        .map(|file| {
+            let relative = file.strip_prefix(segment_path).unwrap().to_path_buf();
+            (relative, sha256_file(&file).unwrap())
+        })
+        .collect()
+}
+
+fn verify_persisted_generation(
+    collection_path: &Path,
+    variant: Variant,
+    expected: usize,
+) -> serde_json::Value {
+    let segment_path = locate_segment(collection_path);
+    let segment = load_index(&segment_path);
+    let data = &segment.vector_data[DEFAULT_VECTOR_NAME];
+    let config = &segment.segment_config.vector_data[DEFAULT_VECTOR_NAME];
+    assert_eq!(config.size, DIM);
+    assert_eq!(config.distance, Distance::Cosine);
+    assert_eq!(config.datatype, Some(VectorStorageDatatype::Float16));
+    let index = data.vector_index.borrow();
+    let expected_kind = match variant {
+        Variant::Plain => "plain",
+        Variant::Lmi => "lmi",
+        Variant::HnswA | Variant::HnswB => "hnsw",
+    };
+    assert_eq!(index_kind(&index), expected_kind);
+    let storage = data.vector_storage.borrow();
+    let tracker = segment.id_tracker.borrow();
+    assert_eq!(storage.total_vector_count(), expected);
+    assert_eq!(storage.available_vector_count(), expected);
+    assert_eq!(storage.deleted_vector_count(), 0);
+    assert_eq!(tracker.total_point_count(), expected);
+    assert_eq!(tracker.available_point_count(), expected);
+    assert_eq!(tracker.deleted_point_count(), 0);
+    let mut mappings = MappingAudit::new(expected);
+    let mut bad_reverse = 0usize;
+    let mut absent = 0usize;
+    let mut missing_versions = 0usize;
+    for (external, offset) in tracker.point_mappings().iter_from(None) {
+        let id = match external {
+            PointIdType::NumId(id) => id,
+            _ => 0,
+        };
+        mappings.observe(id, offset, expected);
+        bad_reverse += usize::from(tracker.external_id(offset) != Some(external));
+        missing_versions += usize::from(tracker.internal_version(offset).is_none());
+        if (offset as usize) < expected {
+            absent += usize::from(
+                storage.is_deleted_vector(offset)
+                    || storage.get_vector_opt::<Random>(offset).is_none(),
+            );
+        }
+    }
+    let mapping = mappings.finish();
+    assert_eq!(mappings.iterated, expected);
+    assert_eq!(mapping["missing_external_ids"], 0);
+    assert_eq!(mappings.duplicate_ids, 0);
+    assert_eq!(mappings.invalid_ids, 0);
+    assert_eq!(mappings.missing_slots, 0);
+    assert_eq!(bad_reverse, 0);
+    assert_eq!(missing_versions, 0);
+    assert_eq!(absent, 0);
+    let (m, ef) = variant.params();
+    match variant {
+        Variant::Plain => assert!(matches!(config.index, Indexes::Plain {})),
+        Variant::Lmi => {
+            assert!(matches!(&config.index, Indexes::LmiTrained(saved) if *saved == lmi_config()));
+            let meta: LmiStateMetadata = serde_json::from_slice(
+                &fs::read(segment_path.join("vector_index/lmi_state.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(meta.config, lmi_config());
+            assert_eq!(meta.indexed_live_count, Some(expected));
+            let VectorIndexEnum::Lmi(lmi) = &*index else {
+                unreachable!()
+            };
+            assert_eq!(
+                lmi.routing_state().unwrap().postings().point_count(),
+                expected
+            );
+        }
+        Variant::HnswA | Variant::HnswB => {
+            let Indexes::Hnsw(saved) = &config.index else {
+                panic!("missing HNSW segment config")
+            };
+            assert_eq!(saved.m, m);
+            assert_eq!(saved.ef_construct, ef);
+            let graph: serde_json::Value = serde_json::from_slice(
+                &fs::read(segment_path.join("vector_index/hnsw_config.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(graph["m"], m);
+            assert_eq!(graph["ef_construct"], ef);
+            assert_eq!(graph["indexed_vector_count"], expected);
+        }
+    }
+    let index_bytes = vector_index_bytes(&segment_path, variant, &index).unwrap();
+    serde_json::json!({"points":expected,"mapping":mapping,"index_kind":expected_kind,
+        "index_bytes":index_bytes,"index_files":hash_index_tree(&segment_path).len(),
+        "complete":true})
+}
+
+async fn reopen_for_verification(collection_path: &Path, snapshots: &Path, expected: usize) {
+    let pause = serde_json::from_value(serde_json::json!({"max_optimization_threads":0})).unwrap();
+    let collection = Collection::load(
+        "sisap23_matched".to_string(),
+        1,
+        collection_path,
+        snapshots,
+        Arc::new(SharedStorageConfig::default()),
+        ChannelService::default(),
+        dummy_on_replica_failure(),
+        dummy_request_shard_transfer(),
+        dummy_abort_shard_transfer(),
+        None,
+        None,
+        ResourceBudget::default(),
+        Some(pause),
+    )
+    .await;
+    let info = collection.info(&ShardSelectorInternal::All).await.unwrap();
+    assert_eq!(
+        info.points_count,
+        Some(expected),
+        "normal restart point count"
+    );
+    collection.stop_gracefully().await;
+}
+
 fn vector_index_bytes(
     segment_path: &Path,
     variant: Variant,
@@ -483,6 +635,21 @@ async fn sisap23_matched_build() {
     collection.stop_gracefully().await;
     drop(collection);
     let segment_path = locate_segment(&collection_path);
+    let index_hash_before = hash_index_tree(&segment_path);
+    reopen_for_verification(&collection_path, &snapshots, N).await;
+    let first_audit = verify_persisted_generation(&collection_path, variant, N);
+    assert_eq!(
+        hash_index_tree(&segment_path),
+        index_hash_before,
+        "index changed during verification-only restart"
+    );
+    reopen_for_verification(&collection_path, &snapshots, N).await;
+    let second_audit = verify_persisted_generation(&collection_path, variant, N);
+    assert_eq!(
+        hash_index_tree(&segment_path),
+        index_hash_before,
+        "index changed during second verification restart"
+    );
     let segment = load_index(&segment_path);
     let index = segment.vector_data[DEFAULT_VECTOR_NAME]
         .vector_index
@@ -531,6 +698,8 @@ async fn sisap23_matched_build() {
         "segment_bytes": count_bytes(&segment_path).expect("cannot count segment bytes"),
         "vector_index_bytes": vector_index_bytes(&segment_path, variant, &index)
             .expect("cannot count physical vector index bytes"),
+        "durability_verification": {"normal_reopens":2,"first":first_audit,"second":second_audit,
+            "index_files_unchanged_during_reopen":true},
         "generation": "directory is immutable after this marker; all sweeps reuse this path"
     });
     drop(index);
@@ -1330,14 +1499,46 @@ fn run_setting(
 fn sisap23_matched_evaluate() {
     let v = Variant::parse(&std::env::var("SISAP23_VARIANT").expect("SISAP23_VARIANT required"));
     let run = run_dir(v);
+    let imported = v == Variant::Plain && run.join("imported.generation.json").exists();
+    let marker_path = if imported {
+        run.join("imported.generation.json")
+    } else {
+        run.join("build.complete.json")
+    };
     let build: serde_json::Value = serde_json::from_slice(
-        &fs::read(run.join("build.complete.json")).expect("build completion marker required"),
+        &fs::read(&marker_path).expect("verified generation marker required"),
     )
     .unwrap();
     assert_eq!(build["variant"], v.name());
     let manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(root().join("manifest.json")).unwrap()).unwrap();
-    assert_eq!(build["source_commit"], manifest["source_commit"]);
+    if imported {
+        assert_eq!(build["format"], "sisap23-imported-plain-v1");
+        assert_eq!(
+            build["source_commit"],
+            "42a163701a51078ec24983b3a93f96ab7d661489"
+        );
+        let generation_path = PathBuf::from(build["generation_path"].as_str().unwrap());
+        let generation_bytes = fs::read(generation_path.join("generation.json")).unwrap();
+        assert_eq!(
+            Sha256::digest(&generation_bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+            build["generation_json_sha256"].as_str().unwrap()
+        );
+        let generation: serde_json::Value = serde_json::from_slice(&generation_bytes).unwrap();
+        assert_eq!(generation["accepted"], true);
+        assert_eq!(generation["preservation_commit"], manifest["source_commit"]);
+        assert_eq!(
+            build["segment_path"],
+            locate_segment(&generation_path.join("collection"))
+                .to_string_lossy()
+                .as_ref()
+        );
+    } else {
+        assert_eq!(build["source_commit"], manifest["source_commit"]);
+    }
     assert_eq!(
         manifest["source_commit"].as_str(),
         std::env::var("SISAP23_REVIEWED_COMMIT").ok().as_deref()

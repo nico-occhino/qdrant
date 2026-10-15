@@ -63,11 +63,23 @@ def main():
                 "hnsw-a": ("hnsw", 16, 100), "hnsw-b": ("hnsw", 32, 200)}
     for variant, settings in grids.items():
         run = root / "runs" / variant
-        marker = json.loads((run / "build.complete.json").read_text())
+        imported = variant == "plain" and (run / "imported.generation.json").exists()
+        marker = json.loads((run / ("imported.generation.json" if imported else "build.complete.json")).read_text())
         kind, m, ef = expected[variant]
         if marker["index_kind"] != kind or marker["point_count"] != 10120191 or marker.get("segment_count") != 1:
             raise SystemExit(f"wrong build marker: {variant}")
-        if marker.get("source_commit") != manifest.get("source_commit"):
+        if imported:
+            generation_path = Path(marker["generation_path"])
+            generation_file = generation_path / "generation.json"
+            generation = json.loads(generation_file.read_text())
+            if (marker.get("format") != "sisap23-imported-plain-v1"
+                    or marker.get("source_commit") != "42a163701a51078ec24983b3a93f96ab7d661489"
+                    or generation.get("preservation_commit") != manifest.get("source_commit")
+                    or generation.get("accepted") is not True
+                    or digest(generation_file) != marker.get("generation_json_sha256")
+                    or str(generation_path / "collection") not in marker.get("segment_path", "")):
+                raise SystemExit("imported Plain provenance mismatch")
+        elif marker.get("source_commit") != manifest.get("source_commit"):
             raise SystemExit(f"build source commit differs from input manifest: {variant}")
         if m is not None and (marker["hnsw_m"] != m or marker["ef_construct"] != ef):
             raise SystemExit(f"wrong HNSW config: {variant}")

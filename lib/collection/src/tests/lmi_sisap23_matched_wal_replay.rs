@@ -528,3 +528,68 @@ async fn sisap23_matched_inspect_or_replay_plain_wal() {
         "scratch-copy WAL replay did not satisfy full consistency invariants"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "explicit persistent staging collection reopen; requires verified WAL replay"]
+async fn sisap23_matched_verify_persistent_plain_staging() {
+    assert_eq!(
+        std::env::var("SISAP23_PERSISTENT_VERIFY").as_deref(),
+        Ok("1")
+    );
+    let staging = PathBuf::from(std::env::var("SISAP23_PERSISTENT_STAGING_COLLECTION").unwrap());
+    let inspection = PathBuf::from(std::env::var("SISAP23_WAL_INSPECTION_PATH").unwrap());
+    let report_path = PathBuf::from(std::env::var("SISAP23_PERSISTENT_REPORT").unwrap());
+    assert!(staging.is_absolute() && staging.ends_with("collection"));
+    assert!(staging.starts_with(root().join("recovered-generations/.staging")));
+    assert!(inspection.starts_with(PathBuf::from(std::env::var("SCRATCHDIR").unwrap())));
+    assert!(diagnostic_destination_is_safe(&report_path, &staging));
+    let post: serde_json::Value = serde_json::from_slice(
+        &fs::read(std::env::var("SISAP23_WAL_POST_REPORT").unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(post["accepted"], true, "scratch replay must have passed");
+    let corpus = root().join("corpus.f16le");
+    let initial = audit_segment_collection(&inspection, &corpus, &[]);
+    assert_eq!(initial.missing.len(), 1679);
+    let snapshots = staging.parent().unwrap().join("verification-snapshots");
+    fs::create_dir(&snapshots).unwrap();
+    let index_before = hash_index_tree(&locate_segment(&staging));
+    reopen_for_verification(&staging, &snapshots, N).await;
+    let first = audit_segment_collection(&staging, &corpus, &initial.missing);
+    assert!(
+        first.valid,
+        "persisted staging failed complete mapping/vector audit"
+    );
+    reopen_for_verification(&staging, &snapshots, N).await;
+    let second = audit_segment_collection(&staging, &corpus, &initial.missing);
+    assert!(
+        second.valid,
+        "persistent staging changed after a second restart"
+    );
+    let index_after = hash_index_tree(&locate_segment(&staging));
+    assert_eq!(
+        index_before, index_after,
+        "Plain index changed during verification"
+    );
+    let query = read_f32(&root().join("queries_warmup.f32le"), 20).remove(0);
+    let segment = load_index(&locate_segment(&staging));
+    let (native, _) = search_one(&segment, Variant::Plain, 0, &query);
+    drop(segment);
+    let reference = independent_plain_top10(&corpus, &query, N);
+    let overlap = native.iter().filter(|id| reference.contains(id)).count();
+    let accepted = overlap == 10;
+    let report = serde_json::json!({
+        "format":"sisap23-persistent-plain-verification-v1",
+        "source_replay_report":std::env::var("SISAP23_WAL_POST_REPORT").unwrap(),
+        "first_reopen":first.report,"second_reopen":second.report,
+        "recovered_vectors_compared":initial.missing.len(),
+        "independent_top10_overlap":overlap,
+        "index_files_unchanged":true,
+        "accepted":accepted
+    });
+    write_json_new(&report_path, &report);
+    assert!(
+        accepted,
+        "persistent staging exact-search comparison failed"
+    );
+}

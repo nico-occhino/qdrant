@@ -1989,3 +1989,78 @@ async fn test_proxy_pending_changes_crash_recovery() {
     // Recovery replayed and removed the pending changes logs
     assert!(!has_pending_changes_log(&segments_path));
 }
+
+// Opt-in regression for the matched benchmark's acknowledged final ingestion batch.
+// The flush worker is stopped before the last batch so the retained WAL, not a
+// periodic segment checkpoint, must make it durable on a normal restart.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "explicit interrupted final-batch WAL/restart regression"]
+async fn sisap23_interrupted_final_batch_restarts_twice() {
+    let collection_dir = Builder::new()
+        .prefix("sisap23-final-batch")
+        .tempdir()
+        .unwrap();
+    let config = create_collection_config();
+    let runtime = Handle::current();
+    let adaptive = AdaptiveSearchHandle::current_for_tests();
+    let schema_dir = Builder::new().prefix("sisap23-schema").tempdir().unwrap();
+    let schema = Arc::new(
+        SaveOnDisk::load_or_init_default(schema_dir.path().join("payload-schema.json")).unwrap(),
+    );
+    let shared = Arc::new(SharedStorageConfig::default());
+    let shard = LocalShard::build(
+        0,
+        "sisap23".to_string(),
+        collection_dir.path(),
+        Arc::new(RwLock::new(config.clone())),
+        shared.clone(),
+        schema.clone(),
+        runtime.clone(),
+        adaptive.clone(),
+        ResourceBudget::default(),
+        config.optimizer_config.clone(),
+    )
+    .await
+    .unwrap();
+    shard.stop_flush_worker().await;
+    let points = (1..=1000u64)
+        .map(|id| PointStructPersisted {
+            id: id.into(),
+            vector: VectorStructInternal::from(vec![id as f32, 2.0, 3.0, 4.0]).into(),
+            payload: None,
+        })
+        .collect();
+    let op = CollectionUpdateOperations::PointOperation(PointOperations::UpsertPoints(
+        PointInsertOperationsInternal::PointsList(points),
+    ));
+    shard
+        .update(op.into(), WaitUntil::Visible, None, HwMeasurementAcc::new())
+        .await
+        .unwrap();
+    shard.stop_gracefully().await;
+    for restart in 1..=2 {
+        let loaded = LocalShard::load(
+            0,
+            "sisap23".to_string(),
+            collection_dir.path(),
+            Arc::new(RwLock::new(config.clone())),
+            config.optimizer_config.clone(),
+            shared.clone(),
+            schema.clone(),
+            false,
+            PersistedProxyChanges::Replay,
+            runtime.clone(),
+            adaptive.clone(),
+            ResourceBudget::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            loaded.info().await.unwrap().points_count,
+            Some(1000),
+            "acknowledged final batch missing after restart {restart}"
+        );
+        assert_eq!(loaded.local_update_queue_info().await.length, 0);
+        loaded.stop_gracefully().await;
+    }
+}
