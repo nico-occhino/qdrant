@@ -77,7 +77,7 @@ def main():
                     or generation.get("preservation_commit") != manifest.get("source_commit")
                     or generation.get("accepted") is not True
                     or digest(generation_file) != marker.get("generation_json_sha256")
-                    or str(generation_path / "collection") not in marker.get("segment_path", "")):
+                    or str(run / "collection") not in marker.get("segment_path", "")):
                 raise SystemExit("imported Plain provenance mismatch")
         elif marker.get("source_commit") != manifest.get("source_commit"):
             raise SystemExit(f"build source commit differs from input manifest: {variant}")
