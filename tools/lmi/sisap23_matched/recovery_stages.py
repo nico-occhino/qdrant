@@ -294,7 +294,8 @@ def validate_variant(root, variant):
                 require(all(r["hnsw_ef"] == int(setting.rsplit("-",1)[1]) for r in rows), "HNSW ef differs")
             check_ids(rows, path, gold, plain)
             chunks = sorted((path / "chunks").glob("rows-*.jsonl"))
-            require(len(chunks) == marker["chunks"], "chunk count differs")
+            require(len(chunks) == marker["chunks"] == math.ceil(len(ids) / 100),
+                    "chunk count differs from fixed 100-row checkpoint plan")
             require([r for chunk in chunks for r in read_jsonl(chunk)] == rows,
                     "saved chunks do not reproduce assembled results")
 
@@ -417,6 +418,10 @@ def main():
     args = p.parse_args()
     require(os.environ.get("PBS_JOBID") and os.environ.get("SCRATCHDIR"), "PBS compute allocation required")
     require(args.original.is_absolute() and args.output.is_absolute(), "absolute paths required")
+    if args.campaign is not None:
+        require(args.campaign.is_absolute()
+                and not args.campaign.resolve().is_relative_to(args.original.resolve()),
+                "campaign path overlaps the incident; no files may be written there")
     verify_checkout(args.commit)
     if args.action == "probe":
         require(not args.output.resolve().is_relative_to(args.original.resolve()), "probe output overlaps incident")
