@@ -40,6 +40,43 @@ def check_ids(data, path, gold, plain):
     return recalls, ref
 
 
+
+def check_recovery_provenance(root, manifest, variant):
+    from preserve_generation import inventory
+    from recovery_stages import HARDWARE, BASE, checked_generation
+    run = root / "runs" / variant
+    marker = json.loads((run / "evaluation.generation.json").read_text())
+    complete = json.loads((run / "evaluation.complete.json").read_text())
+    expected_source = BASE if variant == "plain" else manifest["source_commit"]
+    if (marker.get("format") != "sisap23-evaluation-generation-v2"
+            or marker.get("variant") != variant
+            or marker.get("source_commit") != expected_source
+            or manifest["evaluation_sources"].get(variant) != expected_source
+            or complete.get("source_commit") != expected_source
+            or complete.get("accepted") is not True
+            or marker.get("hardware_fingerprint") != HARDWARE
+            or complete.get("hardware_fingerprint") != HARDWARE
+            or manifest.get("hardware_fingerprint") != HARDWARE
+            or complete.get("marker_sha256") != digest(run / "evaluation.generation.json")
+            or complete.get("manifest_sha256") != digest(root / "manifest.json")):
+        raise ValueError(f"recovery provenance mismatch: {variant}")
+    if variant == "plain":
+        if marker.get("origin") != "imported-plain":
+            raise ValueError("Plain must retain its historical evaluator provenance")
+        for folder in ("full", "panel"):
+            if inventory(run / folder) != marker["result_inventories"][folder]:
+                raise ValueError("preserved Plain results changed")
+    else:
+        if complete.get("result_inventories") != {f:inventory(run / f) for f in ("full","panel")}:
+            raise ValueError("accepted query results changed")
+        generation = Path(marker["generation_path"])
+        if digest(generation / "generation.json") != marker["generation_sha256"]:
+            raise ValueError("index generation marker changed")
+        meta = checked_generation(generation, expected_source, "index", variant)
+        if inventory(run / "collection") != meta["collection_files"]:
+            raise ValueError("evaluated index differs from accepted generation")
+    return marker
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", type=Path, required=True)
@@ -64,11 +101,15 @@ def main():
     for variant, settings in grids.items():
         run = root / "runs" / variant
         imported = variant == "plain" and (run / "imported.generation.json").exists()
-        marker = json.loads((run / ("imported.generation.json" if imported else "build.complete.json")).read_text())
+        recovered = manifest.get("protocol") == "independent-recovery-v2"
+        marker = (check_recovery_provenance(root, manifest, variant) if recovered else
+                  json.loads((run / ("imported.generation.json" if imported else "build.complete.json")).read_text()))
         kind, m, ef = expected[variant]
         if marker["index_kind"] != kind or marker["point_count"] != 10120191 or marker.get("segment_count") != 1:
             raise SystemExit(f"wrong build marker: {variant}")
-        if imported:
+        if recovered:
+            pass  # Per-variant source and immutable generation checked above.
+        elif imported:
             generation_path = Path(marker["generation_path"])
             generation_file = generation_path / "generation.json"
             generation = json.loads(generation_file.read_text())
@@ -135,6 +176,10 @@ def main():
                     "median_"+metric:float(np.median(vals)), "range_"+metric:[min(vals),max(vals)]}
     report = {"manifest_sha256":digest(root/"manifest.json"),"source_commit":manifest["source_commit"],
               "full_sweeps":results,"paired_warm_panels":panels,"validation":"passed"}
+    if manifest.get("protocol") == "independent-recovery-v2":
+        report["evaluation_sources"] = manifest["evaluation_sources"]
+        report["hardware_fingerprint"] = manifest["hardware_fingerprint"]
+        report["plain_measurements"] = "preserved historical measurements; not remeasured"
     report_path = root / "validation.json"
     if report_path.exists():
         existing = json.loads(report_path.read_text())

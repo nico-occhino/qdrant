@@ -3,7 +3,6 @@
 
 #[cfg(feature = "lmi-training")]
 mod build;
-#[cfg(feature = "lmi-training")]
 mod build_plan;
 mod config;
 mod postings;
@@ -15,6 +14,17 @@ mod state;
 #[cfg(feature = "lmi-training")]
 mod training;
 pub use config::LmiConfig;
+
+/// Run the same checked admission as training, without allocating samples/tensors.
+pub fn check_build_memory(
+    vectors: usize,
+    dim: usize,
+    config: &LmiConfig,
+) -> OperationResult<serde_json::Value> {
+    let plan = build_plan::BuildPlan::estimate(vectors, dim, config)?;
+    plan.check_budget()?;
+    Ok(serde_json::to_value(plan).expect("serializable LMI plan"))
+}
 
 /// Whether this binary can build new trained LMI segments. Serving does not require it.
 pub const fn training_available() -> bool {

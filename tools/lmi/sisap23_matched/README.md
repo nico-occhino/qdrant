@@ -250,3 +250,4 @@ The original interrupted 10M Plain run remains frozen. For the proven WAL
 recovery, persistent generation verification, and a scientifically separate
 matched Plain/LMI/HNSW run, follow [FINAL_PRESERVATION.md](FINAL_PRESERVATION.md).
 This workflow never creates a completion marker in the original run.
+\n## Independent recovery after the October 16 LMI failure\n\nSee [RECOVERY.md](RECOVERY.md) for the opt-in memory probe, copied-data WAL audit,\nindex-only LMI/HNSW builds, preserved Plain results and deimos11-pinned evaluation.\nThese stages use a new branch, new generations and a new campaign; do not rerun the\nold sequential suite against its incomplete LMI directory.\n

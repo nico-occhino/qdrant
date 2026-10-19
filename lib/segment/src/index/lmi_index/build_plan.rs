@@ -189,12 +189,25 @@ impl BuildPlan {
 
     pub(super) fn check_budget(&self) -> OperationResult<()> {
         let sample_limit = sample_ceiling()?;
-        let available = if self.requested_sample_bytes > COMPONENT_BUDGET_BYTES {
-            Mem::new().available_memory_bytes()
-        } else {
-            u64::MAX
-        };
-        self.check_budget_with(sample_limit, available)
+        if self.requested_sample_bytes <= COMPONENT_BUDGET_BYTES {
+            return self.check_budget_with(sample_limit, u64::MAX);
+        }
+        let snapshot = Mem::new().admission_snapshot().map_err(|error| {
+            OperationError::service_error(format!(
+                "LMI_MEMORY_ADMISSION: unable to read memory limits safely: {error}"
+            ))
+        })?;
+        log::info!(
+            "LMI memory admission: {}",
+            serde_json::to_string(&snapshot).unwrap()
+        );
+        self.check_budget_with(sample_limit, snapshot.available_bytes)
+            .map_err(|error| {
+                OperationError::service_error(format!(
+                    "{error}; diagnostics={}",
+                    serde_json::to_string(&snapshot).unwrap()
+                ))
+            })
     }
 
     fn check_budget_with(&self, sample_limit: u64, available: u64) -> OperationResult<()> {
@@ -213,7 +226,8 @@ impl BuildPlan {
                 .ok_or_else(overflow)?;
             if available < required {
                 return Err(OperationError::service_error(format!(
-                    "LMI experimental sample requires at least {required} bytes available: measured={available}; reduce sample_size or wait for memory"
+                    "LMI_MEMORY_ADMISSION: requires {required} bytes (estimated build={} plus headroom={EXPERIMENT_HEADROOM_BYTES}); conservative_available={available}; release unused ingestion state or request more job memory; fixed experiment parameters must not be reduced",
+                    self.estimated_bytes
                 )));
             }
         }
@@ -282,6 +296,33 @@ mod tests {
         let plan = BuildPlan::estimate(100_000, 1, &config).unwrap();
         assert_eq!(plan.bytes["cached_u16_labels"], 0);
     }
+    #[test]
+    fn incident_plan_rejects_one_byte_below_reserved_headroom() {
+        let config = LmiConfig {
+            sample_size: 250_000,
+            n_buckets: 3_162,
+            hidden_dim: 512,
+            epochs: 30,
+            kmeans_iterations: 5,
+            seed: 42,
+            batch_size: 256,
+            routing_batch_size: 256,
+            nprobe: 4,
+        };
+        let plan = BuildPlan::estimate(10_120_191, 768, &config).unwrap();
+        let required = plan.estimated_bytes + EXPERIMENT_HEADROOM_BYTES;
+        assert_eq!(required, 6_538_220_945);
+        let err = plan
+            .check_budget_with(768_000_000, required - 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("LMI_MEMORY_ADMISSION"));
+        assert!(err.contains("headroom=4294967296"));
+        assert!(plan.check_budget_with(768_000_000, required).is_ok());
+        assert!(plan.check_budget_with(768_000_000, 490_192_896).is_err());
+        assert_eq!(config.sample_size, 250_000);
+    }
+
     #[test]
     fn bounded_scale_sample_requires_opt_in_and_memory_headroom() {
         let config = LmiConfig {

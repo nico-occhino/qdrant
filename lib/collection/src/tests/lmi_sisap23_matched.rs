@@ -141,15 +141,35 @@ fn find_named(path: &Path, name: &str, out: &mut Vec<PathBuf>) {
 }
 fn locate_segment(collection: &Path) -> PathBuf {
     let mut found = Vec::new();
-    find_named(collection, "segment.json", &mut found);
+    for entry in fs::read_dir(collection.join("0/segments")).unwrap() {
+        let path = entry.unwrap().path();
+        if !path.is_dir() || Uuid::parse_str(path.file_name().unwrap().to_str().unwrap()).is_err() {
+            continue;
+        }
+        let segment = load_index(&path);
+        let tracker = segment.id_tracker.borrow();
+        if tracker.available_point_count() == 0 {
+            assert_eq!(tracker.total_point_count(), tracker.deleted_point_count());
+            for data in segment.vector_data.values() {
+                let storage = data.vector_storage.borrow();
+                assert!(storage.total_vector_count() <= tracker.total_point_count());
+                for offset in 0..storage.total_vector_count() as u32 {
+                    assert!(tracker.is_deleted_point(offset), "orphan live vector slot");
+                    assert!(tracker.external_id(offset).is_none());
+                }
+            }
+        } else {
+            found.push(path);
+        }
+    }
     assert_eq!(
         found.len(),
         1,
-        "expected exactly one optimized segment, found {}",
-        found.len()
+        "expected exactly one nonempty search segment"
     );
-    found[0].parent().unwrap().to_path_buf()
+    found.pop().unwrap()
 }
+
 fn load_index(path: &Path) -> segment::segment::Segment {
     let uuid = Uuid::parse_str(path.file_name().unwrap().to_str().unwrap()).unwrap();
     load_segment(path, uuid, None, &AtomicBool::new(false), false).unwrap()
@@ -352,11 +372,12 @@ fn verify_persisted_generation(
     }
     let index_bytes = vector_index_bytes(&segment_path, variant, &index).unwrap();
     serde_json::json!({"points":expected,"mapping":mapping,"index_kind":expected_kind,
+        "segment_relative_path":segment_path.strip_prefix(collection_path).unwrap(),
         "index_bytes":index_bytes,"index_files":hash_index_tree(&segment_path).len(),
         "complete":true})
 }
 
-async fn reopen_for_verification(collection_path: &Path, snapshots: &Path, expected: usize) {
+async fn open_paused(collection_path: &Path, snapshots: &Path) -> Collection {
     let pause = serde_json::from_value(serde_json::json!({"max_optimization_threads":0})).unwrap();
     let collection = Collection::load(
         "sisap23_matched".to_string(),
@@ -374,13 +395,68 @@ async fn reopen_for_verification(collection_path: &Path, snapshots: &Path, expec
         Some(pause),
     )
     .await;
-    let info = collection.info(&ShardSelectorInternal::All).await.unwrap();
-    assert_eq!(
-        info.points_count,
-        Some(expected),
-        "normal restart point count"
-    );
+    collection
+}
+
+async fn reopen_for_verification(collection_path: &Path, snapshots: &Path, expected: usize) {
+    let collection = open_paused(collection_path, snapshots).await;
+    let points = collection
+        .info(&ShardSelectorInternal::All)
+        .await
+        .unwrap()
+        .points_count;
     collection.stop_gracefully().await;
+    assert_eq!(points, Some(expected), "normal restart point count");
+}
+
+fn optimizer_complete(
+    status: &crate::operations::types::OptimizersStatus,
+    indexed: Option<usize>,
+    expected: usize,
+) -> Result<bool, String> {
+    if let crate::operations::types::OptimizersStatus::Error(error) = status {
+        return Err(format!(
+            "benchmark optimizer failed; refusing automatic retries: {error}"
+        ));
+    }
+    Ok(indexed == Some(expected))
+}
+
+async fn wait_for_index(collection: &Collection, expected: usize) -> Result<f64, String> {
+    let started = Instant::now();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(172800);
+    loop {
+        let info = collection
+            .info(&ShardSelectorInternal::All)
+            .await
+            .map_err(|e| e.to_string())?;
+        if optimizer_complete(&info.optimizer_status, info.indexed_vectors_count, expected)? {
+            return Ok(started.elapsed().as_secs_f64());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("index construction timed out without completion".into());
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+#[test]
+fn sisap23_optimizer_error_fails_even_with_a_complete_count() {
+    use crate::operations::types::OptimizersStatus;
+    let error = OptimizersStatus::Error("LMI_MEMORY_ADMISSION: insufficient memory".into());
+    assert!(
+        optimizer_complete(&error, Some(N), N)
+            .unwrap_err()
+            .contains("LMI_MEMORY_ADMISSION")
+    );
+    assert_eq!(
+        optimizer_complete(&OptimizersStatus::Ok, Some(N), N),
+        Ok(true)
+    );
+    assert_eq!(
+        optimizer_complete(&OptimizersStatus::Ok, Some(N - 1), N),
+        Ok(false)
+    );
 }
 
 fn vector_index_bytes(
@@ -603,6 +679,13 @@ async fn sisap23_matched_build() {
         manifest["prepared"]["corpus"]["sha256"].as_str().unwrap(),
         "corpus input hash mismatch"
     );
+    // Close ingestion resources and force normal WAL recovery before construction.
+    // The independent recovery workflow additionally starts a fresh process/job.
+    drop(input);
+    drop(shard);
+    collection.stop_gracefully().await;
+    drop(collection);
+    let collection = open_paused(&collection_path, &snapshots).await;
     let mut index_build_s = 0.0;
     let info = collection.info(&ShardSelectorInternal::All).await.unwrap();
     assert_eq!(info.points_count, Some(N));
@@ -614,24 +697,15 @@ async fn sisap23_matched_build() {
             .await
             .unwrap();
         collection.recreate_optimizers_background();
-        let started = Instant::now();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(172800);
-        loop {
-            let current = collection.info(&ShardSelectorInternal::All).await.unwrap();
-            if current.indexed_vectors_count == Some(N) {
-                break;
+        match wait_for_index(&collection, N).await {
+            Ok(seconds) => index_build_s = seconds,
+            Err(error) => {
+                collection.stop_gracefully().await;
+                panic!("{error}");
             }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "indexing timeout: {:?}",
-                current.optimizer_status
-            );
-            tokio::time::sleep(Duration::from_secs(5)).await;
         }
-        index_build_s = started.elapsed().as_secs_f64();
         println!("sisap23_index_build_s={:.3}", index_build_s);
     }
-    drop(shard);
     collection.stop_gracefully().await;
     drop(collection);
     let segment_path = locate_segment(&collection_path);
@@ -1500,7 +1574,10 @@ fn sisap23_matched_evaluate() {
     let v = Variant::parse(&std::env::var("SISAP23_VARIANT").expect("SISAP23_VARIANT required"));
     let run = run_dir(v);
     let imported = v == Variant::Plain && run.join("imported.generation.json").exists();
-    let marker_path = if imported {
+    let recovered = run.join("evaluation.generation.json").exists();
+    let marker_path = if recovered {
+        run.join("evaluation.generation.json")
+    } else if imported {
         run.join("imported.generation.json")
     } else {
         run.join("build.complete.json")
@@ -1512,7 +1589,44 @@ fn sisap23_matched_evaluate() {
     assert_eq!(build["variant"], v.name());
     let manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(root().join("manifest.json")).unwrap()).unwrap();
-    if imported {
+    if recovered {
+        assert_eq!(manifest["protocol"], "independent-recovery-v2");
+        assert_ne!(
+            v,
+            Variant::Plain,
+            "completed Plain results must be imported"
+        );
+        assert_eq!(build["format"], "sisap23-evaluation-generation-v2");
+        assert_eq!(
+            build["source_commit"],
+            manifest["evaluation_sources"][v.name()]
+        );
+        assert_eq!(build["source_commit"], manifest["source_commit"]);
+        assert_eq!(
+            build["hardware_fingerprint"],
+            manifest["hardware_fingerprint"]
+        );
+        let generation_path = PathBuf::from(build["generation_path"].as_str().unwrap());
+        let bytes = fs::read(generation_path.join("generation.json")).unwrap();
+        assert_eq!(
+            Sha256::digest(&bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+            build["generation_sha256"]
+        );
+        let generation: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(generation["accepted"], true);
+        assert_eq!(generation["kind"], "index");
+        assert_eq!(generation["variant"], v.name());
+        assert_eq!(generation["producer_commit"], manifest["source_commit"]);
+        assert_eq!(
+            build["segment_path"],
+            locate_segment(&run.join("collection"))
+                .to_string_lossy()
+                .as_ref()
+        );
+    } else if imported {
         assert_eq!(build["format"], "sisap23-imported-plain-v1");
         assert_eq!(
             build["source_commit"],
@@ -1640,3 +1754,6 @@ fn read_query_at(path: &Path, row: usize) -> Vec<f32> {
 
 #[path = "lmi_sisap23_matched_wal_replay.rs"]
 mod wal_replay;
+
+#[path = "lmi_sisap23_memory_recovery.rs"]
+mod memory_recovery;

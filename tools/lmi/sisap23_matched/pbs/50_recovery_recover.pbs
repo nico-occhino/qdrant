@@ -1,0 +1,10 @@
+#!/bin/bash
+#PBS -N sisap23-recover
+#PBS -l select=1:ncpus=16:mem=96gb:scratch_local=150gb
+#PBS -l walltime=24:00:00
+#PBS -j oe
+set -euo pipefail
+export SISAP23_STAGE=recover
+export WORKSPACE="${WORKSPACE:-/storage/budejovice1/home/nico/lmi-metacentrum}"
+export QDRANT_DIR="${QDRANT_DIR:-$WORKSPACE/qdrant-sisap23-memory-recovery}"
+source "$QDRANT_DIR/tools/lmi/sisap23_matched/pbs/recovery-env.sh"
