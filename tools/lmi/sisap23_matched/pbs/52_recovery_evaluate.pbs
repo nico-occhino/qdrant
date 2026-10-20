@@ -6,5 +6,5 @@
 set -euo pipefail
 export SISAP23_STAGE=evaluate
 export WORKSPACE="${WORKSPACE:-/storage/budejovice1/home/nico/lmi-metacentrum}"
-export QDRANT_DIR="${QDRANT_DIR:-$WORKSPACE/qdrant-sisap23-memory-recovery}"
+export QDRANT_DIR="${QDRANT_DIR:-$WORKSPACE/qdrant-sisap23-publication-repair}"
 source "$QDRANT_DIR/tools/lmi/sisap23_matched/pbs/recovery-env.sh"

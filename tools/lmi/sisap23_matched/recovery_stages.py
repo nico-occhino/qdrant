@@ -1,6 +1,5 @@
 """Opt-in SISAP23 recovery/build/evaluation stages. Run on PBS compute nodes only."""
 import argparse
-import ctypes
 import hashlib
 import json
 import os
@@ -14,7 +13,7 @@ import uuid
 from preserve_generation import digest, inventory, write_new
 
 BASE = "59f9550854db66d5c4ed5e5464a8c9132c07b6ce"
-BRANCH = "thesis/sisap23-lmi-memory-recovery"
+BRANCH = "thesis/sisap23-publication-repair"
 HARDWARE = "deimos11.meta.zcu.cz|AMD EPYC 9555 64-Core Processor|nfs"
 N = 10_120_191
 LMI = dict(n_buckets=3162, sample_size=250000, hidden_dim=512, epochs=30,
@@ -60,10 +59,23 @@ def check_inputs(root, manifest):
         require(not path.is_symlink() and path.stat().st_size == item["bytes"]
                 and digest(path) == item["sha256"], f"prepared input changed: {key}")
 
+def generation_storage(path):
+    from generation_publication import storage_path
+    return storage_path(path)
+
 def checked_generation(path, commit, kind=None, variant=None):
-    require(path.is_absolute() and ".staging" not in path.parts and not path.is_symlink(),
-            "accepted generation required, not staging or symlink")
-    meta = read(path / "generation.json")
+    require(path.is_absolute(), "absolute generation path required")
+    storage = generation_storage(path)
+    meta = read(storage / "generation.json")
+    check_generation_metadata(meta, commit, kind, variant)
+    require(timed("accepted_generation_inventory", inventory, storage / "collection") == meta["collection_files"],
+            "generation file inventory changed")
+    return meta
+
+def check_generation_metadata(meta, commit, kind=None, variant=None):
+    require((meta.get("kind"), meta.get("variant")) in
+            (("data", "data"), ("index", "lmi"), ("index", "hnsw-a"), ("index", "hnsw-b")),
+            "unknown generation kind/variant")
     require(meta.get("format") == "sisap23-generation-v2" and meta.get("accepted") is True,
             "not an accepted recovery generation")
     require(meta["producer_commit"] == commit, "generation source commit differs")
@@ -89,7 +101,6 @@ def checked_generation(path, commit, kind=None, variant=None):
         require(meta["kind"] == kind, "wrong generation kind")
     if variant:
         require(meta["variant"] == variant, "wrong generation variant")
-    require(inventory(path / "collection") == meta["collection_files"], "generation file inventory changed")
     return meta
 
 def sync_tree(path):
@@ -105,23 +116,36 @@ def sync_tree(path):
         finally:
             os.close(fd)
 
-def publish_new(staging, final):
-    """Linux renameat2(RENAME_NOREPLACE), fail closed when unavailable."""
-    require(staging.parent.name == ".staging" and staging.parent.parent == final.parent,
-            "publication must stay on one filesystem")
-    sync_tree(staging)
-    libc = ctypes.CDLL(None, use_errno=True)
-    rename = getattr(libc, "renameat2", None)
-    require(rename is not None, "renameat2 is required for atomic no-replace publication")
-    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-    if rename(-100, os.fsencode(staging), -100, os.fsencode(final), 1) != 0:
-        err = ctypes.get_errno()
-        raise OSError(err, os.strerror(err), str(final))
-    fd = os.open(final.parent, os.O_RDONLY | os.O_DIRECTORY)
+def timed(label, function, *args, **kwargs):
+    from generation_publication import event
+    started = time.monotonic()
+    event(label, status="start")
     try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+        value = function(*args, **kwargs)
+    except BaseException as error:
+        event(label, status="failed", elapsed_s=time.monotonic()-started, error=repr(error))
+        raise
+    fields = {}
+    if function is inventory:
+        fields = {"files":len(value), "bytes":sum(v["bytes"] for v in value.values())}
+    event(label, status="complete", elapsed_s=time.monotonic()-started, **fields)
+    return value
+
+def publish_new(staging, final, verified_files=None):
+    from generation_publication import review_staging, publish_reviewed
+    meta = read(staging / "generation.json")
+    # Future builds retain the durability barrier. The incident reuse command
+    # requires confirmation that the old sync_tree completed before renameat2.
+    timed("staging_sync", sync_tree, staging)
+    _, review = review_staging(staging, meta["producer_commit"], meta["job_id"])
+    return publish_reviewed(staging, final, meta["producer_commit"], meta["job_id"],
+                            review["review_token"], meta["producer_commit"], verified_files)
+
+def cleanup_owned_scratch(work, scratch):
+    require(not work.is_symlink() and work.parent.resolve() == scratch.resolve()
+            and work.resolve() != scratch.resolve(), "unsafe scratch cleanup path")
+    shutil.rmtree(work)
+
 
 def release_scratch_cache(path, scratch):
     """Only advise clean pages of our verified scratch copy; never drop host caches."""
@@ -144,7 +168,7 @@ def rust(name, env, attempt, label):
     report = attempt / f"{label}.json"
     env = {**os.environ, **env, "SISAP23_RECOVERY_REPORT": str(report)}
     # Compile separately: native CPU/RSS measurements must exclude rustc/linker.
-    built = subprocess.run(["cargo", "test", "-p", "collection", "--release",
+    built = timed(f"{label}_compile", subprocess.run, ["cargo", "test", "-p", "collection", "--release",
         "--features", "lmi-training", "--locked", "--lib", "--no-run", "--message-format=json"],
         cwd=REPO, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     (attempt / f"{label}.compile.log").write_text(built.stdout)
@@ -161,7 +185,7 @@ def rust(name, env, attempt, label):
             binaries.append(item["executable"])
     require(len(set(binaries)) == 1, "unique collection test executable not found")
     with log.open("x") as out:
-        result = subprocess.run(["/usr/bin/time", "-v", "-o", str(resources),
+        result = timed(f"{label}_native", subprocess.run, ["/usr/bin/time", "-v", "-o", str(resources),
             binaries[0], name, "--ignored", "--nocapture", "--test-threads=1"],
             cwd=REPO, env=env, stdout=out, stderr=subprocess.STDOUT)
     write_new(attempt / f"{label}.exit.json", {"exit_code": result.returncode})
@@ -181,10 +205,12 @@ def data_digest(report):
 
 def construct(args):
     manifest = original_manifest(args.original)
-    check_inputs(args.original, manifest)
     output = args.output.resolve()
     require(not output.is_relative_to(args.original.resolve()), "recovery output overlaps incident")
     output.mkdir(parents=True, exist_ok=True)
+    from generation_publication import capability
+    timed("publication_capability", capability, output)
+    timed("prepared_inputs_hash", check_inputs, args.original, manifest)
     (output / ".staging").mkdir(exist_ok=True)
     token = f"{args.action}-{args.variant}-{os.environ['PBS_JOBID']}-{uuid.uuid4().hex[:12]}"
     attempt = output / ".staging" / token
@@ -199,16 +225,18 @@ def construct(args):
         if args.source_variant == "lmi":
             require(not (source.parent / "build.complete.json").exists(), "LMI is already marked complete")
     else:
-        source_meta = checked_generation(args.data_generation, args.commit, kind="data")
-        source = args.data_generation / "collection"
-    before = inventory(source)
+        source_meta = checked_generation(args.data_generation, args.data_producer_commit or args.commit, kind="data")
+        source = generation_storage(args.data_generation) / "collection"
+    # checked_generation already computed the current inventory for accepted data.
+    before = (source_meta["collection_files"] if source_meta else
+              timed("source_inventory_before", inventory, source))
     write_new(attempt / "source-inventory.json", before)
     copied_started = time.monotonic()
-    shutil.copytree(source, copied)
-    require(inventory(copied) == before, "scratch copy differs from source")
-    require(inventory(source) == before, "source changed during copying")
+    timed("scratch_copy", shutil.copytree, source, copied)
+    require(timed("scratch_copy_hash", inventory, copied) == before, "scratch copy differs from source")
+    require(timed("source_inventory_after_copy", inventory, source) == before, "source changed during copying")
     copy_seconds = time.monotonic() - copied_started
-    advised = release_scratch_cache(copied, scratch)
+    advised = timed("scratch_cache_advice", release_scratch_cache, copied, scratch)
     env = {
         "SISAP23_BENCH_ROOT": str(args.original), "SISAP23_RECOVERY_ROOT": str(output),
         "SISAP23_RECOVERY_COLLECTION": str(copied), "SISAP23_VARIANT": args.variant,
@@ -217,8 +245,8 @@ def construct(args):
     }
     if args.action == "recover":
         corpus = work / "corpus.f16le"
-        shutil.copy2(args.original / "corpus.f16le", corpus)
-        require(digest(corpus) == manifest["prepared"]["corpus"]["sha256"], "scratch corpus hash differs")
+        timed("corpus_copy", shutil.copy2, args.original / "corpus.f16le", corpus)
+        require(timed("corpus_hash", digest, corpus) == manifest["prepared"]["corpus"]["sha256"], "scratch corpus hash differs")
         env["SISAP23_CORPUS_PATH"] = str(corpus)
         name, kind, variant = "sisap23_recovery_vectors", "data", "data"
     else:
@@ -227,16 +255,16 @@ def construct(args):
         report = rust(name, env, attempt, "scratch")
         if source_meta:
             require(data_digest(report) == source_meta["vector_fingerprint"], "index changed input vectors")
-        scratch_files = inventory(copied)
-        shutil.copytree(copied, attempt / "collection")
-        require(inventory(attempt / "collection") == scratch_files, "persistent staging copy differs")
+        scratch_files = timed("scratch_inventory_after_rust", inventory, copied)
+        timed("persistent_copy", shutil.copytree, copied, attempt / "collection")
+        require(timed("persistent_copy_hash", inventory, attempt / "collection") == scratch_files, "persistent staging copy differs")
         write_new(attempt / "copied-inventory.json", scratch_files)
         env["SISAP23_RECOVERY_COLLECTION"] = str(attempt / "collection")
         env["SISAP23_VERIFY_VARIANT"] = variant
         verified = rust("sisap23_recovery_verify", env, attempt, "persistent")
         require(data_digest(verified) == data_digest(report), "persistent vector fingerprint differs")
-        require(inventory(source) == before, "source changed; publication refused")
-        files = inventory(attempt / "collection")
+        require(timed("source_inventory_before_publication", inventory, source) == before, "source changed; publication refused")
+        files = timed("persistent_inventory_after_rust", inventory, attempt / "collection")
         meta = {
             "format": "sisap23-generation-v2", "accepted": True, "kind": kind, "variant": variant,
             "producer_commit": args.commit, "data_origin_commit": BASE, "points": N,
@@ -254,10 +282,19 @@ def construct(args):
         }
         write_new(attempt / "generation.json", meta)
         final = output / token
-        publish_new(attempt, final)
+        publish_new(attempt, final, verified_files=files)
         print(f"ACCEPTED_GENERATION={final}", flush=True)
-    finally:
-        require(inventory(source) == before, "original/source inventory changed")
+    except BaseException as error:
+        from generation_publication import event
+        event("recovery_failed", error=repr(error), retained_staging=str(attempt),
+              scratch_path=str(work), cleanup="not attempted", source_rehash_after_failure=False)
+        raise
+    else:
+        if os.environ.get("SISAP23_CLEAN_OWN_SCRATCH") == "1":
+            timed("owned_scratch_cleanup", cleanup_owned_scratch, work, scratch)
+        else:
+            from generation_publication import event
+            event("scratch_retained", path=str(work), scheduler_may_remove_after_job=True)
 
 def validate_variant(root, variant):
     import math
@@ -369,7 +406,7 @@ def evaluate_locked(args):
                 "cannot resume with a different index generation or source")
     else:
         run.mkdir()
-        shutil.copytree(args.index_generation / "collection", run / "collection")
+        shutil.copytree(generation_storage(args.index_generation) / "collection", run / "collection")
         require(inventory(run / "collection") == meta["collection_files"], "evaluation copy differs")
         segment = run / "collection" / checked_relative(meta["report"]["index"]["segment_relative_path"])
         require((segment / "segment.json").is_file(), "verified nonempty segment missing")
@@ -413,6 +450,7 @@ def main():
     p.add_argument("--variant", choices=["lmi","hnsw-a","hnsw-b"], default="lmi")
     p.add_argument("--source-variant", choices=["lmi","plain"], default="lmi")
     p.add_argument("--data-generation", type=Path)
+    p.add_argument("--data-producer-commit", help="explicit producer pin for previously reviewed recovered data")
     p.add_argument("--index-generation", type=Path)
     p.add_argument("--campaign", type=Path)
     args = p.parse_args()
@@ -445,4 +483,10 @@ def main():
                         "--root", str(args.campaign)], check=True)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BaseException as error:
+        from generation_publication import event
+        event("stage_failed", error=repr(error), job_id=os.environ.get("PBS_JOBID"),
+              automatic_destructive_cleanup=False)
+        raise

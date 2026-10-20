@@ -1,3 +1,7 @@
+> Publication repair: the directory-rename procedure below failed on the target
+> filesystem. Use [PUBLICATION_REPAIR.md](PUBLICATION_REPAIR.md) for the surviving
+> staging generation and the new descriptor protocol. Do not rerun recovery first.
+
 # SISAP23 10M: memory admission and independent recovery
 
 ## Scope and diagnosis

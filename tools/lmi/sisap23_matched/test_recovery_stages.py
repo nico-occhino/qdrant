@@ -60,18 +60,15 @@ class RecoveryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             stages.checked_generation(self.root / ".staging/g", COMMIT)
 
-    def test_atomic_publication_never_replaces(self):
+    def test_unverified_stage_cannot_be_published(self):
         stage = self.root / ".staging/g"
         stage.mkdir(parents=True)
-        (stage / "report").write_text("accepted")
+        (stage / "report").write_text("looks successful")
         target = self.root / "published"
-        stages.publish_new(stage, target)
-        self.assertEqual((target / "report").read_text(), "accepted")
-        stage.mkdir()
-        (stage / "report").write_text("replacement")
-        with self.assertRaises(OSError):
+        with self.assertRaises(FileNotFoundError):
             stages.publish_new(stage, target)
-        self.assertEqual((target / "report").read_text(), "accepted")
+        self.assertTrue(stage.exists())
+        self.assertFalse(target.exists())
 
     def test_cache_advice_restricted_to_own_scratch(self):
         scratch = self.root / "scratch"
