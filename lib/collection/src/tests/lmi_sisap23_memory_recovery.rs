@@ -277,6 +277,16 @@ async fn sisap23_recovery_index() {
     let collection = open_paused(&path, &snapshots).await;
     configure_index(&collection, variant).await;
     let result = wait_for_index(&collection, N).await;
+    if result.is_ok() {
+        let shard = collection
+            .shards_holder()
+            .read()
+            .await
+            .get_shard(0)
+            .unwrap()
+            .clone();
+        shard.force_flush_local_for_test().await;
+    }
     collection.stop_gracefully().await;
     drop(collection);
     let seconds = result.unwrap_or_else(|e| panic!("{e}"));
