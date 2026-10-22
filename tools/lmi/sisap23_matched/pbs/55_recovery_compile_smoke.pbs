@@ -1,0 +1,36 @@
+#!/bin/bash
+#PBS -N sisap23-topology-compile
+#PBS -l select=1:ncpus=8:mem=32gb:scratch_local=80gb
+#PBS -l walltime=08:00:00
+#PBS -j oe
+# Compile and link the exact collection test binary; no test, dataset or index runs.
+set -euo pipefail
+: "${PBS_JOBID:?PBS compute allocation required}"
+: "${SCRATCHDIR:?PBS scratch allocation required}"
+: "${SISAP23_REVIEWED_COMMIT:?pin the reviewed commit SHA}"
+export WORKSPACE="${WORKSPACE:-/storage/budejovice1/home/nico/lmi-metacentrum}"
+export QDRANT_DIR="${QDRANT_DIR:-$WORKSPACE/qdrant-sisap23-index-topology-diagnostics}"
+test "$(git -C "$QDRANT_DIR" rev-parse HEAD)" = "$SISAP23_REVIEWED_COMMIT"
+test "$(git -C "$QDRANT_DIR" branch --show-current)" = thesis/sisap23-index-topology-diagnostics
+test -z "$(git -C "$QDRANT_DIR" status --porcelain)"
+export SISAP23_BENCH_ROOT="${SISAP23_SMOKE_ROOT:-$WORKSPACE/results/sisap23-topology-compile-$PBS_JOBID}"
+mkdir "$SISAP23_BENCH_ROOT"
+set -o noclobber
+exec > "$SISAP23_BENCH_ROOT/job.log" 2>&1
+module load "${PROTOBUF_MODULE:-protobuf}"
+source "$QDRANT_DIR/tools/lmi/sisap23_matched/pbs/common-env.sh"
+setup_benchmark_build_env
+cd "$QDRANT_DIR"
+printf 'reviewed_commit=%s\ncheckout=%s\nscratch=%s\n' "$SISAP23_REVIEWED_COMMIT" "$QDRANT_DIR" "$SCRATCHDIR"
+/usr/bin/time -v -o "$SISAP23_BENCH_ROOT/compile.resources.txt" \
+  cargo test -p collection --release --features lmi-training --locked --lib --no-run \
+  > "$SISAP23_BENCH_ROOT/compile.log" 2>&1
+python - "$SISAP23_BENCH_ROOT/compile.complete.json" "$SISAP23_REVIEWED_COMMIT" "$PBS_JOBID" <<'PY'
+import json
+import sys
+with open(sys.argv[1], "x", encoding="utf-8") as marker:
+    json.dump({"compile_passed": True, "kind": "compile-only", "commit": sys.argv[2],
+               "job_id": sys.argv[3], "tests_executed": 0}, marker, sort_keys=True)
+    marker.write(chr(10))
+PY
+printf 'SISAP23_COMPILE_ONLY_COMPLETE commit=%s\n' "$SISAP23_REVIEWED_COMMIT"
