@@ -1942,3 +1942,6 @@ mod wal_replay;
 
 #[path = "lmi_sisap23_memory_recovery.rs"]
 mod memory_recovery;
+
+#[path = "lmi_sisap23_small_lifecycle.rs"]
+mod small_lifecycle;

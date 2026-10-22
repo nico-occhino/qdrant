@@ -1,0 +1,68 @@
+#!/bin/bash
+#PBS -N sisap23-small-stage-a
+#PBS -l select=1:ncpus=8:mem=32gb:scratch_local=80gb
+#PBS -l walltime=03:00:00
+#PBS -j oe
+set -euo pipefail
+umask 077
+: "${PBS_JOBID:?PBS compute allocation required}"
+: "${SCRATCHDIR:?PBS scratch allocation required}"
+: "${SISAP23_REVIEWED_COMMIT:?pin the reviewed small-validation commit}"
+[[ "$SISAP23_REVIEWED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+export WORKSPACE="${WORKSPACE:-/storage/budejovice1/home/nico/lmi-metacentrum}"
+export QDRANT_DIR="${QDRANT_DIR:-$WORKSPACE/qdrant-sisap23-small-lifecycle}"
+test "$(git -C "$QDRANT_DIR" branch --show-current)" = thesis/sisap23-small-lifecycle
+test "$(git -C "$QDRANT_DIR" rev-parse HEAD)" = "$SISAP23_REVIEWED_COMMIT"
+test -z "$(git -C "$QDRANT_DIR" status --porcelain)"
+export SISAP23_BENCH_ROOT="$WORKSPACE/results/sisap23-small-stage-a-$PBS_JOBID"
+mkdir "$SISAP23_BENCH_ROOT"
+set -o noclobber
+exec > "$SISAP23_BENCH_ROOT/job.log" 2>&1
+module load "${PROTOBUF_MODULE:-protobuf}"
+source "$QDRANT_DIR/tools/lmi/sisap23_matched/pbs/common-env.sh"
+setup_benchmark_build_env
+export OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 RAYON_NUM_THREADS=8
+cd "$QDRANT_DIR"
+printf 'stage=A commit=%s host=%s scratch=%s\n' "$SISAP23_REVIEWED_COMMIT" "$(hostname)" "$SCRATCHDIR"
+/usr/bin/time -v -o "$SISAP23_BENCH_ROOT/compile.resources.txt" \
+  cargo test -p collection --release --features lmi-training --locked --lib --no-run \
+  --message-format=json > "$SISAP23_BENCH_ROOT/compile.jsonl" \
+  2> "$SISAP23_BENCH_ROOT/compile.log"
+export SISAP23_TEST_BIN
+SISAP23_TEST_BIN=$(python - "$SISAP23_BENCH_ROOT/compile.jsonl" <<'PY'
+import json, sys
+paths = []
+for line in open(sys.argv[1], encoding="utf-8"):
+    try:
+        item = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if item.get("reason") == "compiler-artifact" and item.get("target", {}).get("name") == "collection" and item.get("executable"):
+        paths.append(item["executable"])
+if len(paths) != 1:
+    raise SystemExit(f"expected one collection test executable, got {paths}")
+print(paths[0])
+PY
+)
+test -x "$SISAP23_TEST_BIN"
+run_one() {
+  local name="$1" ignored="$2" label="$3"
+  local log="$SISAP23_BENCH_ROOT/$label.log"
+  local flags=(--exact "$name" --nocapture)
+  if [ "$ignored" = yes ]; then flags+=(--ignored); fi
+  printf 'running=%s ignored=%s\n' "$name" "$ignored"
+  timeout --signal=TERM --kill-after=30s 600s "$SISAP23_TEST_BIN" "${flags[@]}" > "$log" 2>&1
+  grep -q 'test result: ok. 1 passed; 0 failed;' "$log"
+}
+run_one 'collection_manager::optimizers::merge_optimizer::tests::two_live_segments_can_remain_at_one_segment_target' no merge_planner
+run_one 'tests::lmi_sisap23_matched::sisap23_optimizer_error_fails_even_with_a_complete_count' no optimizer_completion
+run_one 'tests::lmi_sisap23_matched::sisap23_one_live_segment_and_empty_segment_is_accepted_after_reload' no one_live
+run_one 'tests::lmi_sisap23_matched::sisap23_two_live_segments_remain_rejected_after_reload' no two_live
+run_one 'tests::lmi_sisap23_matched::memory_recovery::sisap23_reuse_vectors_without_reingestion' yes float16_reuse
+python - "$SISAP23_BENCH_ROOT/stage-a.complete.json" "$SISAP23_REVIEWED_COMMIT" "$PBS_JOBID" <<'PY'
+import json, sys
+with open(sys.argv[1], "x", encoding="utf-8") as out:
+    json.dump({"accepted": True, "stage": "A", "commit": sys.argv[2], "job_id": sys.argv[3], "selected_tests_passed": 5}, out, sort_keys=True)
+    out.write("\n")
+PY
+printf 'SISAP23_SMALL_STAGE_A_COMPLETE commit=%s\n' "$SISAP23_REVIEWED_COMMIT"

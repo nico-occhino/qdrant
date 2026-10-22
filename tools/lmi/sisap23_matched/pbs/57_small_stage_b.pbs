@@ -1,0 +1,93 @@
+#!/bin/bash
+#PBS -N sisap23-small-stage-b
+#PBS -l select=1:ncpus=8:mem=32gb:scratch_local=80gb
+#PBS -l walltime=03:00:00
+#PBS -j oe
+set -euo pipefail
+umask 077
+: "${PBS_JOBID:?PBS compute allocation required}"
+: "${SCRATCHDIR:?PBS scratch allocation required}"
+: "${SISAP23_REVIEWED_COMMIT:?pin the reviewed small-validation commit}"
+: "${SISAP23_STAGE_A_RESULT:?pass the reviewed Stage A completion marker}"
+[[ "$SISAP23_REVIEWED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+export WORKSPACE="${WORKSPACE:-/storage/budejovice1/home/nico/lmi-metacentrum}"
+export QDRANT_DIR="${QDRANT_DIR:-$WORKSPACE/qdrant-sisap23-small-lifecycle}"
+test "$(git -C "$QDRANT_DIR" branch --show-current)" = thesis/sisap23-small-lifecycle
+test "$(git -C "$QDRANT_DIR" rev-parse HEAD)" = "$SISAP23_REVIEWED_COMMIT"
+test -z "$(git -C "$QDRANT_DIR" status --porcelain)"
+export SISAP23_BENCH_ROOT="$WORKSPACE/results/sisap23-small-stage-b-$PBS_JOBID"
+mkdir "$SISAP23_BENCH_ROOT"
+set -o noclobber
+exec > "$SISAP23_BENCH_ROOT/job.log" 2>&1
+module load "${PROTOBUF_MODULE:-protobuf}"
+source "$QDRANT_DIR/tools/lmi/sisap23_matched/pbs/common-env.sh"
+setup_benchmark_build_env
+export OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 RAYON_NUM_THREADS=8
+python - "$SISAP23_STAGE_A_RESULT" "$SISAP23_REVIEWED_COMMIT" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1]).resolve(strict=True)
+expected = (pathlib.Path(__import__("os").environ["WORKSPACE"]) / "results").resolve(strict=True)
+if path.parent.parent != expected or not path.parent.name.startswith("sisap23-small-stage-a-"):
+    raise SystemExit("Stage A marker outside isolated results")
+data = json.loads(path.read_text())
+if data.get("accepted") is not True or data.get("stage") != "A" or data.get("commit") != sys.argv[2] or data.get("selected_tests_passed") != 5:
+    raise SystemExit("Stage A gate failed or commit differs")
+PY
+cd "$QDRANT_DIR"
+printf 'stage=B commit=%s host=%s scratch=%s\n' "$SISAP23_REVIEWED_COMMIT" "$(hostname)" "$SCRATCHDIR"
+/usr/bin/time -v -o "$SISAP23_BENCH_ROOT/compile.resources.txt" \
+  cargo test -p collection --release --features lmi-training --locked --lib --no-run \
+  --message-format=json > "$SISAP23_BENCH_ROOT/compile.jsonl" \
+  2> "$SISAP23_BENCH_ROOT/compile.log"
+export SISAP23_TEST_BIN
+SISAP23_TEST_BIN=$(python - "$SISAP23_BENCH_ROOT/compile.jsonl" <<'PY'
+import json, sys
+paths = []
+for line in open(sys.argv[1], encoding="utf-8"):
+    try:
+        item = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if item.get("reason") == "compiler-artifact" and item.get("target", {}).get("name") == "collection" and item.get("executable"):
+        paths.append(item["executable"])
+if len(paths) != 1:
+    raise SystemExit(f"expected one collection test executable, got {paths}")
+print(paths[0])
+PY
+)
+test -x "$SISAP23_TEST_BIN"
+export SISAP23_SMALL_RESULTS="$SISAP23_BENCH_ROOT"
+export SISAP23_SMALL_SCRATCH="$SCRATCHDIR/sisap23-small"
+mkdir "$SISAP23_SMALL_SCRATCH"
+run_one() {
+  local name="$1" label="$2"
+  local log="$SISAP23_BENCH_ROOT/$label.log"
+  printf 'running=%s\n' "$name"
+  timeout --signal=TERM --kill-after=30s 900s "$SISAP23_TEST_BIN" \
+    --exact "$name" --ignored --nocapture > "$log" 2>&1
+  grep -q 'test result: ok. 1 passed; 0 failed;' "$log"
+}
+run_one 'tests::lmi_sisap23_matched::small_lifecycle::sisap23_small_float16_holder_retirement' holder_retirement
+export SISAP23_SMALL_REPORT="$SISAP23_BENCH_ROOT/hnsw.lifecycle.json"
+run_one 'tests::lmi_sisap23_matched::small_lifecycle::sisap23_small_float16_hnsw_lifecycle' hnsw_lifecycle
+export SISAP23_SMALL_REPORT="$SISAP23_BENCH_ROOT/lmi.lifecycle.json"
+run_one 'tests::lmi_sisap23_matched::small_lifecycle::sisap23_small_float16_lmi_lifecycle' lmi_lifecycle
+python - "$SISAP23_BENCH_ROOT" "$SISAP23_REVIEWED_COMMIT" "$PBS_JOBID" <<'PY'
+import json, pathlib, re, sys
+root = pathlib.Path(sys.argv[1])
+expected = ["plain_before_index", "first_aggregate_indexed_count",
+            "optimizer_quiescent", "synchronous_flush", "clean_restart"]
+for variant in ("hnsw", "lmi"):
+    report = json.loads((root / f"{variant}.lifecycle.json").read_text())
+    if report.get("accepted") is not True or report.get("source_commit") != sys.argv[2] or report.get("variant") != ("hnsw-a" if variant == "hnsw" else "lmi") or report.get("points") != 64:
+        raise SystemExit(f"{variant}: incomplete lifecycle report")
+    if [phase["phase"] for phase in report["phases"]] != expected:
+        raise SystemExit(f"{variant}: missing lifecycle phase")
+    if not re.fullmatch(r"[0-9a-f]{64}", report["fingerprint"]) or report["index_files"] < 1:
+        raise SystemExit(f"{variant}: fingerprint/index proof missing")
+with open(root / "stage-b.complete.json", "x", encoding="utf-8") as out:
+    json.dump({"accepted": True, "stage": "B", "commit": sys.argv[2],
+               "job_id": sys.argv[3], "selected_tests_passed": 3}, out, sort_keys=True)
+    out.write("\n")
+PY
+printf 'SISAP23_SMALL_STAGE_B_COMPLETE commit=%s\n' "$SISAP23_REVIEWED_COMMIT"

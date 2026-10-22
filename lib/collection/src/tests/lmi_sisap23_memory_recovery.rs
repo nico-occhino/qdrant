@@ -5,7 +5,7 @@ use segment::utils::mem::Mem;
 
 /// Full audit across all active segments after normal Collection startup has
 /// reconciled temporary/deleted optimizer output. No synthetic inserts occur.
-fn audit_data(path: &Path, expected: usize, corpus: Option<&Path>) -> serde_json::Value {
+pub(super) fn audit_data(path: &Path, expected: usize, corpus: Option<&Path>) -> serde_json::Value {
     let mut paths: Vec<_> = fs::read_dir(path.join("0/segments"))
         .unwrap()
         .map(|entry| entry.unwrap().path())

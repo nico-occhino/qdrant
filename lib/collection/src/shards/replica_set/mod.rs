@@ -394,6 +394,18 @@ impl ShardReplicaSet {
         }
     }
 
+    /// Snapshot the native holder in collection integration tests.
+    #[cfg(test)]
+    pub(crate) async fn local_segments_for_test(
+        &self,
+    ) -> Option<shard::segment_holder::locked::LockedSegmentHolder> {
+        self.local
+            .read()
+            .await
+            .as_ref()
+            .and_then(|shard| shard.local_shard().map(|local| local.segments()))
+    }
+
     pub fn shard_key(&self) -> Option<ShardKey> {
         self.shard_key.read().clone()
     }
