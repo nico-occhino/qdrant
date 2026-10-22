@@ -584,7 +584,7 @@ fn sisap23_optimizer_error_fails_even_with_a_complete_count() {
 #[test]
 fn sisap23_one_live_segment_and_empty_segment_is_accepted_after_reload() {
     use crate::collection_manager::fixtures::random_segment;
-    use segment::entry::SegmentEntry;
+    use segment::entry::StorageSegmentEntry;
     use segment::segment_constructor::simple_segment_constructor::build_simple_segment;
 
     let temp = tempfile::tempdir().unwrap();
@@ -605,7 +605,7 @@ fn sisap23_one_live_segment_and_empty_segment_is_accepted_after_reload() {
 #[test]
 fn sisap23_two_live_segments_remain_rejected_after_reload() {
     use crate::collection_manager::fixtures::random_segment;
-    use segment::entry::SegmentEntry;
+    use segment::entry::StorageSegmentEntry;
 
     let temp = tempfile::tempdir().unwrap();
     let segment_dir = temp.path().join("0/segments");
