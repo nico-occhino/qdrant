@@ -355,20 +355,115 @@ async fn sisap23_recovery_verify() {
         before["vector_fingerprint_xor_sha256"],
         after["vector_fingerprint_xor_sha256"]
     );
-    for (p, old) in index_files.iter().zip(hashes) {
+    for (p, old) in index_files.iter().zip(&hashes) {
         assert_eq!(
             old,
-            hash_index_tree(p.parent().unwrap()),
+            &hash_index_tree(p.parent().unwrap()),
             "index changed during verification"
         );
     }
     if variant != "data" {
         verify_persisted_generation(&path, Variant::parse(&variant), N);
     }
+    let ordinary_lmi_query_path = if variant == "lmi" {
+        Some(verify_normal_lmi_query(&path, &snapshots).await)
+    } else {
+        None
+    };
+    for (p, old) in index_files.iter().zip(&hashes) {
+        assert_eq!(
+            old,
+            &hash_index_tree(p.parent().unwrap()),
+            "query changed index"
+        );
+    }
     report(
         serde_json::json!({"format":"sisap23-persistent-verified-v2","accepted":true,
-        "data":after,"normal_restarts":2,"index_files_unchanged":true,"ingested_points":0}),
+        "data":after,"normal_restarts":2,"index_files_unchanged":true,"ingested_points":0,
+        "ordinary_lmi_query_path":ordinary_lmi_query_path}),
     );
+}
+
+async fn verify_normal_lmi_query(path: &Path, snapshots: &Path) -> serde_json::Value {
+    use segment::data_types::vectors::NamedQuery;
+    use shard::query::query_enum::QueryEnum;
+
+    use crate::operations::types::CoreSearchRequest;
+
+    let collection = open_paused(path, snapshots).await;
+    let shard = collection
+        .shards_holder()
+        .read()
+        .await
+        .get_shard(0)
+        .unwrap()
+        .clone();
+    let counts = |segments: &shard::segment_holder::locked::LockedSegmentHolder| {
+        let holder = segments.read();
+        let found: Vec<_> = holder
+            .iter_original()
+            .filter_map(|(_, locked)| {
+                let segment = locked.read();
+                let index = segment.vector_data[DEFAULT_VECTOR_NAME]
+                    .vector_index
+                    .borrow();
+                match &*index {
+                    VectorIndexEnum::Lmi(lmi) => Some(lmi.search_path_counts_for_test()),
+                    _ => None,
+                }
+            })
+            .collect();
+        assert_eq!(found.len(), 1, "one active LMI segment required");
+        found[0]
+    };
+    let holder = shard.local_segments_for_test().await.unwrap();
+    let before = counts(&holder);
+    drop(holder);
+    let mut vector = vec![0.0; DIM];
+    vector[0] = 1.0;
+    let found = collection
+        .search(
+            CoreSearchRequest {
+                query: QueryEnum::Nearest(NamedQuery::default_dense(vector)),
+                filter: None,
+                params: None,
+                limit: 10,
+                offset: 0,
+                with_payload: None,
+                with_vector: None,
+                score_threshold: None,
+            },
+            None,
+            None,
+            &ShardSelectorInternal::All,
+            None,
+            HwMeasurementAcc::new(),
+        )
+        .await
+        .unwrap();
+    let ids: Vec<_> = found
+        .into_iter()
+        .map(|point| match point.id {
+            segment::types::ExtendedPointId::NumId(id) => id,
+            _ => panic!("unexpected point ID type"),
+        })
+        .collect();
+    assert_eq!(ids.len(), 10, "ordinary LMI search returned too few points");
+    assert!(ids.iter().all(|id| (1..=N as u64).contains(id)));
+    assert_eq!(ids.iter().collect::<HashSet<_>>().len(), ids.len());
+    let holder = shard.local_segments_for_test().await.unwrap();
+    let after = counts(&holder);
+    assert_eq!(
+        after.0,
+        before.0 + 1,
+        "ordinary search bypassed learned routing"
+    );
+    assert_eq!(after.1, before.1, "ordinary search fell back to Plain");
+    drop(holder);
+    drop(shard);
+    collection.stop_gracefully().await;
+    println!("SISAP23_NORMAL_QUERY_PATH learned_delta=1 plain_fallback_delta=0");
+    serde_json::json!({"learned_delta":1,"plain_fallback_delta":0,"returned_ids_1_based":ids})
 }
 
 #[test]
