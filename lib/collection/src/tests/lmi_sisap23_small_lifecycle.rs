@@ -320,7 +320,7 @@ async fn run_small_lifecycle(variant: Variant) {
             .unwrap();
         collection.recreate_optimizers_background();
     } else {
-        configure_index(&collection, Variant::HnswA).await;
+        super::memory_recovery::configure_index(&collection, Variant::HnswA).await;
     }
     wait_small(&collection, &path, &mut phases).await;
     let shard = collection

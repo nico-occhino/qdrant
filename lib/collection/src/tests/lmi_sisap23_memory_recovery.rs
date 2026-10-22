@@ -214,7 +214,7 @@ async fn sisap23_recovery_vectors() {
     );
 }
 
-async fn configure_index(collection: &Collection, variant: Variant) {
+pub(super) async fn configure_index(collection: &Collection, variant: Variant) {
     let lmi = if variant == Variant::Lmi {
         serde_json::to_value(lmi_config()).unwrap()
     } else {
