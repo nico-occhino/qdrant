@@ -13,7 +13,7 @@ import uuid
 from preserve_generation import digest, inventory, write_new
 
 BASE = "59f9550854db66d5c4ed5e5464a8c9132c07b6ce"
-BRANCH = "thesis/sisap23-index-topology-diagnostics"
+BRANCH = "thesis/sisap23-lifecycle-dev"
 HARDWARE = "deimos11.meta.zcu.cz|AMD EPYC 9555 64-Core Processor|nfs"
 N = 10_120_191
 LMI = dict(n_buckets=3162, sample_size=250000, hidden_dim=512, epochs=30,

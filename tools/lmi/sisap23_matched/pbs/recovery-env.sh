@@ -4,12 +4,12 @@ set -euo pipefail
 : "${PBS_JOBID:?PBS compute allocation required}"
 : "${SCRATCHDIR:?PBS scratch required}"
 export WORKSPACE="${WORKSPACE:-/storage/budejovice1/home/nico/lmi-metacentrum}"
-export QDRANT_DIR="${QDRANT_DIR:-$WORKSPACE/qdrant-sisap23-index-topology-diagnostics}"
+export QDRANT_DIR="${QDRANT_DIR:-$WORKSPACE/qdrant-sisap23-lifecycle-dev}"
 : "${SISAP23_REVIEWED_COMMIT:?exact reviewed commit required}"
 : "${SISAP23_RECOVERY_ROOT:?new persistent recovery output required}"
 export SISAP23_ORIGINAL_ROOT="${SISAP23_ORIGINAL_ROOT:-$WORKSPACE/results/sisap23-matched-recovered-20261016-01}"
 test "$(git -C "$QDRANT_DIR" rev-parse HEAD)" = "$SISAP23_REVIEWED_COMMIT"
-test "$(git -C "$QDRANT_DIR" branch --show-current)" = thesis/sisap23-index-topology-diagnostics
+test "$(git -C "$QDRANT_DIR" branch --show-current)" = thesis/sisap23-lifecycle-dev
 test -z "$(git -C "$QDRANT_DIR" status --porcelain)"
 original_real=$(realpath -m "$SISAP23_ORIGINAL_ROOT")
 recovery_real=$(realpath -m "$SISAP23_RECOVERY_ROOT")
