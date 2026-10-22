@@ -1,13 +1,17 @@
 //! Disposable native Float16 lifecycle diagnostics. Never reads SISAP inputs.
 use super::*;
 use segment::data_types::named_vectors::NamedVectors;
+use segment::data_types::vectors::NamedQuery;
 use segment::data_types::vectors::VectorInternal;
 use segment::entry::{SegmentEntry, StorageSegmentEntry};
 use segment::segment::Segment;
 use segment::segment_constructor::build_segment;
 use segment::types::{SegmentConfig, VectorDataConfig, VectorStorageType};
+use shard::query::query_enum::QueryEnum;
 use shard::segment_holder::FlushMode;
 use shard::segment_holder::SegmentHolder;
+
+use crate::operations::types::CoreSearchRequest;
 
 const SMALL_N: usize = 64;
 const SMALL_DEADLINE: Duration = Duration::from_secs(120);
@@ -57,6 +61,25 @@ fn holder_rows(holder: &SegmentHolder) -> Vec<serde_json::Value> {
         .collect();
     rows.sort_by(|a, b| a["uuid"].as_str().cmp(&b["uuid"].as_str()));
     rows
+}
+
+fn lmi_search_counts(holder: &shard::segment_holder::locked::LockedSegmentHolder) -> (u64, u64) {
+    let holder = holder.read();
+    let counts: Vec<_> = holder
+        .iter_original()
+        .filter_map(|(_, locked)| {
+            let segment = locked.read();
+            let index = segment.vector_data[DEFAULT_VECTOR_NAME]
+                .vector_index
+                .borrow();
+            match &*index {
+                VectorIndexEnum::Lmi(lmi) => Some(lmi.search_path_counts_for_test()),
+                _ => None,
+            }
+        })
+        .collect();
+    assert_eq!(counts.len(), 1, "expected one active learned index");
+    counts[0]
 }
 
 async fn phase(collection: &Collection, collection_path: &Path, label: &str) -> serde_json::Value {
@@ -403,7 +426,44 @@ async fn run_small_lifecycle(variant: Variant) {
         .clone();
     let holder = shard.local_segments_for_test().await.unwrap();
     assert_eq!(audit_active(&holder), active_fingerprint);
+    let before_search = (variant == Variant::Lmi).then(|| lmi_search_counts(&holder));
     drop(holder);
+    let query_path = if let Some(before_search) = before_search {
+        let mut vector = vec![0.0; DIM];
+        vector[1] = 1.0;
+        let found = collection
+            .search(
+                CoreSearchRequest {
+                    query: QueryEnum::Nearest(NamedQuery::default_dense(vector)),
+                    filter: None,
+                    params: None,
+                    limit: 10,
+                    offset: 0,
+                    with_payload: None,
+                    with_vector: None,
+                    score_threshold: None,
+                },
+                None,
+                None,
+                &ShardSelectorInternal::All,
+                None,
+                HwMeasurementAcc::new(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            found.first().unwrap().id,
+            segment::types::ExtendedPointId::NumId(1)
+        ));
+        let holder = shard.local_segments_for_test().await.unwrap();
+        let after_search = lmi_search_counts(&holder);
+        assert_eq!(after_search.0, before_search.0 + 1, "learned path unused");
+        assert_eq!(after_search.1, before_search.1, "Plain fallback executed");
+        println!("SISAP23_SMALL_QUERY_PATH learned_delta=1 plain_fallback_delta=0");
+        Some(serde_json::json!({"learned_delta":1,"plain_fallback_delta":0}))
+    } else {
+        None
+    };
     drop(shard);
     collection.stop_gracefully().await;
     drop(collection);
@@ -435,6 +495,7 @@ async fn run_small_lifecycle(variant: Variant) {
             "fingerprint": active_fingerprint,
             "variant": variant.name(),
             "index_files": index_hashes.len(),
+            "query_path": query_path,
             "ingested_once": true,
             "reused_vectors_for_index": true
         }),

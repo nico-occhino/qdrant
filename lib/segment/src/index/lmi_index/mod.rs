@@ -42,6 +42,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+#[cfg(feature = "testing")]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use atomic_refcell::AtomicRefCell;
 use common::counter::hardware_counter::HardwareCounterCell;
@@ -71,6 +73,10 @@ pub struct LmiIndex {
     quantized_vectors: Arc<AtomicRefCell<Option<QuantizedVectors>>>,
     #[cfg(feature = "testing")]
     synthetic_candidates: parking_lot::Mutex<Option<Vec<PointOffsetType>>>,
+    #[cfg(feature = "testing")]
+    learned_searches: AtomicU64,
+    #[cfg(feature = "testing")]
+    plain_fallbacks: AtomicU64,
     routing_state: Option<LmiRoutingState>,
     routing_distance: Option<Distance>,
     state_files: Vec<PathBuf>,
@@ -96,6 +102,10 @@ impl LmiIndex {
             quantized_vectors,
             #[cfg(feature = "testing")]
             synthetic_candidates: parking_lot::Mutex::new(None),
+            #[cfg(feature = "testing")]
+            learned_searches: AtomicU64::new(0),
+            #[cfg(feature = "testing")]
+            plain_fallbacks: AtomicU64::new(0),
             routing_state: None,
             routing_distance: None,
             state_files: Vec::new(),
@@ -148,6 +158,14 @@ impl LmiIndex {
         *self.synthetic_candidates.lock() = Some(candidates);
     }
 
+    #[cfg(feature = "testing")]
+    pub fn search_path_counts_for_test(&self) -> (u64, u64) {
+        (
+            self.learned_searches.load(Ordering::Relaxed),
+            self.plain_fallbacks.load(Ordering::Relaxed),
+        )
+    }
+
     fn supports_candidates(
         &self,
         vectors: &[&QueryVector],
@@ -174,6 +192,9 @@ impl VectorIndexRead for LmiIndex {
     ) -> OperationResult<Vec<Vec<ScoredPointOffset>>> {
         if self.supports_candidates(vectors, filter, params) {
             if let Some(state) = &self.routing_state {
+                #[cfg(feature = "testing")]
+                self.learned_searches
+                    .fetch_add(vectors.len() as u64, Ordering::Relaxed);
                 let tracker = self.id_tracker.borrow();
                 let storage = self.vector_storage.borrow();
                 return vectors
@@ -225,6 +246,9 @@ impl VectorIndexRead for LmiIndex {
                     .collect();
             }
         }
+        #[cfg(feature = "testing")]
+        self.plain_fallbacks
+            .fetch_add(vectors.len() as u64, Ordering::Relaxed);
         self.plain
             .search(vectors, filter, top, params, query_context)
     }
