@@ -94,6 +94,11 @@ def check_generation_metadata(meta, commit, kind=None, variant=None):
                 "exhaustive corpus validation missing")
     elif meta["variant"] == "lmi":
         require(meta["report"].get("lmi") == LMI, "fixed LMI configuration changed")
+        query_path = meta["persistent_report"].get("ordinary_lmi_query_path") or {}
+        require(query_path.get("learned_delta") == 1
+                and query_path.get("plain_fallback_delta") == 0
+                and len(query_path.get("returned_ids_1_based", [])) == 10,
+                "ordinary learned search proof missing")
     else:
         require(meta["report"].get("hnsw_params") == {"hnsw-a":[16,100], "hnsw-b":[32,200]}.get(meta["variant"]),
                 "fixed HNSW configuration changed")

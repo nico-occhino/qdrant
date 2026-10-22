@@ -99,6 +99,18 @@ class RecoveryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             stages.checked_generation(self.gen, COMMIT, "index", "hnsw-a")
 
+    def test_lmi_requires_ordinary_search_path_proof(self):
+        self.meta.update(kind="index", variant="lmi")
+        self.meta["report"].update(data=self.data, lmi=stages.LMI)
+        save(self.gen / "generation.json", self.meta)
+        with self.assertRaisesRegex(ValueError, "ordinary learned search proof"):
+            stages.checked_generation(self.gen, COMMIT, "index", "lmi")
+        self.meta["persistent_report"]["ordinary_lmi_query_path"] = {
+            "learned_delta":1, "plain_fallback_delta":0,
+            "returned_ids_1_based":list(range(1, 11))}
+        save(self.gen / "generation.json", self.meta)
+        stages.checked_generation(self.gen, COMMIT, "index", "lmi")
+
     def test_evaluation_rejects_wrong_hardware_before_search(self):
         campaign = self.root / "campaign"
         save(campaign / "manifest.json", {"protocol":"independent-recovery-v2",
