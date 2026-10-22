@@ -303,6 +303,25 @@ async fn sisap23_recovery_index() {
     );
 }
 
+#[test]
+#[ignore = "opt-in topology inventory on a separately verified scratch copy; no optimization"]
+fn sisap23_recovery_inspect_topology() {
+    let path = checked_collection();
+    let topology = segment_topology(&path);
+    let live = topology
+        .iter()
+        .filter(|(_, row)| row["live_points"].as_u64().unwrap() > 0)
+        .count();
+    println!(
+        "SISAP23_SEGMENT_TOPOLOGY {}",
+        serde_json::json!({
+            "physical_segments": topology.len(),
+            "live_segments": live,
+            "segments": topology.into_iter().map(|(_, row)| row).collect::<Vec<_>>(),
+        })
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "explicit verification of new persistent staging; no index building"]
 async fn sisap23_recovery_verify() {

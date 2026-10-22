@@ -40,7 +40,7 @@ use crate::config::{CollectionConfigInternal, CollectionParams};
 use crate::operations::OperationWithClockTag;
 use crate::operations::shard_selector_internal::ShardSelectorInternal;
 use crate::operations::shared_storage_config::SharedStorageConfig;
-use crate::operations::types::{Datatype, VectorsConfig};
+use crate::operations::types::{CollectionStatus, Datatype, VectorsConfig};
 use crate::operations::vector_params_builder::VectorParamsBuilder;
 use crate::optimizers_builder::OptimizersConfig;
 use crate::shards::channel_service::ChannelService;
@@ -139,8 +139,8 @@ fn find_named(path: &Path, name: &str, out: &mut Vec<PathBuf>) {
         }
     }
 }
-fn locate_segment(collection: &Path) -> PathBuf {
-    let mut found = Vec::new();
+fn segment_topology(collection: &Path) -> Vec<(PathBuf, serde_json::Value)> {
+    let mut segments = Vec::new();
     for entry in fs::read_dir(collection.join("0/segments")).unwrap() {
         let path = entry.unwrap().path();
         if !path.is_dir() || Uuid::parse_str(path.file_name().unwrap().to_str().unwrap()).is_err() {
@@ -148,26 +148,68 @@ fn locate_segment(collection: &Path) -> PathBuf {
         }
         let segment = load_index(&path);
         let tracker = segment.id_tracker.borrow();
-        if tracker.available_point_count() == 0 {
-            assert_eq!(tracker.total_point_count(), tracker.deleted_point_count());
+        let live = tracker.available_point_count();
+        let total = tracker.total_point_count();
+        let deleted = tracker.deleted_point_count();
+        if live == 0 {
+            assert_eq!(
+                total,
+                deleted,
+                "empty segment has nondeleted point slots: {}",
+                path.display()
+            );
             for data in segment.vector_data.values() {
                 let storage = data.vector_storage.borrow();
-                assert!(storage.total_vector_count() <= tracker.total_point_count());
+                assert!(storage.total_vector_count() <= total);
                 for offset in 0..storage.total_vector_count() as u32 {
                     assert!(tracker.is_deleted_point(offset), "orphan live vector slot");
                     assert!(tracker.external_id(offset).is_none());
                 }
             }
-        } else {
-            found.push(path);
         }
+        let indexes: Vec<_> = segment
+            .vector_data
+            .iter()
+            .map(|(name, data)| {
+                let index = data.vector_index.borrow();
+                serde_json::json!({
+                    "name": name, "kind": index_kind(&index),
+                    "indexed_vectors": index.indexed_vector_count(),
+                })
+            })
+            .collect();
+        segments.push((
+            path.clone(),
+            serde_json::json!({
+                "uuid": path.file_name().unwrap().to_string_lossy(),
+                "live_points": live, "total_points": total, "deleted_points": deleted,
+                "indexes": indexes,
+            }),
+        ));
     }
+    segments.sort_by(|a, b| a.0.cmp(&b.0));
+    segments
+}
+
+fn locate_segment(collection: &Path) -> PathBuf {
+    let segments = segment_topology(collection);
+    let found: Vec<_> = segments
+        .iter()
+        .filter(|(_, summary)| summary["live_points"].as_u64().unwrap() > 0)
+        .collect();
     assert_eq!(
         found.len(),
         1,
-        "expected exactly one nonempty search segment"
+        "expected exactly one nonempty search segment; topology={}",
+        serde_json::to_string(
+            &segments
+                .iter()
+                .map(|(_, summary)| summary)
+                .collect::<Vec<_>>()
+        )
+        .unwrap()
     );
-    found.pop().unwrap()
+    found[0].0.clone()
 }
 
 fn load_index(path: &Path) -> segment::segment::Segment {
@@ -411,7 +453,9 @@ async fn reopen_for_verification(collection_path: &Path, snapshots: &Path, expec
 
 fn optimizer_complete(
     status: &crate::operations::types::OptimizersStatus,
+    collection_status: CollectionStatus,
     indexed: Option<usize>,
+    points: Option<usize>,
     expected: usize,
 ) -> Result<bool, String> {
     if let crate::operations::types::OptimizersStatus::Error(error) = status {
@@ -419,22 +463,57 @@ fn optimizer_complete(
             "benchmark optimizer failed; refusing automatic retries: {error}"
         ));
     }
-    Ok(indexed == Some(expected))
+    if indexed.is_some_and(|count| count > expected) || points.is_some_and(|count| count > expected)
+    {
+        return Err(format!(
+            "benchmark count exceeds corpus: indexed={indexed:?} points={points:?} expected={expected}"
+        ));
+    }
+    Ok(indexed == Some(expected)
+        && points == Some(expected)
+        && collection_status == CollectionStatus::Green)
 }
 
 async fn wait_for_index(collection: &Collection, expected: usize) -> Result<f64, String> {
     let started = Instant::now();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(172800);
+    let mut last_log = Instant::now();
     loop {
         let info = collection
             .info(&ShardSelectorInternal::All)
             .await
             .map_err(|e| e.to_string())?;
-        if optimizer_complete(&info.optimizer_status, info.indexed_vectors_count, expected)? {
+        let complete = optimizer_complete(
+            &info.optimizer_status,
+            info.status,
+            info.indexed_vectors_count,
+            info.points_count,
+            expected,
+        )?;
+        if complete || last_log.elapsed() >= Duration::from_secs(30) {
+            println!(
+                "SISAP23_OPTIMIZER_STATE status={:?} optimizer_status={:?} indexed={:?} points={:?} segments={} elapsed_s={:.1}",
+                info.status,
+                info.optimizer_status,
+                info.indexed_vectors_count,
+                info.points_count,
+                info.segments_count,
+                started.elapsed().as_secs_f64()
+            );
+            last_log = Instant::now();
+        }
+        if complete {
             return Ok(started.elapsed().as_secs_f64());
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err("index construction timed out without completion".into());
+            return Err(format!(
+                "index construction timed out: status={:?} optimizer_status={:?} indexed={:?} points={:?} segments={}",
+                info.status,
+                info.optimizer_status,
+                info.indexed_vectors_count,
+                info.points_count,
+                info.segments_count
+            ));
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
@@ -445,18 +524,124 @@ fn sisap23_optimizer_error_fails_even_with_a_complete_count() {
     use crate::operations::types::OptimizersStatus;
     let error = OptimizersStatus::Error("LMI_MEMORY_ADMISSION: insufficient memory".into());
     assert!(
-        optimizer_complete(&error, Some(N), N)
+        optimizer_complete(&error, CollectionStatus::Green, Some(N), Some(N), N)
             .unwrap_err()
             .contains("LMI_MEMORY_ADMISSION")
     );
     assert_eq!(
-        optimizer_complete(&OptimizersStatus::Ok, Some(N), N),
+        optimizer_complete(
+            &OptimizersStatus::Ok,
+            CollectionStatus::Green,
+            Some(N),
+            Some(N),
+            N
+        ),
         Ok(true)
     );
     assert_eq!(
-        optimizer_complete(&OptimizersStatus::Ok, Some(N - 1), N),
+        optimizer_complete(
+            &OptimizersStatus::Ok,
+            CollectionStatus::Green,
+            Some(N - 1),
+            Some(N),
+            N
+        ),
         Ok(false)
     );
+    assert_eq!(
+        optimizer_complete(
+            &OptimizersStatus::Ok,
+            CollectionStatus::Yellow,
+            Some(N),
+            Some(N),
+            N
+        ),
+        Ok(false),
+        "a running optimizer must not be stopped at the aggregate count"
+    );
+    assert_eq!(
+        optimizer_complete(
+            &OptimizersStatus::Ok,
+            CollectionStatus::Green,
+            Some(N),
+            Some(N - 1),
+            N
+        ),
+        Ok(false)
+    );
+    assert!(
+        optimizer_complete(
+            &OptimizersStatus::Ok,
+            CollectionStatus::Green,
+            Some(N + 1),
+            Some(N),
+            N
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn sisap23_one_live_segment_and_empty_segment_is_accepted_after_reload() {
+    use crate::collection_manager::fixtures::random_segment;
+    use segment::entry::SegmentEntry;
+    use segment::segment_constructor::simple_segment_constructor::build_simple_segment;
+
+    let temp = tempfile::tempdir().unwrap();
+    let segment_dir = temp.path().join("0/segments");
+    fs::create_dir_all(&segment_dir).unwrap();
+    let live = random_segment(&segment_dir, 100, 1, 4);
+    let live_path = live.segment_path.clone();
+    let empty = build_simple_segment(&segment_dir, 4, Distance::Dot).unwrap();
+    live.flush(true).unwrap();
+    empty.flush(true).unwrap();
+    drop(live);
+    drop(empty);
+    for _ in 0..2 {
+        assert_eq!(locate_segment(temp.path()), live_path);
+    }
+}
+
+#[test]
+fn sisap23_two_live_segments_remain_rejected_after_reload() {
+    use crate::collection_manager::fixtures::random_segment;
+    use segment::entry::SegmentEntry;
+
+    let temp = tempfile::tempdir().unwrap();
+    let segment_dir = temp.path().join("0/segments");
+    fs::create_dir_all(&segment_dir).unwrap();
+    let first = random_segment(&segment_dir, 100, 1, 4);
+    let second = random_segment(&segment_dir, 100, 1, 4);
+    first.flush(true).unwrap();
+    second.flush(true).unwrap();
+    drop(first);
+    drop(second);
+    for _ in 0..2 {
+        let topology = segment_topology(temp.path());
+        assert_eq!(topology.len(), 2);
+        assert!(topology.iter().all(|(_, row)| row["live_points"] == 1));
+        assert!(
+            topology
+                .iter()
+                .all(|(_, row)| row["indexes"][0]["kind"] == "plain")
+        );
+        // An aggregate count and Green status still do not imply one segment.
+        assert_eq!(
+            optimizer_complete(
+                &crate::operations::types::OptimizersStatus::Ok,
+                CollectionStatus::Green,
+                Some(2),
+                Some(2),
+                2,
+            ),
+            Ok(true)
+        );
+        let failure = std::panic::catch_unwind(|| locate_segment(temp.path()));
+        assert!(
+            failure.is_err(),
+            "two live segments cannot be accepted as one"
+        );
+    }
 }
 
 fn vector_index_bytes(
