@@ -27,7 +27,8 @@ finish() {
 trap finish EXIT
 trap 'echo "terminated by PBS signal at $(date -u +%FT%TZ)" >> "$SISAP23_BENCH_ROOT/provenance.txt"; exit 143' TERM INT
 
-module load "${PROTOBUF_MODULE:-protobuf}"
+module load "${PROTOBUF_MODULE:-protobuf/3.18.0}"
+test "$(protoc --version)" = "libprotoc 3.18.0"
 source "$QDRANT_DIR/tools/lmi/sisap23_matched/pbs/common-env.sh"
 setup_benchmark_build_env
 export CARGO_BUILD_JOBS=8
