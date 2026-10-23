@@ -474,7 +474,72 @@ fn optimizer_complete(
         && collection_status == CollectionStatus::Green)
 }
 
-async fn wait_for_index(collection: &Collection, expected: usize) -> Result<f64, String> {
+async fn active_indexes_ready(
+    collection: &Collection,
+    variant: Variant,
+    expected: usize,
+) -> Result<bool, String> {
+    let shard = collection
+        .shards_holder()
+        .read()
+        .await
+        .get_shard(0)
+        .ok_or_else(|| "shard 0 missing while checking index readiness".to_string())?
+        .clone();
+    let segments = shard
+        .local_segments_for_test()
+        .await
+        .map_err(|error| format!("cannot inspect active segment holder: {error}"))?;
+    let holder = segments.read();
+    if holder.iter().count() != holder.iter_original().count() {
+        return Ok(false);
+    }
+
+    let expected_kind = match variant {
+        Variant::Lmi => "lmi",
+        Variant::HnswA | Variant::HnswB => "hnsw",
+        Variant::Plain => return Err("Plain is not an index-build target".to_string()),
+    };
+    let mut live_segments = 0usize;
+    let mut live_points = 0usize;
+    for (_, locked) in holder.iter_original() {
+        let segment = locked.read();
+        let points = segment.available_point_count();
+        if points == 0 {
+            continue;
+        }
+        live_segments += 1;
+        live_points += points;
+
+        let config = &segment.segment_config.vector_data[DEFAULT_VECTOR_NAME];
+        let index = segment.vector_data[DEFAULT_VECTOR_NAME]
+            .vector_index
+            .borrow();
+        if index_kind(&index) != expected_kind
+            || !index.is_index()
+            || index.indexed_vector_count() != points
+        {
+            return Ok(false);
+        }
+        match (&variant, &config.index) {
+            (Variant::Lmi, Indexes::LmiTrained(_)) => {}
+            (Variant::HnswA | Variant::HnswB, Indexes::Hnsw(saved)) => {
+                let (m, ef) = variant.params();
+                if saved.m != m || saved.ef_construct != ef {
+                    return Ok(false);
+                }
+            }
+            _ => return Ok(false),
+        }
+    }
+    Ok(live_segments > 0 && live_points == expected)
+}
+
+async fn wait_for_index(
+    collection: &Collection,
+    variant: Variant,
+    expected: usize,
+) -> Result<f64, String> {
     let started = Instant::now();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(172800);
     let mut last_log = Instant::now();
@@ -483,13 +548,15 @@ async fn wait_for_index(collection: &Collection, expected: usize) -> Result<f64,
             .info(&ShardSelectorInternal::All)
             .await
             .map_err(|e| e.to_string())?;
-        let complete = optimizer_complete(
+        let optimizer_ready = optimizer_complete(
             &info.optimizer_status,
             info.status,
             info.indexed_vectors_count,
             info.points_count,
             expected,
         )?;
+        let complete =
+            optimizer_ready && active_indexes_ready(collection, variant, expected).await?;
         if complete || last_log.elapsed() >= Duration::from_secs(30) {
             println!(
                 "SISAP23_OPTIMIZER_STATE status={:?} optimizer_status={:?} indexed={:?} points={:?} segments={} elapsed_s={:.1}",
@@ -882,7 +949,7 @@ async fn sisap23_matched_build() {
             .await
             .unwrap();
         collection.recreate_optimizers_background();
-        match wait_for_index(&collection, N).await {
+        match wait_for_index(&collection, variant, N).await {
             Ok(seconds) => index_build_s = seconds,
             Err(error) => {
                 collection.stop_gracefully().await;

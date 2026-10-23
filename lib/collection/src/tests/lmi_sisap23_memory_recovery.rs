@@ -276,7 +276,7 @@ async fn sisap23_recovery_index() {
     }
     let collection = open_paused(&path, &snapshots).await;
     configure_index(&collection, variant).await;
-    let result = wait_for_index(&collection, N).await;
+    let result = wait_for_index(&collection, variant, N).await;
     if result.is_ok() {
         let shard = collection
             .shards_holder()
@@ -596,8 +596,11 @@ async fn sisap23_reuse_vectors_without_reingestion() {
     let collection = open_paused(&collection_path, &snapshots).await;
     // Everything after this point uses the existing vectors: no upsert API.
     configure_index(&collection, Variant::HnswA).await;
-    let result =
-        tokio::time::timeout(Duration::from_secs(60), wait_for_index(&collection, count)).await;
+    let result = tokio::time::timeout(
+        Duration::from_secs(60),
+        wait_for_index(&collection, Variant::HnswA, count),
+    )
+    .await;
     collection.stop_gracefully().await;
     drop(collection);
     result.unwrap().unwrap();

@@ -530,6 +530,12 @@ async fn run_small_lifecycle(variant: Variant, multi_segment: bool) {
     }
     wait_small(&collection, &path, &mut phases).await;
     if multi_segment {
+        assert!(
+            super::active_indexes_ready(&collection, Variant::Lmi, SMALL_N)
+                .await
+                .unwrap(),
+            "each live segment must be fully LMI-indexed before the fixture is considered ready"
+        );
         let topology = phase(&collection, &path, "two_lmi_segments_quiescent").await;
         let live: Vec<_> = topology["active_originals"]
             .as_array()
