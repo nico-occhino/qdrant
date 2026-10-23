@@ -88,7 +88,7 @@ run_one() {
 run_one merge_planner no 'collection_manager::optimizers::merge_optimizer::tests::two_live_segments_can_remain_at_one_segment_target'
 run_one optimizer_completion no 'tests::lmi_sisap23_matched::sisap23_optimizer_error_fails_even_with_a_complete_count'
 run_one one_live no 'tests::lmi_sisap23_matched::sisap23_one_live_segment_and_empty_segment_is_accepted_after_reload'
-run_one two_live no 'tests::lmi_sisap23_matched::sisap23_two_live_segments_remain_rejected_after_reload'
+run_one two_live_discovery no 'tests::lmi_sisap23_matched::sisap23_live_segment_discovery_accepts_two_after_reload'
 run_one float16_reuse yes 'tests::lmi_sisap23_matched::memory_recovery::sisap23_reuse_vectors_without_reingestion'
 run_one holder_retirement yes 'tests::lmi_sisap23_matched::small_lifecycle::sisap23_small_float16_holder_retirement'
 export SISAP23_SMALL_REPORT="$SISAP23_BENCH_ROOT/hnsw.lifecycle.json"

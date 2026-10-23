@@ -290,12 +290,24 @@ async fn sisap23_recovery_index() {
     collection.stop_gracefully().await;
     drop(collection);
     let seconds = result.unwrap_or_else(|e| panic!("{e}"));
-    let index_before = hash_index_tree(&locate_segment(&path));
+    let index_before: Vec<_> = live_segment_paths(&path)
+        .into_iter()
+        .map(|segment| {
+            let hash = hash_index_tree(&segment);
+            (segment, hash)
+        })
+        .collect();
     reopen_for_verification(&path, &snapshots, N).await;
     let persisted = verify_persisted_generation(&path, variant, N);
     assert_eq!(
         index_before,
-        hash_index_tree(&locate_segment(&path)),
+        live_segment_paths(&path)
+            .into_iter()
+            .map(|segment| {
+                let hash = hash_index_tree(&segment);
+                (segment, hash)
+            })
+            .collect::<Vec<_>>(),
         "verification rebuilt index"
     );
     let after = audit_data(&path, N, None);
@@ -362,9 +374,15 @@ async fn sisap23_recovery_verify() {
             "index changed during verification"
         );
     }
-    if variant != "data" {
-        verify_persisted_generation(&path, Variant::parse(&variant), N);
-    }
+    let index_audit = if variant != "data" {
+        Some(verify_persisted_generation(
+            &path,
+            Variant::parse(&variant),
+            N,
+        ))
+    } else {
+        None
+    };
     let ordinary_lmi_query_path = if variant == "lmi" {
         Some(verify_normal_lmi_query(&path, &snapshots).await)
     } else {
@@ -380,7 +398,7 @@ async fn sisap23_recovery_verify() {
     report(
         serde_json::json!({"format":"sisap23-persistent-verified-v2","accepted":true,
         "data":after,"normal_restarts":2,"index_files_unchanged":true,"ingested_points":0,
-        "ordinary_lmi_query_path":ordinary_lmi_query_path}),
+        "index":index_audit,"ordinary_lmi_query_path":ordinary_lmi_query_path}),
     );
 }
 
@@ -400,25 +418,54 @@ async fn verify_normal_lmi_query(path: &Path, snapshots: &Path) -> serde_json::V
         .clone();
     let counts = |segments: &shard::segment_holder::locked::LockedSegmentHolder| {
         let holder = segments.read();
-        let found: Vec<_> = holder
+        assert_eq!(holder.iter().count(), holder.iter_original().count());
+        let mut found: Vec<_> = holder
             .iter_original()
             .filter_map(|(_, locked)| {
                 let segment = locked.read();
+                let live = segment.available_point_count();
+                if live == 0 {
+                    return None;
+                }
+                assert!(matches!(
+                    &segment.segment_config.vector_data[DEFAULT_VECTOR_NAME].index,
+                    Indexes::LmiTrained(_)
+                ));
                 let index = segment.vector_data[DEFAULT_VECTOR_NAME]
                     .vector_index
                     .borrow();
-                match &*index {
-                    VectorIndexEnum::Lmi(lmi) => Some(lmi.search_path_counts_for_test()),
-                    _ => None,
-                }
+                let VectorIndexEnum::Lmi(lmi) = &*index else {
+                    panic!("active live segment is not an LMI index")
+                };
+                assert_eq!(index.indexed_vector_count(), live);
+                Some((
+                    segment.uuid.to_string(),
+                    live,
+                    lmi.search_path_counts_for_test(),
+                ))
             })
             .collect();
-        assert_eq!(found.len(), 1, "one active LMI segment required");
-        found[0]
+        assert!(!found.is_empty(), "no active live LMI segments");
+        found.sort_by(|a, b| a.0.cmp(&b.0));
+        found
     };
     let holder = shard.local_segments_for_test().await.unwrap();
     let before = counts(&holder);
     drop(holder);
+    assert_eq!(
+        before.iter().map(|(_, points, _)| points).sum::<usize>(),
+        N,
+        "active LMI segments do not account for the complete generation"
+    );
+    let physical_live: Vec<_> = super::live_segment_paths(path)
+        .iter()
+        .map(|segment| segment.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    let active_before: Vec<_> = before.iter().map(|(uuid, _, _)| uuid.clone()).collect();
+    assert_eq!(
+        active_before, physical_live,
+        "physical and active live segment topology differs"
+    );
     let mut vector = vec![0.0; DIM];
     vector[0] = 1.0;
     let found = collection
@@ -453,17 +500,34 @@ async fn verify_normal_lmi_query(path: &Path, snapshots: &Path) -> serde_json::V
     assert_eq!(ids.iter().collect::<HashSet<_>>().len(), ids.len());
     let holder = shard.local_segments_for_test().await.unwrap();
     let after = counts(&holder);
-    assert_eq!(
-        after.0,
-        before.0 + 1,
-        "ordinary search bypassed learned routing"
-    );
-    assert_eq!(after.1, before.1, "ordinary search fell back to Plain");
+    assert_eq!(after.len(), before.len());
+    let mut segment_deltas = Vec::new();
+    for ((before_uuid, before_live, before_counts), (after_uuid, after_live, after_counts)) in
+        before.iter().zip(&after)
+    {
+        assert_eq!(before_uuid, after_uuid);
+        assert_eq!(before_live, after_live);
+        assert_eq!(
+            after_counts.0,
+            before_counts.0 + 1,
+            "ordinary search bypassed learned routing for {before_uuid}"
+        );
+        assert_eq!(
+            after_counts.1, before_counts.1,
+            "ordinary search fell back to Plain for {before_uuid}"
+        );
+        segment_deltas.push(serde_json::json!({
+            "segment":after_uuid,"live_points":after_live,
+            "learned_delta":after_counts.0 - before_counts.0,
+            "plain_fallback_delta":after_counts.1 - before_counts.1
+        }));
+    }
     drop(holder);
     drop(shard);
     collection.stop_gracefully().await;
-    println!("SISAP23_NORMAL_QUERY_PATH learned_delta=1 plain_fallback_delta=0");
-    serde_json::json!({"learned_delta":1,"plain_fallback_delta":0,"returned_ids_1_based":ids})
+    println!("SISAP23_NORMAL_QUERY_PATH segments={segment_deltas:?}");
+    serde_json::json!({"live_segment_count":after.len(),"active_segments":segment_deltas,
+        "learned_delta":after.len(),"plain_fallback_delta":0,"returned_ids_1_based":ids})
 }
 
 #[test]

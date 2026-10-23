@@ -28,6 +28,20 @@ fn small_scratch() -> PathBuf {
     scratch
 }
 
+fn diagnostic_lmi_config() -> LmiConfig {
+    LmiConfig {
+        n_buckets: 2,
+        sample_size: 32,
+        hidden_dim: 8,
+        epochs: 1,
+        batch_size: 8,
+        routing_batch_size: 8,
+        kmeans_iterations: 1,
+        nprobe: 2,
+        seed: 7,
+    }
+}
+
 fn physical_dirs(collection_path: &Path) -> Vec<String> {
     let mut names: Vec<_> = fs::read_dir(collection_path.join("0/segments"))
         .unwrap()
@@ -496,17 +510,7 @@ async fn run_small_lifecycle(variant: Variant, multi_segment: bool) {
     }
     let mut phases = vec![plain_baseline];
     if variant == Variant::Lmi {
-        let diagnostic = LmiConfig {
-            n_buckets: 2,
-            sample_size: 32,
-            hidden_dim: 8,
-            epochs: 1,
-            batch_size: 8,
-            routing_batch_size: 8,
-            kmeans_iterations: 1,
-            nprobe: 2,
-            seed: 7,
-        };
+        let diagnostic = diagnostic_lmi_config();
         collection
             .update_vectors_from_diff(
                 &serde_json::from_value(serde_json::json!({"":{"lmi_config":diagnostic}})).unwrap(),
@@ -620,6 +624,16 @@ async fn run_small_lifecycle(variant: Variant, multi_segment: bool) {
             "physical": physical_after_stop, "topology": shutdown_topology
         })
     );
+    let persisted_index_audit = if variant == Variant::Lmi {
+        Some(super::verify_persisted_generation_with_lmi_config(
+            &path,
+            variant,
+            SMALL_N,
+            &diagnostic_lmi_config(),
+        ))
+    } else {
+        None
+    };
     let live_paths: Vec<_> = segment_topology(&path)
         .into_iter()
         .filter(|(_, row)| row["live_points"].as_u64().unwrap() > 0)
@@ -731,6 +745,7 @@ async fn run_small_lifecycle(variant: Variant, multi_segment: bool) {
             "physical_after_shutdown": physical_after_stop,
             "topology_after_shutdown": shutdown_topology,
             "fingerprint": active_fingerprint,
+            "persisted_index_audit": persisted_index_audit,
             "variant": variant.name(),
             "index_files": index_hashes.iter().map(|hashes| hashes.len()).sum::<usize>(),
             "query_path": query_path,

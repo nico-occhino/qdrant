@@ -19,7 +19,11 @@ export SISAP23_BENCH_ROOT="$SISAP23_RECOVERY_ROOT"
 mkdir -p "$SISAP23_RECOVERY_ROOT/job-logs"
 set -o noclobber
 exec > "$SISAP23_RECOVERY_ROOT/job-logs/$SISAP23_STAGE-$PBS_JOBID.log" 2>&1
-module load "${PROTOBUF_MODULE:-protobuf}"
+module load "${PROTOBUF_MODULE:-protobuf/3.18.0}"
+test "$(protoc --version)" = "libprotoc 3.18.0" || {
+  echo "recovery build requires protobuf 3.18.0" >&2
+  exit 2
+}
 source "$QDRANT_DIR/tools/lmi/sisap23_matched/pbs/common-env.sh"
 setup_benchmark_build_env
 export QDRANT_LMI_SAMPLE_BUDGET_BYTES=768000000

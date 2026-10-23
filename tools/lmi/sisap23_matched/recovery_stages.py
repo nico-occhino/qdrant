@@ -94,11 +94,43 @@ def check_generation_metadata(meta, commit, kind=None, variant=None):
                 "exhaustive corpus validation missing")
     elif meta["variant"] == "lmi":
         require(meta["report"].get("lmi") == LMI, "fixed LMI configuration changed")
+        index = meta["report"].get("index") or {}
+        index_segments = index.get("segments") or []
+        relative_paths = [s.get("segment_relative_path") for s in index_segments]
+        mapping = index.get("mapping") or {}
+        require(index.get("complete") is True
+                and index.get("segment_count") == len(index_segments) > 0
+                and len(set(relative_paths)) == len(relative_paths)
+                and all(isinstance(p, str) and p for p in relative_paths)
+                and all(s.get("index_kind") == "lmi" and s.get("points", 0) > 0
+                        and s.get("mapping_iterated") == s.get("points") for s in index_segments)
+                and sum(s.get("points", 0) for s in index_segments) == N
+                and mapping.get("iterated_mappings") == N
+                and mapping.get("missing_external_ids") == 0
+                and mapping.get("duplicate_ids") == 0 and mapping.get("invalid_ids") == 0
+                and mapping.get("mappings_outside_physical_slots") == 0,
+                "per-segment LMI persistence or point accounting is incomplete")
+        persistent_index = meta["persistent_report"].get("index") or {}
+        persistent_segments = persistent_index.get("segments") or []
+        require(persistent_index.get("complete") is True
+                and persistent_index.get("segment_count") == len(persistent_segments)
+                and persistent_segments == index_segments
+                and persistent_index.get("mapping") == mapping,
+                "scratch and persistent segment topology differs")
         query_path = meta["persistent_report"].get("ordinary_lmi_query_path") or {}
-        require(query_path.get("learned_delta") == 1
+        segments = query_path.get("active_segments") or []
+        ids = query_path.get("returned_ids_1_based", [])
+        indexed_points = {s.get("segment_uuid"): s.get("points") for s in persistent_segments}
+        active_points = {s.get("segment"): s.get("live_points") for s in segments}
+        require(segments and query_path.get("live_segment_count") == len(segments)
+                and active_points == indexed_points
+                and query_path.get("learned_delta") == len(segments)
                 and query_path.get("plain_fallback_delta") == 0
-                and len(query_path.get("returned_ids_1_based", [])) == 10,
-                "ordinary learned search proof missing")
+                and all(s.get("learned_delta") == 1 and s.get("plain_fallback_delta") == 0
+                        and s.get("live_points", 0) > 0 for s in segments)
+                and len(ids) == 10 and len(set(ids)) == 10
+                and all(1 <= i <= N for i in ids),
+                "ordinary learned search did not route every active LMI segment")
     else:
         require(meta["report"].get("hnsw_params") == {"hnsw-a":[16,100], "hnsw-b":[32,200]}.get(meta["variant"]),
                 "fixed HNSW configuration changed")

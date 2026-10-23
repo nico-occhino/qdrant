@@ -212,6 +212,14 @@ fn locate_segment(collection: &Path) -> PathBuf {
     found[0].0.clone()
 }
 
+fn live_segment_paths(collection: &Path) -> Vec<PathBuf> {
+    segment_topology(collection)
+        .into_iter()
+        .filter(|(_, summary)| summary["live_points"].as_u64().unwrap() > 0)
+        .map(|(path, _)| path)
+        .collect()
+}
+
 fn load_index(path: &Path) -> segment::segment::Segment {
     let uuid = Uuid::parse_str(path.file_name().unwrap().to_str().unwrap()).unwrap();
     load_segment(path, uuid, None, &AtomicBool::new(false), false).unwrap()
@@ -328,47 +336,116 @@ fn verify_persisted_generation(
     variant: Variant,
     expected: usize,
 ) -> serde_json::Value {
-    let segment_path = locate_segment(collection_path);
-    let segment = load_index(&segment_path);
-    let data = &segment.vector_data[DEFAULT_VECTOR_NAME];
-    let config = &segment.segment_config.vector_data[DEFAULT_VECTOR_NAME];
-    assert_eq!(config.size, DIM);
-    assert_eq!(config.distance, Distance::Cosine);
-    assert_eq!(config.datatype, Some(VectorStorageDatatype::Float16));
-    let index = data.vector_index.borrow();
+    verify_persisted_generation_with_lmi_config(collection_path, variant, expected, &lmi_config())
+}
+
+fn verify_persisted_generation_with_lmi_config(
+    collection_path: &Path,
+    variant: Variant,
+    expected: usize,
+    expected_lmi_config: &LmiConfig,
+) -> serde_json::Value {
+    let segment_paths = if variant == Variant::Lmi {
+        live_segment_paths(collection_path)
+    } else {
+        vec![locate_segment(collection_path)]
+    };
+    assert!(!segment_paths.is_empty(), "no live persisted segment");
     let expected_kind = match variant {
         Variant::Plain => "plain",
         Variant::Lmi => "lmi",
         Variant::HnswA | Variant::HnswB => "hnsw",
     };
-    assert_eq!(index_kind(&index), expected_kind);
-    let storage = data.vector_storage.borrow();
-    let tracker = segment.id_tracker.borrow();
-    assert_eq!(storage.total_vector_count(), expected);
-    assert_eq!(storage.available_vector_count(), expected);
-    assert_eq!(storage.deleted_vector_count(), 0);
-    assert_eq!(tracker.total_point_count(), expected);
-    assert_eq!(tracker.available_point_count(), expected);
-    assert_eq!(tracker.deleted_point_count(), 0);
     let mut mappings = MappingAudit::new(expected);
     let mut bad_reverse = 0usize;
     let mut absent = 0usize;
     let mut missing_versions = 0usize;
-    for (external, offset) in tracker.point_mappings().iter_from(None) {
-        let id = match external {
-            PointIdType::NumId(id) => id,
-            _ => 0,
-        };
-        mappings.observe(id, offset, expected);
-        bad_reverse += usize::from(tracker.external_id(offset) != Some(external));
-        missing_versions += usize::from(tracker.internal_version(offset).is_none());
-        if (offset as usize) < expected {
-            absent += usize::from(
-                storage.is_deleted_vector(offset)
-                    || storage.get_vector_opt::<Random>(offset).is_none(),
-            );
+    let mut point_sum = 0usize;
+    let mut index_bytes = 0u64;
+    let mut index_files = 0usize;
+    let mut segment_reports = Vec::new();
+    let mut relative_paths = Vec::new();
+    let (m, ef) = variant.params();
+    for segment_path in &segment_paths {
+        let segment = load_index(segment_path);
+        assert_eq!(segment.segment_config.vector_data.len(), 1);
+        assert!(segment.segment_config.sparse_vector_data.is_empty());
+        let data = &segment.vector_data[DEFAULT_VECTOR_NAME];
+        let config = &segment.segment_config.vector_data[DEFAULT_VECTOR_NAME];
+        assert_eq!(config.size, DIM);
+        assert_eq!(config.distance, Distance::Cosine);
+        assert_eq!(config.datatype, Some(VectorStorageDatatype::Float16));
+        let index = data.vector_index.borrow();
+        assert_eq!(index_kind(&index), expected_kind);
+        let storage = data.vector_storage.borrow();
+        let tracker = segment.id_tracker.borrow();
+        let live = tracker.available_point_count();
+        assert!(live > 0);
+        assert_eq!(storage.total_vector_count(), live);
+        assert_eq!(storage.available_vector_count(), live);
+        assert_eq!(storage.deleted_vector_count(), 0);
+        assert_eq!(tracker.total_point_count(), live);
+        assert_eq!(tracker.deleted_point_count(), 0);
+        point_sum += live;
+        for (external, offset) in tracker.point_mappings().iter_from(None) {
+            let id = match external {
+                PointIdType::NumId(id) => id,
+                _ => 0,
+            };
+            mappings.observe(id, offset, storage.total_vector_count());
+            bad_reverse += usize::from(tracker.external_id(offset) != Some(external));
+            missing_versions += usize::from(tracker.internal_version(offset).is_none());
+            if (offset as usize) < storage.total_vector_count() {
+                absent += usize::from(
+                    storage.is_deleted_vector(offset)
+                        || storage.get_vector_opt::<Random>(offset).is_none(),
+                );
+            }
         }
+        match variant {
+            Variant::Plain => assert!(matches!(config.index, Indexes::Plain {})),
+            Variant::Lmi => {
+                assert!(matches!(&config.index,
+                    Indexes::LmiTrained(saved) if saved == expected_lmi_config));
+                let meta: LmiStateMetadata = serde_json::from_slice(
+                    &fs::read(segment_path.join("vector_index/lmi_state.json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(&meta.config, expected_lmi_config);
+                assert_eq!(meta.indexed_live_count, Some(live));
+                let VectorIndexEnum::Lmi(lmi) = &*index else {
+                    unreachable!()
+                };
+                assert_eq!(lmi.routing_state().unwrap().postings().point_count(), live);
+            }
+            Variant::HnswA | Variant::HnswB => {
+                let Indexes::Hnsw(saved) = &config.index else {
+                    panic!("missing HNSW segment config")
+                };
+                assert_eq!(saved.m, m);
+                assert_eq!(saved.ef_construct, ef);
+                let graph: serde_json::Value = serde_json::from_slice(
+                    &fs::read(segment_path.join("vector_index/hnsw_config.json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(graph["m"], m);
+                assert_eq!(graph["ef_construct"], ef);
+                assert_eq!(graph["indexed_vector_count"], live);
+            }
+        }
+        let bytes = vector_index_bytes(segment_path, variant, &index).unwrap();
+        index_bytes += bytes;
+        let hashes = hash_index_tree(segment_path);
+        index_files += hashes.len();
+        relative_paths.push(segment_path.strip_prefix(collection_path).unwrap());
+        segment_reports.push(serde_json::json!({
+            "segment_uuid":segment_path.file_name().unwrap().to_string_lossy(),
+            "segment_relative_path":segment_path.strip_prefix(collection_path).unwrap(),
+            "points":live,"index_kind":expected_kind,"index_bytes":bytes,
+            "index_files":hashes.len(),"mapping_iterated":live
+        }));
     }
+    assert_eq!(point_sum, expected);
     let mapping = mappings.finish();
     assert_eq!(mappings.iterated, expected);
     assert_eq!(mapping["missing_external_ids"], 0);
@@ -378,45 +455,11 @@ fn verify_persisted_generation(
     assert_eq!(bad_reverse, 0);
     assert_eq!(missing_versions, 0);
     assert_eq!(absent, 0);
-    let (m, ef) = variant.params();
-    match variant {
-        Variant::Plain => assert!(matches!(config.index, Indexes::Plain {})),
-        Variant::Lmi => {
-            assert!(matches!(&config.index, Indexes::LmiTrained(saved) if *saved == lmi_config()));
-            let meta: LmiStateMetadata = serde_json::from_slice(
-                &fs::read(segment_path.join("vector_index/lmi_state.json")).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(meta.config, lmi_config());
-            assert_eq!(meta.indexed_live_count, Some(expected));
-            let VectorIndexEnum::Lmi(lmi) = &*index else {
-                unreachable!()
-            };
-            assert_eq!(
-                lmi.routing_state().unwrap().postings().point_count(),
-                expected
-            );
-        }
-        Variant::HnswA | Variant::HnswB => {
-            let Indexes::Hnsw(saved) = &config.index else {
-                panic!("missing HNSW segment config")
-            };
-            assert_eq!(saved.m, m);
-            assert_eq!(saved.ef_construct, ef);
-            let graph: serde_json::Value = serde_json::from_slice(
-                &fs::read(segment_path.join("vector_index/hnsw_config.json")).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(graph["m"], m);
-            assert_eq!(graph["ef_construct"], ef);
-            assert_eq!(graph["indexed_vector_count"], expected);
-        }
-    }
-    let index_bytes = vector_index_bytes(&segment_path, variant, &index).unwrap();
+    let single_path = (relative_paths.len() == 1).then(|| relative_paths[0]);
     serde_json::json!({"points":expected,"mapping":mapping,"index_kind":expected_kind,
-        "segment_relative_path":segment_path.strip_prefix(collection_path).unwrap(),
-        "index_bytes":index_bytes,"index_files":hash_index_tree(&segment_path).len(),
-        "complete":true})
+        "segment_count":segment_paths.len(),"segment_relative_path":single_path,
+        "segment_relative_paths":relative_paths,"segments":segment_reports,
+        "index_bytes":index_bytes,"index_files":index_files,"complete":true})
 }
 
 async fn open_paused(collection_path: &Path, snapshots: &Path) -> Collection {
@@ -670,7 +713,7 @@ fn sisap23_one_live_segment_and_empty_segment_is_accepted_after_reload() {
 }
 
 #[test]
-fn sisap23_two_live_segments_remain_rejected_after_reload() {
+fn sisap23_live_segment_discovery_accepts_two_after_reload() {
     use crate::collection_manager::fixtures::random_segment;
     use segment::entry::StorageSegmentEntry;
 
@@ -692,7 +735,8 @@ fn sisap23_two_live_segments_remain_rejected_after_reload() {
                 .iter()
                 .all(|(_, row)| row["indexes"][0]["kind"] == "plain")
         );
-        // An aggregate count and Green status still do not imply one segment.
+        assert_eq!(live_segment_paths(temp.path()).len(), 2);
+        // The legacy single-segment helper still refuses to choose arbitrarily.
         assert_eq!(
             optimizer_complete(
                 &crate::operations::types::OptimizersStatus::Ok,
@@ -706,7 +750,7 @@ fn sisap23_two_live_segments_remain_rejected_after_reload() {
         let failure = std::panic::catch_unwind(|| locate_segment(temp.path()));
         assert!(
             failure.is_err(),
-            "two live segments cannot be accepted as one"
+            "single-segment helper must not select one live segment arbitrarily"
         );
     }
 }
