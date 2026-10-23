@@ -203,23 +203,28 @@ def rust(name, env, attempt, label):
     log = attempt / f"{label}.log"
     resources = attempt / f"{label}.resources.txt"
     report = attempt / f"{label}.json"
+    compile_log = attempt / f"{label}.compile.log"
     env = {**os.environ, **env, "SISAP23_RECOVERY_REPORT": str(report)}
     # Compile separately: native CPU/RSS measurements must exclude rustc/linker.
-    built = timed(f"{label}_compile", subprocess.run, ["cargo", "test", "-p", "collection", "--release",
-        "--features", "lmi-training", "--locked", "--lib", "--no-run", "--message-format=json"],
-        cwd=REPO, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    (attempt / f"{label}.compile.log").write_text(built.stdout)
+    compile_command = ["cargo", "test", "-p", "collection", "--release",
+        "--features", "lmi-training", "--locked", "--lib", "--no-run", "--message-format=json"]
+    with compile_log.open("x") as compile_output:
+        built = timed(f"{label}_compile", subprocess.run, compile_command,
+            cwd=REPO, env=env, text=True, stdout=compile_output, stderr=subprocess.STDOUT)
+        compile_output.flush()
+        os.fsync(compile_output.fileno())
     require(built.returncode == 0, "compilation failed; see compile log; no native test executed")
     binaries = []
-    for line in built.stdout.splitlines():
-        try:
-            item = json.loads(line)
-        except ValueError:
-            continue
-        if (item.get("reason") == "compiler-artifact" and item.get("executable")
-                and item.get("target", {}).get("name") == "collection"
-                and item.get("profile", {}).get("test")):
-            binaries.append(item["executable"])
+    with compile_log.open(encoding="utf-8") as compile_input:
+        for line in compile_input:
+            try:
+                item = json.loads(line)
+            except ValueError:
+                continue
+            if (item.get("reason") == "compiler-artifact" and item.get("executable")
+                    and item.get("target", {}).get("name") == "collection"
+                    and item.get("profile", {}).get("test")):
+                binaries.append(item["executable"])
     require(len(set(binaries)) == 1, "unique collection test executable not found")
     with log.open("x") as out:
         result = timed(f"{label}_native", subprocess.run, ["/usr/bin/time", "-v", "-o", str(resources),
