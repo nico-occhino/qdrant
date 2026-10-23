@@ -416,7 +416,15 @@ fn verify_persisted_generation_with_lmi_config(
                 let VectorIndexEnum::Lmi(lmi) = &*index else {
                     unreachable!()
                 };
-                assert_eq!(lmi.routing_state().unwrap().postings().point_count(), live);
+                let postings = lmi.routing_state().unwrap().postings();
+                assert_eq!(postings.point_count(), live);
+                let mut offsets: Vec<_> = postings.iter().flatten().copied().collect();
+                offsets.sort_unstable();
+                assert_eq!(
+                    offsets,
+                    (0..live as u32).collect::<Vec<_>>(),
+                    "segment postings must cover each local point offset exactly once"
+                );
             }
             Variant::HnswA | Variant::HnswB => {
                 let Indexes::Hnsw(saved) = &config.index else {
