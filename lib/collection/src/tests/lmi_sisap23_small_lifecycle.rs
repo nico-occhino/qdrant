@@ -12,6 +12,7 @@ use shard::segment_holder::FlushMode;
 use shard::segment_holder::SegmentHolder;
 
 use crate::operations::types::CoreSearchRequest;
+use crate::shards::replica_set::ShardReplicaSet;
 
 const SMALL_N: usize = 64;
 const SMALL_DEADLINE: Duration = Duration::from_secs(120);
@@ -63,9 +64,11 @@ fn holder_rows(holder: &SegmentHolder) -> Vec<serde_json::Value> {
     rows
 }
 
-fn lmi_search_counts(holder: &shard::segment_holder::locked::LockedSegmentHolder) -> (u64, u64) {
+fn lmi_search_counts(
+    holder: &shard::segment_holder::locked::LockedSegmentHolder,
+) -> Vec<(String, (u64, u64))> {
     let holder = holder.read();
-    let counts: Vec<_> = holder
+    let mut counts: Vec<_> = holder
         .iter_original()
         .filter_map(|(_, locked)| {
             let segment = locked.read();
@@ -73,13 +76,162 @@ fn lmi_search_counts(holder: &shard::segment_holder::locked::LockedSegmentHolder
                 .vector_index
                 .borrow();
             match &*index {
-                VectorIndexEnum::Lmi(lmi) => Some(lmi.search_path_counts_for_test()),
+                VectorIndexEnum::Lmi(lmi)
+                    if segment.id_tracker.borrow().available_point_count() > 0 =>
+                {
+                    Some((segment.uuid.to_string(), lmi.search_path_counts_for_test()))
+                }
                 _ => None,
             }
         })
         .collect();
-    assert_eq!(counts.len(), 1, "expected one active learned index");
-    counts[0]
+    counts.sort_by(|a, b| a.0.cmp(&b.0));
+    counts
+}
+
+fn lmi_segment_members(
+    holder: &shard::segment_holder::locked::LockedSegmentHolder,
+) -> Vec<(String, Vec<u64>)> {
+    let holder = holder.read();
+    let mut members = Vec::new();
+    for (_, locked) in holder.iter_original() {
+        let segment = locked.read();
+        let tracker = segment.id_tracker.borrow();
+        if tracker.available_point_count() == 0 {
+            continue;
+        }
+        let index = segment.vector_data[DEFAULT_VECTOR_NAME]
+            .vector_index
+            .borrow();
+        assert!(
+            matches!(&*index, VectorIndexEnum::Lmi(_)),
+            "live segment is not LMI"
+        );
+        let ids = tracker
+            .point_mappings()
+            .iter_from(None)
+            .map(|(id, _)| match id {
+                PointIdType::NumId(id) => id,
+                _ => panic!("non-numeric external ID"),
+            })
+            .collect();
+        members.push((segment.uuid.to_string(), ids));
+    }
+    members.sort_by(|a, b| a.0.cmp(&b.0));
+    members
+}
+
+async fn exercise_collection_query(
+    collection: &Collection,
+    shard: &Arc<ShardReplicaSet>,
+    expected_live_lmi_segments: usize,
+    cross_segment_top_k: bool,
+) -> serde_json::Value {
+    let holder = shard.local_segments_for_test().await.unwrap();
+    let before = lmi_search_counts(&holder);
+    assert_eq!(before.len(), expected_live_lmi_segments);
+    let partitions = lmi_segment_members(&holder);
+    assert_eq!(partitions.len(), expected_live_lmi_segments);
+    if cross_segment_top_k {
+        assert_eq!(
+            partitions.iter().map(|(_, ids)| ids.len()).sum::<usize>(),
+            SMALL_N
+        );
+        assert!(partitions.iter().any(|(_, ids)| ids.contains(&1)));
+        assert!(partitions.iter().any(|(_, ids)| ids.contains(&33)));
+        let segment_for_1 = partitions
+            .iter()
+            .find(|(_, ids)| ids.contains(&1))
+            .unwrap()
+            .0
+            .clone();
+        let segment_for_33 = partitions
+            .iter()
+            .find(|(_, ids)| ids.contains(&33))
+            .unwrap()
+            .0
+            .clone();
+        assert_ne!(
+            segment_for_1, segment_for_33,
+            "reference neighbors must come from different segments"
+        );
+        let mut ids: Vec<_> = partitions
+            .iter()
+            .flat_map(|(_, ids)| ids.iter().copied())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, (1..=SMALL_N as u64).collect::<Vec<_>>());
+    }
+    drop(holder);
+
+    let mut vector = vec![0.0; DIM];
+    vector[1] = 1.0;
+    if cross_segment_top_k {
+        vector[33] = 1.0;
+    }
+    let found = collection
+        .search(
+            CoreSearchRequest {
+                query: QueryEnum::Nearest(NamedQuery::default_dense(vector)),
+                filter: None,
+                params: None,
+                limit: if cross_segment_top_k { 2 } else { 10 },
+                offset: 0,
+                with_payload: None,
+                with_vector: None,
+                score_threshold: None,
+            },
+            None,
+            None,
+            &ShardSelectorInternal::All,
+            None,
+            HwMeasurementAcc::new(),
+        )
+        .await
+        .unwrap();
+    let scored: Vec<(u64, f32)> = found
+        .into_iter()
+        .map(|point| match point.id {
+            segment::types::ExtendedPointId::NumId(id) => (id, point.score),
+            _ => panic!("unexpected nonnumeric result ID"),
+        })
+        .collect();
+    let ids: Vec<_> = scored.iter().map(|(id, _)| *id).collect();
+    assert_eq!(ids.iter().collect::<HashSet<_>>().len(), ids.len());
+    if cross_segment_top_k {
+        assert_eq!(ids.len(), 2);
+        assert_eq!(
+            ids.iter().copied().collect::<HashSet<_>>(),
+            HashSet::from([1, 33])
+        );
+        for (_, score) in &scored {
+            assert!((*score - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.002);
+        }
+    } else {
+        assert_eq!(ids.first(), Some(&1));
+    }
+
+    let holder = shard.local_segments_for_test().await.unwrap();
+    let after = lmi_search_counts(&holder);
+    assert_eq!(after.len(), before.len());
+    let mut learned_deltas = Vec::new();
+    for ((before_uuid, before_counts), (after_uuid, after_counts)) in before.iter().zip(&after) {
+        assert_eq!(before_uuid, after_uuid);
+        assert_eq!(
+            after_counts.0,
+            before_counts.0 + 1,
+            "segment {before_uuid} missed learned routing"
+        );
+        assert_eq!(
+            after_counts.1, before_counts.1,
+            "segment {before_uuid} fell back to Plain"
+        );
+        learned_deltas.push(
+            serde_json::json!({"segment":after_uuid,"learned_delta":1,"plain_fallback_delta":0}),
+        );
+    }
+    drop(holder);
+    serde_json::json!({"results":ids,"segments":learned_deltas,"partitions":partitions})
 }
 
 async fn phase(collection: &Collection, collection_path: &Path, label: &str) -> serde_json::Value {
@@ -218,7 +370,7 @@ async fn wait_small(collection: &Collection, path: &Path, phases: &mut Vec<serde
     phases.push(phase(collection, path, "optimizer_quiescent").await);
 }
 
-async fn run_small_lifecycle(variant: Variant) {
+async fn run_small_lifecycle(variant: Variant, multi_segment: bool) {
     let scratch = small_scratch();
 
     let tmp = tempfile::tempdir_in(&scratch).unwrap();
@@ -234,7 +386,9 @@ async fn run_small_lifecycle(variant: Variant) {
     optimizers.max_optimization_threads = Some(0);
     optimizers.indexing_threshold = Some(usize::MAX);
     optimizers.default_segment_number = 1;
-    optimizers.max_segment_size = Some(32_000_000);
+    // 48 KiB keeps two 32-point source segments separate during the targeted
+    // multi-segment test. The production-sized lifecycle keeps the normal cap.
+    optimizers.max_segment_size = Some(if multi_segment { 48 } else { 32_000_000 });
     let config = CollectionConfigInternal {
         params: CollectionParams {
             vectors: VectorsConfig::Single(vp),
@@ -293,18 +447,28 @@ async fn run_small_lifecycle(variant: Variant) {
             }
         })
         .collect();
-    shard
-        .update_local(
-            OperationWithClockTag::from(CollectionUpdateOperations::PointOperation(
-                PointOperations::UpsertPoints(PointInsertOperationsInternal::PointsList(points)),
-            )),
-            WaitUntil::Visible,
-            None,
-            HwMeasurementAcc::new(),
-            false,
-        )
-        .await
-        .unwrap();
+    let batches: Vec<Vec<_>> = if multi_segment {
+        points
+            .chunks(SMALL_N / 2)
+            .map(|chunk| chunk.to_vec())
+            .collect()
+    } else {
+        vec![points]
+    };
+    for batch in batches {
+        shard
+            .update_local(
+                OperationWithClockTag::from(CollectionUpdateOperations::PointOperation(
+                    PointOperations::UpsertPoints(PointInsertOperationsInternal::PointsList(batch)),
+                )),
+                WaitUntil::Visible,
+                None,
+                HwMeasurementAcc::new(),
+                false,
+            )
+            .await
+            .unwrap();
+    }
     shard.force_flush_local_for_test().await;
     drop(shard);
     collection.stop_gracefully().await;
@@ -312,7 +476,25 @@ async fn run_small_lifecycle(variant: Variant) {
 
     let before = super::memory_recovery::audit_data(&path, SMALL_N, None);
     let collection = open_paused(&path, &snapshots).await;
-    let mut phases = vec![phase(&collection, &path, "plain_before_index").await];
+    let plain_baseline = phase(&collection, &path, "plain_before_index").await;
+    if multi_segment {
+        let live: Vec<_> = plain_baseline["active_originals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["live"].as_u64().unwrap() > 0)
+            .collect();
+        assert_eq!(
+            live.len(),
+            2,
+            "fixture did not create two Plain source segments: {plain_baseline}"
+        );
+        assert!(
+            live.iter()
+                .all(|row| row["index_kind"] == "plain" && row["live"] == (SMALL_N / 2) as u64)
+        );
+    }
+    let mut phases = vec![plain_baseline];
     if variant == Variant::Lmi {
         let diagnostic = LmiConfig {
             n_buckets: 2,
@@ -331,11 +513,12 @@ async fn run_small_lifecycle(variant: Variant) {
             )
             .await
             .unwrap();
+        let max_segment_size = if multi_segment { 48 } else { 32_000_000 };
         collection
             .update_optimizer_params_from_diff(
-                serde_json::from_value(serde_json::json!({
+                &serde_json::from_value(serde_json::json!({
                     "max_optimization_threads":1,"indexing_threshold":1,
-                    "default_segment_number":1,"max_segment_size":32000000
+                    "default_segment_number":1,"max_segment_size":max_segment_size
                 }))
                 .unwrap(),
             )
@@ -346,6 +529,25 @@ async fn run_small_lifecycle(variant: Variant) {
         super::memory_recovery::configure_index(&collection, Variant::HnswA).await;
     }
     wait_small(&collection, &path, &mut phases).await;
+    if multi_segment {
+        let topology = phase(&collection, &path, "two_lmi_segments_quiescent").await;
+        let live: Vec<_> = topology["active_originals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["live"].as_u64().unwrap() > 0)
+            .collect();
+        assert_eq!(
+            live.len(),
+            2,
+            "expected two simultaneously active segments: {topology}"
+        );
+        for row in &live {
+            assert_eq!(row["index_kind"], "lmi");
+            assert_eq!(row["live"], (SMALL_N / 2) as u64);
+            assert_eq!(row["indexed_vectors"], (SMALL_N / 2) as u64);
+        }
+    }
     let shard = collection
         .shards_holder()
         .read()
@@ -359,8 +561,44 @@ async fn run_small_lifecycle(variant: Variant) {
         active_fingerprint,
         before["vector_fingerprint_xor_sha256"].as_str().unwrap()
     );
+    let pre_flush_query = if variant == Variant::Lmi {
+        Some(
+            exercise_collection_query(
+                &collection,
+                &shard,
+                if multi_segment { 2 } else { 1 },
+                multi_segment,
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+    phases.push(serde_json::json!({"phase":"pre_flush_query","query_path":pre_flush_query}));
     shard.force_flush_local_for_test().await;
-    phases.push(phase(&collection, &path, "synchronous_flush").await);
+    let flushed = phase(&collection, &path, "synchronous_flush").await;
+    if multi_segment {
+        let live: Vec<_> = flushed["active_originals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["live"].as_u64().unwrap() > 0)
+            .collect();
+        assert_eq!(
+            live.len(),
+            2,
+            "flush changed the two-live-segment topology: {flushed}"
+        );
+        assert!(live.iter().all(
+            |row| row["index_kind"] == "lmi" && row["indexed_vectors"] == (SMALL_N / 2) as u64
+        ));
+    }
+    let post_flush_query = if multi_segment {
+        Some(exercise_collection_query(&collection, &shard, 2, true).await)
+    } else {
+        None
+    };
+    phases.push(serde_json::json!({"phase":"synchronous_flush","query_path":post_flush_query}));
     drop(holder);
     drop(shard);
     collection.stop_gracefully().await;
@@ -376,24 +614,34 @@ async fn run_small_lifecycle(variant: Variant) {
             "physical": physical_after_stop, "topology": shutdown_topology
         })
     );
-    let segment_path = locate_segment(&path);
-    let index_hashes = hash_index_tree(&segment_path);
-    assert!(!index_hashes.is_empty(), "native index absent after flush");
-    let persisted = load_index(&segment_path);
-    let indexed = persisted.vector_data[DEFAULT_VECTOR_NAME]
-        .vector_index
-        .borrow();
-    assert_eq!(
-        index_kind(&indexed),
-        if variant == Variant::Lmi {
-            "lmi"
-        } else {
-            "hnsw"
-        }
-    );
-    assert_eq!(indexed.indexed_vector_count(), SMALL_N);
-    drop(indexed);
-    drop(persisted);
+    let live_paths: Vec<_> = segment_topology(&path)
+        .into_iter()
+        .filter(|(_, row)| row["live_points"].as_u64().unwrap() > 0)
+        .map(|(path, _)| path)
+        .collect();
+    let expected_live = if multi_segment { 2 } else { 1 };
+    assert_eq!(live_paths.len(), expected_live);
+    let index_hashes: Vec<_> = live_paths
+        .iter()
+        .map(|path| {
+            let hashes = hash_index_tree(path);
+            assert!(!hashes.is_empty(), "native index absent after flush");
+            let persisted = load_index(path);
+            let indexed = persisted.vector_data[DEFAULT_VECTOR_NAME]
+                .vector_index
+                .borrow();
+            assert_eq!(
+                index_kind(&indexed),
+                if variant == Variant::Lmi {
+                    "lmi"
+                } else {
+                    "hnsw"
+                }
+            );
+            assert_eq!(indexed.indexed_vector_count(), SMALL_N / expected_live);
+            hashes
+        })
+        .collect();
     let collection = open_paused(&path, &snapshots).await;
     let restart = phase(&collection, &path, "clean_restart").await;
     let live: Vec<_> = restart["active_originals"]
@@ -404,18 +652,21 @@ async fn run_small_lifecycle(variant: Variant) {
         .collect();
     assert_eq!(
         live.len(),
-        1,
-        "restart did not yield one live search segment"
+        expected_live,
+        "restart changed live segment topology"
     );
-    assert_eq!(
-        live[0]["index_kind"],
-        if variant == Variant::Lmi {
-            "lmi"
-        } else {
-            "hnsw"
-        }
-    );
-    assert_eq!(live[0]["indexed_vectors"], SMALL_N);
+    for row in &live {
+        assert_eq!(
+            row["index_kind"],
+            if variant == Variant::Lmi {
+                "lmi"
+            } else {
+                "hnsw"
+            }
+        );
+        assert_eq!(row["live"], (SMALL_N / expected_live) as u64);
+        assert_eq!(row["indexed_vectors"], (SMALL_N / expected_live) as u64);
+    }
     phases.push(restart);
     let shard = collection
         .shards_holder()
@@ -429,45 +680,26 @@ async fn run_small_lifecycle(variant: Variant) {
     let before_search = (variant == Variant::Lmi).then(|| lmi_search_counts(&holder));
     drop(holder);
     let query_path = if let Some(before_search) = before_search {
-        let mut vector = vec![0.0; DIM];
-        vector[1] = 1.0;
-        let found = collection
-            .search(
-                CoreSearchRequest {
-                    query: QueryEnum::Nearest(NamedQuery::default_dense(vector)),
-                    filter: None,
-                    params: None,
-                    limit: 10,
-                    offset: 0,
-                    with_payload: None,
-                    with_vector: None,
-                    score_threshold: None,
-                },
-                None,
-                None,
-                &ShardSelectorInternal::All,
-                None,
-                HwMeasurementAcc::new(),
-            )
-            .await
-            .unwrap();
-        assert!(matches!(
-            found.first().unwrap().id,
-            segment::types::ExtendedPointId::NumId(1)
-        ));
-        let holder = shard.local_segments_for_test().await.unwrap();
-        let after_search = lmi_search_counts(&holder);
-        assert_eq!(after_search.0, before_search.0 + 1, "learned path unused");
-        assert_eq!(after_search.1, before_search.1, "Plain fallback executed");
-        println!("SISAP23_SMALL_QUERY_PATH learned_delta=1 plain_fallback_delta=0");
-        Some(serde_json::json!({"learned_delta":1,"plain_fallback_delta":0}))
+        assert_eq!(before_search.len(), expected_live);
+        let query_path =
+            exercise_collection_query(&collection, &shard, expected_live, multi_segment).await;
+        println!("SISAP23_SMALL_QUERY_PATH {}", query_path);
+        Some(query_path)
     } else {
         None
     };
     drop(shard);
     collection.stop_gracefully().await;
     drop(collection);
-    assert_eq!(hash_index_tree(&locate_segment(&path)), index_hashes);
+    let after_hashes: Vec<_> = segment_topology(&path)
+        .into_iter()
+        .filter(|(_, row)| row["live_points"].as_u64().unwrap() > 0)
+        .map(|(path, _)| hash_index_tree(&path))
+        .collect();
+    assert_eq!(
+        after_hashes, index_hashes,
+        "query or restart changed LMI files"
+    );
     let after = super::memory_recovery::audit_data(&path, SMALL_N, None);
     assert_eq!(
         before["vector_fingerprint_xor_sha256"],
@@ -494,7 +726,7 @@ async fn run_small_lifecycle(variant: Variant) {
             "topology_after_shutdown": shutdown_topology,
             "fingerprint": active_fingerprint,
             "variant": variant.name(),
-            "index_files": index_hashes.len(),
+            "index_files": index_hashes.iter().map(|hashes| hashes.len()).sum::<usize>(),
             "query_path": query_path,
             "ingested_once": true,
             "reused_vectors_for_index": true
@@ -505,13 +737,19 @@ async fn run_small_lifecycle(variant: Variant) {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "opt-in disposable Float16 native HNSW collection; no SISAP input"]
 async fn sisap23_small_float16_hnsw_lifecycle() {
-    run_small_lifecycle(Variant::HnswA).await;
+    run_small_lifecycle(Variant::HnswA, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "opt-in disposable Float16 native LMI collection; no SISAP input"]
 async fn sisap23_small_float16_lmi_lifecycle() {
-    run_small_lifecycle(Variant::Lmi).await;
+    run_small_lifecycle(Variant::Lmi, false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "opt-in two-active-segment Float16 LMI collection search; no SISAP input"]
+async fn sisap23_small_float16_lmi_two_segment_search() {
+    run_small_lifecycle(Variant::Lmi, true).await;
 }
 
 fn assert_small_segment(path: &Path, expected_id: u64) {

@@ -1,0 +1,103 @@
+#!/bin/bash
+#PBS -N sisap23-topology-dev
+#PBS -l select=1:ncpus=8:mem=32gb:scratch_local=100gb
+#PBS -l walltime=06:00:00
+#PBS -j oe
+set -Eeuo pipefail
+umask 077
+: "${PBS_JOBID:?PBS batch allocation required}"
+: "${SCRATCHDIR:?PBS scratch required}"
+: "${SISAP23_REVIEWED_COMMIT:?exact committed source SHA required}"
+export WORKSPACE="${WORKSPACE:-/storage/budejovice1/home/nico/lmi-metacentrum}"
+export QDRANT_DIR="${QDRANT_DIR:-$WORKSPACE/qdrant-sisap23-lifecycle-dev}"
+test "$(git -C "$QDRANT_DIR" branch --show-current)" = thesis/sisap23-lifecycle-dev
+test "$(git -C "$QDRANT_DIR" rev-parse HEAD)" = "$SISAP23_REVIEWED_COMMIT"
+test -z "$(git -C "$QDRANT_DIR" status --porcelain)"
+case "$(cat /proc/self/cgroup)" in *"$PBS_JOBID"*) ;; *) echo "process lacks PBS cgroup membership" >&2; exit 2;; esac
+export SISAP23_BENCH_ROOT="$WORKSPACE/development-$PBS_JOBID"
+mkdir "$SISAP23_BENCH_ROOT"
+set -o noclobber
+exec > "$SISAP23_BENCH_ROOT/job.log" 2>&1
+status=1
+finish() {
+  rc=$?
+  printf 'finish_utc=%s\nexit_status=%s\n' "$(date -u +%FT%TZ)" "$rc" >> "$SISAP23_BENCH_ROOT/provenance.txt"
+  exit "$rc"
+}
+trap finish EXIT
+trap 'echo "terminated by PBS signal at $(date -u +%FT%TZ)" >> "$SISAP23_BENCH_ROOT/provenance.txt"; exit 143' TERM INT
+
+module load "${PROTOBUF_MODULE:-protobuf}"
+source "$QDRANT_DIR/tools/lmi/sisap23_matched/pbs/common-env.sh"
+setup_benchmark_build_env
+export CARGO_BUILD_JOBS=8
+export OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 RAYON_NUM_THREADS=8
+export RUST_BACKTRACE=1 RUST_LOG=info
+export SISAP23_SMALL_RESULTS="$SISAP23_BENCH_ROOT"
+export SISAP23_SMALL_SCRATCH="$SCRATCHDIR/sisap23-small"
+mkdir "$SISAP23_SMALL_SCRATCH"
+cd "$QDRANT_DIR"
+{
+  printf 'job=%s\nnode=%s\nsource_commit=%s\nstart_utc=%s\n' \
+    "$PBS_JOBID" "$(hostname)" "$SISAP23_REVIEWED_COMMIT" "$(date -u +%FT%TZ)"
+  cat /proc/self/cgroup
+  grep '^Cpus_allowed_list:' /proc/self/status
+  git show -s --format='commit=%H%nparent=%P%nsubject=%s' HEAD
+} > "$SISAP23_BENCH_ROOT/provenance.txt"
+
+/usr/bin/time -v -o "$SISAP23_BENCH_ROOT/compile.resources.txt" \
+  cargo test -p collection --release --features lmi-training --locked --lib --no-run \
+    --message-format=json > "$SISAP23_BENCH_ROOT/compile.jsonl" \
+    2> "$SISAP23_BENCH_ROOT/compile.stderr"
+export SISAP23_TEST_BIN
+SISAP23_TEST_BIN=$(python - "$SISAP23_BENCH_ROOT/compile.jsonl" <<'PY'
+import json, sys
+items=[]
+for line in open(sys.argv[1], encoding="utf-8"):
+    try: item=json.loads(line)
+    except json.JSONDecodeError: continue
+    if item.get("reason")=="compiler-artifact" and item.get("target",{}).get("name")=="collection" and item.get("executable"):
+        items.append(item["executable"])
+if len(items)!=1: raise SystemExit(f"expected one collection executable, got {len(items)}")
+print(items[0])
+PY
+)
+test -x "$SISAP23_TEST_BIN"
+sha256sum "$SISAP23_TEST_BIN" > "$SISAP23_BENCH_ROOT/test-binary.sha256"
+
+failed=0
+run_one() {
+  local label="$1" ignored="$2" selector="$3" rc
+  local flags=(--exact "$selector" --nocapture --test-threads=1)
+  [[ "$ignored" == yes ]] && flags+=(--ignored)
+  printf '%s\n' "$SISAP23_TEST_BIN ${flags[*]}" > "$SISAP23_BENCH_ROOT/$label.command.txt"
+  set +e
+  timeout -k 30s 900s /usr/bin/time -v -o "$SISAP23_BENCH_ROOT/$label.resources.txt" \
+    "$SISAP23_TEST_BIN" "${flags[@]}" > "$SISAP23_BENCH_ROOT/$label.stdout" 2> "$SISAP23_BENCH_ROOT/$label.stderr"
+  rc=$?
+  set -e
+  printf 'exit_status=%s\n' "$rc" > "$SISAP23_BENCH_ROOT/$label.status.txt"
+  if [[ $rc -ne 0 ]] || ! grep -Fq 'test result: ok. 1 passed; 0 failed;' "$SISAP23_BENCH_ROOT/$label.stdout"; then
+    failed=1
+    printf 'FAIL %s exit=%s\n' "$label" "$rc"
+  else
+    printf 'PASS %s\n' "$label"
+  fi
+}
+run_one merge_planner no 'collection_manager::optimizers::merge_optimizer::tests::two_live_segments_can_remain_at_one_segment_target'
+run_one optimizer_completion no 'tests::lmi_sisap23_matched::sisap23_optimizer_error_fails_even_with_a_complete_count'
+run_one one_live no 'tests::lmi_sisap23_matched::sisap23_one_live_segment_and_empty_segment_is_accepted_after_reload'
+run_one two_live no 'tests::lmi_sisap23_matched::sisap23_two_live_segments_remain_rejected_after_reload'
+run_one float16_reuse yes 'tests::lmi_sisap23_matched::memory_recovery::sisap23_reuse_vectors_without_reingestion'
+run_one holder_retirement yes 'tests::lmi_sisap23_matched::small_lifecycle::sisap23_small_float16_holder_retirement'
+export SISAP23_SMALL_REPORT="$SISAP23_BENCH_ROOT/hnsw.lifecycle.json"
+run_one hnsw_lifecycle yes 'tests::lmi_sisap23_matched::small_lifecycle::sisap23_small_float16_hnsw_lifecycle'
+export SISAP23_SMALL_REPORT="$SISAP23_BENCH_ROOT/lmi.lifecycle.json"
+run_one lmi_lifecycle yes 'tests::lmi_sisap23_matched::small_lifecycle::sisap23_small_float16_lmi_lifecycle'
+export SISAP23_SMALL_REPORT="$SISAP23_BENCH_ROOT/lmi-two.lifecycle.json"
+run_one lmi_two_segments yes 'tests::lmi_sisap23_matched::small_lifecycle::sisap23_small_float16_lmi_two_segment_search'
+if [[ $failed -ne 0 ]]; then
+  echo 'development checks failed; no acceptance marker written' >&2
+  exit 1
+fi
+printf 'all_nine_passed=1\n' >> "$SISAP23_BENCH_ROOT/provenance.txt"
