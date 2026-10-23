@@ -516,7 +516,7 @@ async fn run_small_lifecycle(variant: Variant, multi_segment: bool) {
         let max_segment_size = if multi_segment { 48 } else { 32_000_000 };
         collection
             .update_optimizer_params_from_diff(
-                &serde_json::from_value(serde_json::json!({
+                serde_json::from_value(serde_json::json!({
                     "max_optimization_threads":1,"indexing_threshold":1,
                     "default_segment_number":1,"max_segment_size":max_segment_size
                 }))
