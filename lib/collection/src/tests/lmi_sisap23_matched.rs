@@ -387,7 +387,9 @@ fn verify_persisted_generation_with_lmi_config(
         assert_eq!(tracker.total_point_count(), live);
         assert_eq!(tracker.deleted_point_count(), 0);
         point_sum += live;
+        let mut live_offsets = Vec::with_capacity(live);
         for (external, offset) in tracker.point_mappings().iter_from(None) {
+            live_offsets.push(offset);
             let id = match external {
                 PointIdType::NumId(id) => id,
                 _ => 0,
@@ -420,10 +422,10 @@ fn verify_persisted_generation_with_lmi_config(
                 assert_eq!(postings.point_count(), live);
                 let mut offsets: Vec<_> = postings.iter().flatten().copied().collect();
                 offsets.sort_unstable();
+                live_offsets.sort_unstable();
                 assert_eq!(
-                    offsets,
-                    (0..live as u32).collect::<Vec<_>>(),
-                    "segment postings must cover each local point offset exactly once"
+                    offsets, live_offsets,
+                    "segment postings must cover each live point offset exactly once"
                 );
             }
             Variant::HnswA | Variant::HnswB => {
