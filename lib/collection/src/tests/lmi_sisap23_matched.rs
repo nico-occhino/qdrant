@@ -532,7 +532,7 @@ async fn active_indexes_ready(
     let segments = shard
         .local_segments_for_test()
         .await
-        .map_err(|error| format!("cannot inspect active segment holder: {error}"))?;
+        .ok_or_else(|| "cannot inspect active segment holder".to_string())?;
     let holder = segments.read();
     if holder.iter().count() != holder.iter_original().count() {
         return Ok(false);
