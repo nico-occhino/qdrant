@@ -17,6 +17,7 @@ use common::universal_io::MmapFs;
 use half::f16;
 use segment::data_types::query_context::VectorQueryContext;
 use segment::data_types::vectors::{DEFAULT_VECTOR_NAME, QueryVector};
+use segment::entry::ReadSegmentEntry;
 use segment::id_tracker::IdTrackerRead;
 use segment::index::VectorIndexRead;
 use segment::index::candidate_scoring::score_candidates;
