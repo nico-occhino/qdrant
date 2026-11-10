@@ -1,6 +1,6 @@
 //! Native collection mixed-index lifecycle experiment; synthetic data only.
-use super::*;
-use crate::operations::types::Datatype;
+use std::collections::BTreeMap;
+
 use common::generic_consts::Random;
 use common::types::DeferredBehavior;
 use segment::data_types::vectors::VectorInternal;
@@ -10,7 +10,9 @@ use segment::index::VectorIndexEnum;
 use segment::types::VectorStorageDatatype;
 use segment::vector_storage::VectorStorageRead;
 use shard::segment_holder::locked::LockedSegmentHolder;
-use std::collections::BTreeMap;
+
+use super::*;
+use crate::operations::types::Datatype;
 
 const N: u64 = 10_000;
 const BASE_ID: u64 = 1_000_003;
