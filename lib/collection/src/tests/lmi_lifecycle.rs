@@ -54,6 +54,7 @@ fn lmi_generations(root: &Path) -> Vec<(usize, [Vec<u8>; 3])> {
     }
     let mut states = Vec::new();
     visit(root, &mut states);
+    states.sort_unstable();
     states
         .into_iter()
         .map(|state_path| {
@@ -502,3 +503,6 @@ async fn lmi_collection_builds_and_searches_with_fresh_plain_writes() {
     );
     restored.stop_gracefully().await;
 }
+
+#[cfg(test)]
+mod native_segment_delta;
