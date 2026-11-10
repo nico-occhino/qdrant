@@ -6,6 +6,13 @@ impl MemoryReporter for VectorIndexEnum {
         match self {
             // Plain index: no files, no extra memory (searches storage directly)
             VectorIndexEnum::Plain(_) => ComponentMemoryUsage::empty(),
+            // Router and postings are decoded into heap; files are persistence only.
+            // Authoritative vector storage is accounted for separately.
+            VectorIndexEnum::Lmi(index) => ComponentMemoryUsage::from_files_and_ram(
+                index.state_file_paths(),
+                FileStorageIntent::OnDisk,
+                index.auxiliary_heap_bytes(),
+            ),
 
             // HNSW: graph files, intent depends on how the links are actually held
             VectorIndexEnum::Hnsw(index) => {

@@ -8,14 +8,15 @@ use common::flags::FeatureFlags;
 use common::progress_tracker::ProgressTracker;
 use rand::Rng;
 
-use crate::common::operation_error::OperationResult;
+use crate::common::operation_error::{OperationError, OperationResult};
 use crate::id_tracker::IdTrackerEnum;
 use crate::index::VectorIndexEnum;
 use crate::index::hnsw_index::gpu::gpu_devices_manager::LockedGpuDevice;
 use crate::index::hnsw_index::hnsw::{HNSWIndex, HnswIndexOpenArgs};
+use crate::index::lmi_index::LmiIndex;
 use crate::index::plain_vector_index::PlainVectorIndex;
 use crate::index::struct_payload_index::StructPayloadIndex;
-use crate::types::{HnswGlobalConfig, Indexes, VectorDataConfig};
+use crate::types::{HnswGlobalConfig, Indexes, VectorDataConfig, VectorStorageType};
 use crate::vector_storage::VectorStorageEnum;
 use crate::vector_storage::quantized::quantized_vectors::QuantizedVectors;
 
@@ -48,6 +49,16 @@ pub(crate) fn open_vector_index(
     vector_config: &VectorDataConfig,
     open_args: VectorIndexOpenArgs,
 ) -> OperationResult<VectorIndexEnum> {
+    if matches!(
+        vector_config.index,
+        Indexes::Lmi {} | Indexes::LmiTrained(_)
+    ) && (vector_config.storage_type == VectorStorageType::GraphInline
+        || vector_config.multivector_config.is_some())
+    {
+        return Err(OperationError::service_error(
+            "LMI shell requires independent dense single-vector storage; GraphInline and multivectors are unsupported",
+        ));
+    }
     let VectorIndexOpenArgs {
         path,
         id_tracker,
@@ -62,6 +73,21 @@ pub(crate) fn open_vector_index(
             quantized_vectors,
             payload_index,
         )),
+        Indexes::Lmi {} => VectorIndexEnum::Lmi(LmiIndex::new(
+            id_tracker,
+            vector_storage,
+            quantized_vectors,
+            payload_index,
+        )),
+        Indexes::LmiTrained(config) => VectorIndexEnum::Lmi(LmiIndex::open_trained(
+            path,
+            vector_config,
+            *config,
+            id_tracker,
+            vector_storage,
+            quantized_vectors,
+            payload_index,
+        )?),
         Indexes::Hnsw(hnsw_config) => VectorIndexEnum::Hnsw(HNSWIndex::open(HnswIndexOpenArgs {
             path,
             id_tracker,
@@ -78,6 +104,16 @@ pub(crate) fn build_vector_index<R: Rng + ?Sized>(
     open_args: VectorIndexOpenArgs,
     build_args: VectorIndexBuildArgs<R>,
 ) -> OperationResult<VectorIndexEnum> {
+    if matches!(
+        vector_config.index,
+        Indexes::Lmi {} | Indexes::LmiTrained(_)
+    ) && (vector_config.storage_type == VectorStorageType::GraphInline
+        || vector_config.multivector_config.is_some())
+    {
+        return Err(OperationError::service_error(
+            "LMI shell requires independent dense single-vector storage; GraphInline and multivectors are unsupported",
+        ));
+    }
     let VectorIndexOpenArgs {
         path,
         id_tracker,
@@ -92,6 +128,35 @@ pub(crate) fn build_vector_index<R: Rng + ?Sized>(
             quantized_vectors,
             payload_index,
         )),
+        Indexes::Lmi {} => VectorIndexEnum::Lmi(LmiIndex::new(
+            id_tracker,
+            vector_storage,
+            quantized_vectors,
+            payload_index,
+        )),
+        Indexes::LmiTrained(_config) => {
+            #[cfg(feature = "lmi-training")]
+            {
+                VectorIndexEnum::Lmi(LmiIndex::build_trained(
+                    VectorIndexOpenArgs {
+                        path,
+                        id_tracker,
+                        vector_storage,
+                        payload_index,
+                        quantized_vectors,
+                    },
+                    vector_config,
+                    *_config,
+                    build_args,
+                )?)
+            }
+            #[cfg(not(feature = "lmi-training"))]
+            {
+                return Err(OperationError::service_error(
+                    "LMI construction requires the lmi-training Cargo feature",
+                ));
+            }
+        }
         Indexes::Hnsw(hnsw_config) => VectorIndexEnum::Hnsw(HNSWIndex::build(
             HnswIndexOpenArgs {
                 path,

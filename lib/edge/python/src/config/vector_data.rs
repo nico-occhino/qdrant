@@ -137,6 +137,7 @@ impl FromPyObject<'_, '_> for PyIndexes {
             match indexes {
                 Indexes::Plain {} => (),
                 Indexes::Hnsw(_) => (),
+                Indexes::Lmi {} | Indexes::LmiTrained(_) => (),
             }
         }
 
@@ -158,6 +159,11 @@ impl<'py> IntoPyObject<'py> for PyIndexes {
         match self.0 {
             Indexes::Plain {} => PyPlainIndexConfig.into_bound_py_any(py),
             Indexes::Hnsw(hnsw) => PyHnswIndexConfig(hnsw).into_bound_py_any(py),
+            Indexes::Lmi {} | Indexes::LmiTrained(_) => {
+                Err(pyo3::exceptions::PyValueError::new_err(
+                    "LMI is not exposed through Qdrant Edge Python yet",
+                ))
+            }
         }
     }
 }
@@ -167,6 +173,9 @@ impl Repr for PyIndexes {
         match &self.0 {
             Indexes::Plain {} => PyPlainIndexConfig.fmt(f),
             Indexes::Hnsw(hnsw) => PyHnswIndexConfig::wrap_ref(hnsw).fmt(f),
+            Indexes::Lmi {} | Indexes::LmiTrained(_) => {
+                write!(f, "LMI (unsupported in Edge Python)")
+            }
         }
     }
 }

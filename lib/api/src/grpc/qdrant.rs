@@ -463,6 +463,48 @@ pub struct VectorParams {
     /// `Pinned` is not supported for dense vector storage.
     #[prost(enumeration = "Memory", optional, tag = "8")]
     pub memory: ::core::option::Option<i32>,
+    /// Static learned index for optimized segments.
+    #[prost(message, optional, tag = "9")]
+    pub lmi_config: ::core::option::Option<LmiConfig>,
+}
+#[derive(serde::Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct LmiConfig {
+    #[prost(uint64, tag = "1")]
+    pub n_buckets: u64,
+    #[prost(uint64, tag = "2")]
+    pub sample_size: u64,
+    #[prost(uint64, tag = "3")]
+    pub hidden_dim: u64,
+    #[prost(uint64, tag = "4")]
+    pub epochs: u64,
+    #[prost(uint64, tag = "5")]
+    pub batch_size: u64,
+    #[prost(uint64, tag = "6")]
+    pub routing_batch_size: u64,
+    #[prost(uint64, tag = "7")]
+    pub kmeans_iterations: u64,
+    #[prost(uint64, tag = "8")]
+    pub nprobe: u64,
+    #[prost(uint64, tag = "9")]
+    pub seed: u64,
+}
+#[derive(serde::Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct LmiConfigDiff {
+    #[prost(oneof = "lmi_config_diff::Change", tags = "1, 2")]
+    pub change: ::core::option::Option<lmi_config_diff::Change>,
+}
+/// Nested message and enum types in `LmiConfigDiff`.
+pub mod lmi_config_diff {
+    #[derive(serde::Serialize)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Change {
+        #[prost(message, tag = "1")]
+        Config(super::LmiConfig),
+        #[prost(message, tag = "2")]
+        Disabled(super::Disabled),
+    }
 }
 #[derive(validator::Validate)]
 #[derive(serde::Serialize)]
@@ -488,6 +530,8 @@ pub struct VectorParamsDiff {
     /// `Pinned` is not supported for dense vector storage.
     #[prost(enumeration = "Memory", optional, tag = "4")]
     pub memory: ::core::option::Option<i32>,
+    #[prost(message, optional, tag = "5")]
+    pub lmi_config: ::core::option::Option<LmiConfigDiff>,
 }
 #[derive(validator::Validate)]
 #[derive(serde::Serialize)]

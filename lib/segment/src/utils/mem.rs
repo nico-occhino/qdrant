@@ -2,6 +2,9 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
+mod admission;
+pub use admission::{AdmissionMemory, CgroupAdmission};
+
 /// TTL for the cached total memory; matches the disk-usage cache.
 const CACHE_TTL: Duration = Duration::from_secs(5);
 
@@ -59,6 +62,11 @@ impl Mem {
         }
 
         self.sysinfo.total_memory_bytes()
+    }
+
+    /// Conservative cache-aware admission snapshot; does not reserve memory.
+    pub fn admission_snapshot(&self) -> std::io::Result<AdmissionMemory> {
+        admission::snapshot(self.sysinfo.available_memory_bytes())
     }
 
     pub fn available_memory_bytes(&self) -> u64 {
@@ -172,7 +180,7 @@ mod cgroups_mem {
 
     /// Directory holding the memory controller files of the current process, and whether it belongs
     /// to the unified (v2) hierarchy.
-    fn memory_cgroup_dir() -> procfs::ProcResult<Option<(PathBuf, bool)>> {
+    pub(super) fn memory_cgroup_dir() -> procfs::ProcResult<Option<(PathBuf, bool)>> {
         let process = Process::myself()?;
 
         if is_cgroup2_unified_mode() {
@@ -199,6 +207,15 @@ mod cgroups_mem {
             .map(|cgroup| join_cgroup_path(&mount_point, &cgroup.pathname));
 
         Ok(dir.map(|dir| (dir, false)))
+    }
+
+    pub(super) fn memory_mountpoint(is_v2: bool) -> procfs::ProcResult<PathBuf> {
+        if is_v2 {
+            Ok(PathBuf::from(UNIFIED_MOUNTPOINT))
+        } else {
+            v1_memory_mount_point(Process::myself()?.mountinfo()?)
+                .ok_or_else(|| std::io::Error::other("memory cgroup mount disappeared").into())
+        }
     }
 
     fn is_cgroup2_unified_mode() -> bool {

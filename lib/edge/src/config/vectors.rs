@@ -87,6 +87,7 @@ impl EdgeVectorParams {
                 .or_else(|| global_quantization_config.cloned()),
             multivector_config: *multivector_config,
             datatype: *datatype,
+            lmi_config: None,
         }
     }
 
@@ -112,7 +113,7 @@ impl EdgeVectorParams {
             datatype: *datatype,
             quantization_config: quantization_config.clone(),
             hnsw_config: match index {
-                Indexes::Plain {} => None,
+                Indexes::Plain {} | Indexes::Lmi {} | Indexes::LmiTrained(_) => None,
                 Indexes::Hnsw(hnsw_config) => Some(*hnsw_config),
             },
         }

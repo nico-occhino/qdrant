@@ -12,12 +12,14 @@ edition = "2024"
 workspace = true
 
 [features]
+lmi-training = ["segment/lmi-training"]
 testing = ["common/testing", "segment/testing", "shard/testing"]
 tracing = ["dep:tracing", "api/tracing", "segment/tracing"]
 data-consistency-check = []
 staging = ["shard/staging"]
 
 [dev-dependencies]
+half = { workspace = true }
 bm25 = { path = "../bm25" }
 criterion = { workspace = true }
 exhaustive = { workspace = true }

@@ -67,6 +67,7 @@ mod tests {
                     quantization_config: None,
                     multivector_config: vector_data.multivector_config,
                     datatype: vector_data.datatype,
+                    lmi_config: None,
                 },
             );
         }
@@ -98,6 +99,26 @@ mod tests {
             test_segment_config(dim),
             HnswGlobalConfig::default(),
         )
+    }
+
+    #[test]
+    fn two_live_segments_can_remain_at_one_segment_target() {
+        let dir = Builder::new().prefix("segment_dir").tempdir().unwrap();
+        let temp_dir = Builder::new().prefix("segment_temp_dir").tempdir().unwrap();
+        let mut holder = SegmentHolder::default();
+        holder.add_new(random_segment(dir.path(), 100, 1, 4));
+        holder.add_new(random_segment(dir.path(), 100, 1, 4));
+        let mut optimizer = get_merge_optimizer(dir.path(), temp_dir.path(), 4, None);
+        optimizer.set_default_segments_number_for_test(1);
+        optimizer
+            .threshold_config_mut_for_test()
+            .max_segment_size_kb = 1_000;
+        assert!(
+            optimizer
+                .plan_optimizations_for_test(&LockedSegmentHolder::new(holder))
+                .is_empty(),
+            "a two-segment merge would create a replacement appendable segment"
+        );
     }
 
     #[test]
