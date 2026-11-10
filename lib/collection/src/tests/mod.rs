@@ -1,3 +1,5 @@
+#[cfg(feature = "lmi-training")]
+mod lmi_lifecycle;
 mod deferred_points_dedup;
 mod deferred_points_tests;
 mod delete_vector_name_replay;
