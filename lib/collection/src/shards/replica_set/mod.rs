@@ -393,16 +393,36 @@ impl ShardReplicaSet {
         }
     }
 
-    /// Snapshot the native holder in collection integration tests.
-    #[cfg(test)]
-    pub(crate) async fn local_segments_for_test(
+    /// The local shard's segments, for tests to inspect their layout and schema.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn local_segments_for_test(
         &self,
     ) -> Option<shard::segment_holder::locked::LockedSegmentHolder> {
-        self.local
-            .read()
-            .await
-            .as_ref()
-            .and_then(|shard| shard.local_shard().map(|local| local.segments()))
+        use crate::shards::shard::Shard;
+        match &*self.local.read().await {
+            Some(Shard::Local(local)) => Some(local.segments()),
+            _ => None,
+        }
+    }
+
+    /// Config cached by each optimizer on the local shard.
+    #[cfg(feature = "testing")]
+    pub async fn local_optimizer_configs_for_test(
+        &self,
+    ) -> Option<Vec<shard::optimizers::config::SegmentOptimizerConfig>> {
+        use crate::shards::shard::Shard;
+        let local = self.local.read().await;
+        let Some(Shard::Local(local)) = local.as_ref() else {
+            return None;
+        };
+
+        let configs = local
+            .optimizers
+            .load()
+            .iter()
+            .map(|optimizer| optimizer.segment_optimizer_config().clone())
+            .collect();
+        Some(configs)
     }
 
     pub fn shard_key(&self) -> Option<ShardKey> {

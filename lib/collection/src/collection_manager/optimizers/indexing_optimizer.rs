@@ -121,6 +121,7 @@ mod tests {
     #[cfg(feature = "lmi-training")]
     #[test]
     fn lmi_optimizer_builds_fresh_merged_target() {
+        let _scope = common::ambient::test_guard();
         use segment::common::memory_usage::{FileStorageIntent, MemoryReporter};
         use segment::index::VectorIndexEnum;
         use segment::index::lmi_index::LmiConfig;
@@ -371,6 +372,7 @@ mod tests {
     #[cfg(feature = "lmi-training")]
     #[test]
     fn lmi_optimizer_preserves_writes_while_target_builds() {
+        let _scope = common::ambient::test_guard();
         use std::sync::mpsc::{self, Receiver, SyncSender};
         use std::time::Duration;
 
@@ -419,13 +421,12 @@ mod tests {
             .prefix("lmi_concurrent_temp")
             .tempdir()
             .unwrap();
-        let hw = HardwareCounterCell::new();
         let mut source = build_simple_segment(segments_dir.path(), 16, Distance::Cosine).unwrap();
         for id in 1..=32_u64 {
             let mut vector = vec![0.0; 16];
             vector[(id % 16) as usize] = 1.0;
             source
-                .upsert_point(100, id.into(), only_default_vector(&vector), &hw)
+                .upsert_point(100, id.into(), only_default_vector(&vector))
                 .unwrap();
         }
         let mut raw_holder = SegmentHolder::default();
@@ -522,7 +523,6 @@ mod tests {
             101,
             PointOperations::UpsertPoints(PointInsertOperationsInternal::from(batch)),
             None,
-            &hw,
         )
         .unwrap();
         process_point_operation(
@@ -532,7 +532,6 @@ mod tests {
                 ids: vec![2_u64.into()],
             },
             None,
-            &hw,
         )
         .unwrap();
         release_tx.send(()).unwrap();
@@ -559,7 +558,7 @@ mod tests {
                 segment
                     .get()
                     .read()
-                    .vector(DEFAULT_VECTOR_NAME, 1_u64.into(), &hw)
+                    .vector(DEFAULT_VECTOR_NAME, 1_u64.into())
                     .unwrap()
             })
             .unwrap();
