@@ -51,6 +51,7 @@ fn update_collection_reject_mid_operation() {
             "missing".into(),
             VectorParamsDiff {
                 hnsw_config: None,
+                lmi_config: None,
                 quantization_config: None,
                 on_disk: None,
                 memory: None,

@@ -731,6 +731,7 @@ fn arb_vectors_diff() -> impl Strategy<Value = VectorsConfigDiff> {
     (arb_vector_name(), arb_hnsw_diff()).prop_map(|(vector_name, hnsw_config)| {
         let params = VectorParamsDiff {
             hnsw_config: Some(hnsw_config),
+            lmi_config: None,
             quantization_config: None,
             #[expect(deprecated)]
             on_disk: None,
