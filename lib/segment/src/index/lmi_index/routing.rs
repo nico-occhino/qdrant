@@ -324,7 +324,6 @@ impl LmiRoutingState {
 /// A build-local immutable model borrow and reusable inference workspace.
 /// Construction validates all weights/shapes once; the borrow prevents mutation.
 #[cfg(any(feature = "lmi-training", test))]
-#[allow(dead_code)] // Retained as the S.3B1 scalar correctness/performance reference.
 pub(super) struct BuildRouter<'a> {
     router: &'a MlpRouter,
     input_dim: usize,
@@ -333,7 +332,6 @@ pub(super) struct BuildRouter<'a> {
 }
 
 #[cfg(any(feature = "lmi-training", test))]
-#[allow(dead_code)] // Its methods are exercised by focused parity tests.
 impl<'a> BuildRouter<'a> {
     pub(super) fn new(router: &'a MlpRouter, stopped: &AtomicBool) -> OperationResult<Self> {
         check_process_stopped(stopped)?;
