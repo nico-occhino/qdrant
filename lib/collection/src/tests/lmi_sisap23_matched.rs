@@ -19,10 +19,9 @@ use segment::data_types::query_context::VectorQueryContext;
 use segment::data_types::vectors::{DEFAULT_VECTOR_NAME, QueryVector};
 use segment::entry::ReadSegmentEntry;
 use segment::id_tracker::IdTrackerRead;
-use segment::index::VectorIndexRead;
 use segment::index::candidate_scoring::score_candidates;
 use segment::index::lmi_index::{LmiConfig, LmiStateMetadata};
-use segment::index::{VectorIndex, VectorIndexEnum};
+use segment::index::{VectorIndex, VectorIndexEnum, VectorIndexRead};
 use segment::segment::SegmentVersion;
 use segment::segment_constructor::load_segment;
 use segment::types::{
@@ -704,9 +703,10 @@ fn sisap23_optimizer_error_fails_even_with_a_complete_count() {
 
 #[test]
 fn sisap23_one_live_segment_and_empty_segment_is_accepted_after_reload() {
-    use crate::collection_manager::fixtures::random_segment;
     use segment::entry::StorageSegmentEntry;
     use segment::segment_constructor::simple_segment_constructor::build_simple_segment;
+
+    use crate::collection_manager::fixtures::random_segment;
 
     let temp = tempfile::tempdir().unwrap();
     let segment_dir = temp.path().join("0/segments");
@@ -725,8 +725,9 @@ fn sisap23_one_live_segment_and_empty_segment_is_accepted_after_reload() {
 
 #[test]
 fn sisap23_live_segment_discovery_accepts_two_after_reload() {
-    use crate::collection_manager::fixtures::random_segment;
     use segment::entry::StorageSegmentEntry;
+
+    use crate::collection_manager::fixtures::random_segment;
 
     let temp = tempfile::tempdir().unwrap();
     let segment_dir = temp.path().join("0/segments");

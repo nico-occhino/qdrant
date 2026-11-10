@@ -259,8 +259,9 @@ pub(super) fn cluster(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::atomic::Ordering;
+
+    use super::*;
 
     fn config(buckets: usize, iterations: usize, seed: u64) -> LmiConfig {
         LmiConfig {

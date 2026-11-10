@@ -1,9 +1,11 @@
 //! Native serving-only MLP routing copied from the final frozen implementation.
+use std::sync::atomic::AtomicBool;
+
+use common::types::PointOffsetType;
+
 use super::CompactPostings;
 use crate::common::operation_error::{OperationError, OperationResult, check_process_stopped};
 use crate::data_types::vectors::{QueryVector, VectorInternal};
-use common::types::PointOffsetType;
-use std::sync::atomic::AtomicBool;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LinearLayer {
@@ -557,9 +559,10 @@ impl<'a> BuildBatchRouter<'a> {
 
 #[cfg(test)]
 mod build_router_tests {
+    use rand::{RngExt, SeedableRng};
+
     use super::*;
     use crate::types::Distance;
-    use rand::{RngExt, SeedableRng};
 
     #[test]
     fn build_top1_matches_query_order_and_reuses_scratch() {
@@ -676,8 +679,9 @@ mod build_router_tests {
 
 #[cfg(test)]
 mod build_batch_router_tests {
-    use super::*;
     use rand::{RngExt, SeedableRng};
+
+    use super::*;
 
     fn router(buckets: usize) -> MlpRouter {
         let mut rng = rand::rngs::StdRng::seed_from_u64(91 + buckets as u64);

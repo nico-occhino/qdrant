@@ -85,8 +85,9 @@ impl Collection {
     ) -> CollectionResult<()> {
         let mut config = self.collection_config.write().await;
         update_vectors_diff.check_vector_names(&config.params)?;
-        use crate::operations::types::CollectionError;
         use validator::Validate as _;
+
+        use crate::operations::types::CollectionError;
 
         // Validate the complete effective configuration before publishing or persisting it.
         // A diff may enable LMI while retaining incompatible collection-wide settings.

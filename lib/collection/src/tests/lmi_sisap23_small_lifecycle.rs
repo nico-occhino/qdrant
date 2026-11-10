@@ -1,16 +1,14 @@
 //! Disposable native Float16 lifecycle diagnostics. Never reads SISAP inputs.
-use super::*;
 use segment::data_types::named_vectors::NamedVectors;
-use segment::data_types::vectors::NamedQuery;
-use segment::data_types::vectors::VectorInternal;
+use segment::data_types::vectors::{NamedQuery, VectorInternal};
 use segment::entry::{SegmentEntry, StorageSegmentEntry};
 use segment::segment::Segment;
 use segment::segment_constructor::build_segment;
 use segment::types::{SegmentConfig, VectorDataConfig, VectorStorageType};
 use shard::query::query_enum::QueryEnum;
-use shard::segment_holder::FlushMode;
-use shard::segment_holder::SegmentHolder;
+use shard::segment_holder::{FlushMode, SegmentHolder};
 
+use super::*;
 use crate::operations::types::CoreSearchRequest;
 use crate::shards::replica_set::ShardReplicaSet;
 

@@ -260,11 +260,12 @@ fn medium_100k_synthetic_build_restarts_with_complete_postings() {
 #[test]
 #[ignore = "explicit real-data SISAP300K gate"]
 fn sisap300k_production_build_and_bounded_recall() {
+    use std::io::Read;
+    use std::time::Instant;
+
     use half::f16;
     use segment::id_tracker::IdTrackerRead;
     use segment::types::PointIdType;
-    use std::io::Read;
-    use std::time::Instant;
 
     let _ = env_logger::builder()
         .is_test(true)

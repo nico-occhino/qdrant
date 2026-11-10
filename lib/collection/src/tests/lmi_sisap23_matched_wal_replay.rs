@@ -1,7 +1,9 @@
 //! Opt-in WAL inspection and collection replay on a verified scratch copy only.
-use super::*;
-use shard::wal::{SerdeWal, WalRawRecord};
 use std::collections::{BTreeMap, HashMap};
+
+use shard::wal::{SerdeWal, WalRawRecord};
+
+use super::*;
 
 struct WalAudit {
     report: serde_json::Value,
