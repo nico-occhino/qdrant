@@ -3090,6 +3090,7 @@ fn params_diff() -> CollectionParamsDiff {
 fn vectors_diff(vector_name: &str) -> VectorsConfigDiff {
     let params = VectorParamsDiff {
         hnsw_config: Some(hnsw_diff(8)),
+        lmi_config: None,
         quantization_config: None,
         #[expect(deprecated)]
         on_disk: None,

@@ -59,9 +59,10 @@ fn bounded_available(limit: u64, usage: u64, credit: u64) -> u64 {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::*;
     use std::fs;
     use std::path::Path;
+
+    use super::*;
 
     fn limit(path: &Path) -> io::Result<Option<u64>> {
         let text = fs::read_to_string(path)?;

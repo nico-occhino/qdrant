@@ -1,8 +1,9 @@
 //! Opt-in, process-separated recovery of vector data and index-only construction.
-use super::*;
 use segment::data_types::vectors::VectorInternal;
 use segment::entry::ReadSegmentEntry;
 use segment::utils::mem::Mem;
+
+use super::*;
 
 /// Full audit across all active segments after normal Collection startup has
 /// reconciled temporary/deleted optimizer output. No synthetic inserts occur.

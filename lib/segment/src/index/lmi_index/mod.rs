@@ -30,14 +30,6 @@ pub fn check_build_memory(
 pub const fn training_available() -> bool {
     cfg!(feature = "lmi-training")
 }
-pub use postings::CompactPostings;
-pub use routing::{LinearLayer, LmiRoutingState, MlpRouter, RouterLayer};
-#[cfg(feature = "testing")]
-pub use state::save_fixture_state;
-pub use state::{
-    LMI_POSTINGS_FILE, LMI_ROUTER_FILE, LMI_STATE_FILE, LmiStateMetadata, RouterPreprocessing,
-};
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -48,12 +40,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use atomic_refcell::AtomicRefCell;
 use common::counter::hardware_counter::HardwareCounterCell;
 use common::types::{PointOffsetType, ScoredPointOffset, TelemetryDetail};
+pub use postings::CompactPostings;
+pub use routing::{LinearLayer, LmiRoutingState, MlpRouter, RouterLayer};
 use sparse::common::types::DimId;
+#[cfg(feature = "testing")]
+pub use state::save_fixture_state;
+pub use state::{
+    LMI_POSTINGS_FILE, LMI_ROUTER_FILE, LMI_STATE_FILE, LmiStateMetadata, RouterPreprocessing,
+};
 
 use crate::common::operation_error::{OperationError, OperationResult};
 use crate::data_types::query_context::VectorQueryContext;
-use crate::data_types::vectors::VectorInternal;
-use crate::data_types::vectors::{QueryVector, VectorRef};
+use crate::data_types::vectors::{QueryVector, VectorInternal, VectorRef};
 use crate::id_tracker::IdTrackerEnum;
 use crate::index::candidate_scoring::score_candidates;
 use crate::index::plain_vector_index::PlainVectorIndex;

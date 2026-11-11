@@ -74,9 +74,9 @@ fn assign_qdrant(row: &[f32], centers: &[Vec<f32>]) -> usize {
     best
 }
 
-#[allow(dead_code)] // Scalar oracle is exercised by explicit benchmarks and tests.
 #[derive(Clone, Copy)]
 enum AssignmentKernel {
+    #[cfg_attr(not(test), expect(dead_code))] // Scalar oracle is exercised by focused tests.
     ScalarF64,
     QdrantF32,
 }
@@ -85,7 +85,7 @@ enum AssignmentKernel {
 /// normalized already, while exact zero vectors remain zero. A zero seed or
 /// zero-mean cluster may retain a zero centroid; there is no unit direction
 /// to assign to it. Nonempty nonzero means are normalized after each update.
-#[allow(dead_code)] // Independent scalar oracle; production uses the Qdrant dot kernel.
+#[cfg_attr(not(test), expect(dead_code))] // Independent scalar oracle; production uses the Qdrant dot kernel.
 pub(super) fn cluster_with_centers(
     data: &[f32],
     dim: usize,
@@ -259,8 +259,9 @@ pub(super) fn cluster(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::atomic::Ordering;
+
+    use super::*;
 
     fn config(buckets: usize, iterations: usize, seed: u64) -> LmiConfig {
         LmiConfig {

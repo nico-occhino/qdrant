@@ -71,8 +71,9 @@ impl CompactPostings {
             &mut dyn FnMut(PointOffsetType, usize) -> OperationResult<()>,
         ) -> OperationResult<()>,
     ) -> OperationResult<(Self, [f64; 3])> {
-        use crate::common::operation_error::check_process_stopped;
         use std::time::Instant;
+
+        use crate::common::operation_error::check_process_stopped;
         check_process_stopped(stopped)?;
         let started = Instant::now();
         let mut counts = vec![0usize; bucket_count];
@@ -150,8 +151,9 @@ impl CompactPostings {
             &mut dyn FnMut(PointOffsetType) -> OperationResult<()>,
         ) -> OperationResult<()>,
     ) -> OperationResult<(Self, [f64; 3])> {
-        use crate::common::operation_error::check_process_stopped;
         use std::time::Instant;
+
+        use crate::common::operation_error::check_process_stopped;
         if bucket_count > u16::MAX as usize + 1 {
             return Err(OperationError::service_error(
                 "LMI u16 label cache cannot represent bucket count",

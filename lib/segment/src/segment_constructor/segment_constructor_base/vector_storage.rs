@@ -4,7 +4,8 @@ use common::mmap::{Advice, AdviceSetting};
 
 use crate::common::operation_error::{OperationError, OperationResult};
 use crate::types::{
-    Indexes, Memory, SparseVectorStorageType, VectorDataConfig, VectorStorageDatatype, VectorStorageType,
+    Indexes, Memory, SparseVectorStorageType, VectorDataConfig, VectorStorageDatatype,
+    VectorStorageType,
 };
 use crate::vector_storage::VectorStorageEnum;
 use crate::vector_storage::dense::dense_vector_storage::{
