@@ -233,11 +233,12 @@ impl VectorIndexRead for LmiIndex {
                                     u64::try_from(candidates.len()).unwrap_or(u64::MAX), Ordering::Relaxed,
                                 );
                             }
+                            let segment_total_ns = segment_began.elapsed().as_nanos() as u64;
                             log::info!(target: "lmi_research", "{}", serde_json::json!({
                                 "event": "lmi_segment_search", "path": "learned", "nprobe": state.nprobe(),
                                 "selected_unique_offsets": candidates.len(), "query_preprocessing_ns": query_preprocessing_ns,
                                 "route": route, "scoring": scoring,
-                                "segment_total_ns": segment_began.elapsed().as_nanos() as u64,
+                                "segment_total_ns": segment_total_ns,
                             }));
                             return Ok(result);
                         }
