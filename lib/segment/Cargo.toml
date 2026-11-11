@@ -14,6 +14,7 @@ workspace = true
 [features]
 default = []
 lmi-training = ["dep:tch"]
+lmi-research = []
 testing = ["common/testing", "sparse/testing", "gpu/testing", "quantization/testing", "dep:exhaustive"]
 gpu = ["gpu/gpu"]
 

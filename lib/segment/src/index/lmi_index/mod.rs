@@ -52,6 +52,7 @@ use crate::common::operation_error::{OperationError, OperationResult};
 use crate::data_types::query_context::VectorQueryContext;
 use crate::data_types::vectors::{QueryVector, VectorInternal, VectorRef};
 use crate::id_tracker::IdTrackerEnum;
+#[cfg(any(not(feature = "lmi-research"), feature = "testing"))]
 use crate::index::candidate_scoring::score_candidates;
 use crate::index::plain_vector_index::PlainVectorIndex;
 use crate::index::{VectorIndex, VectorIndexRead};
@@ -205,6 +206,8 @@ impl VectorIndexRead for LmiIndex {
                 return vectors
                     .iter()
                     .map(|query| {
+                        #[cfg(feature = "lmi-research")]
+                        let segment_began = std::time::Instant::now();
                         let routed_query = match (self.routing_distance, *query) {
                             (
                                 Some(Distance::Cosine),
@@ -214,6 +217,32 @@ impl VectorIndexRead for LmiIndex {
                             )),
                             _ => (*query).clone(),
                         };
+                        #[cfg(feature = "lmi-research")]
+                        {
+                            let query_preprocessing_ns = segment_began.elapsed().as_nanos() as u64;
+                            let (candidates, route) = state
+                                .candidates_for_query_profiled(&routed_query, &query_context.is_stopped())?
+                                .ok_or_else(|| OperationError::service_error("LMI candidate routing received unsupported query"))?;
+                            let (result, scoring) = crate::index::candidate_scoring::score_candidates_profiled(
+                                query, &candidates, top, &*tracker, &*storage, query_context,
+                            )?;
+                            #[cfg(feature = "testing")]
+                            {
+                                self.learned_searches.fetch_add(1, Ordering::Relaxed);
+                                self.selected_candidate_offsets.fetch_add(
+                                    u64::try_from(candidates.len()).unwrap_or(u64::MAX), Ordering::Relaxed,
+                                );
+                            }
+                            log::info!(target: "lmi_research", "{}", serde_json::json!({
+                                "event": "lmi_segment_search", "path": "learned", "nprobe": state.nprobe(),
+                                "selected_unique_offsets": candidates.len(), "query_preprocessing_ns": query_preprocessing_ns,
+                                "route": route, "scoring": scoring,
+                                "segment_total_ns": segment_began.elapsed().as_nanos() as u64,
+                            }));
+                            return Ok(result);
+                        }
+                        #[cfg(not(feature = "lmi-research"))]
+                        {
                         let candidates = state
                             .candidates_for_query(&routed_query, &query_context.is_stopped())?
                             .ok_or_else(|| {
@@ -238,6 +267,7 @@ impl VectorIndexRead for LmiIndex {
                             );
                         }
                         Ok(result)
+                        }
                     })
                     .collect();
             }
@@ -263,6 +293,29 @@ impl VectorIndexRead for LmiIndex {
         let result = self
             .plain
             .search(vectors, filter, top, params, query_context)?;
+        #[cfg(feature = "lmi-research")]
+        {
+            let reason = if params.is_some_and(|p| p.exact) {
+                "exact_override"
+            } else if filter.is_some() {
+                "filter"
+            } else if params.is_some_and(|p| *p != SearchParams::default()) {
+                "non_default_params"
+            } else if self.quantized_vectors.borrow().is_some() {
+                "quantized"
+            } else if vectors
+                .iter()
+                .any(|q| !matches!(q, QueryVector::Nearest(VectorInternal::Dense(_))))
+            {
+                "query_type"
+            } else {
+                "untrained_or_other"
+            };
+            log::info!(target: "lmi_research", "{}", serde_json::json!({
+                "event": "lmi_segment_search", "path": "plain_fallback", "reason": reason,
+                "query_count": vectors.len(), "returned_hits": result.iter().map(Vec::len).collect::<Vec<_>>(),
+            }));
+        }
         #[cfg(feature = "testing")]
         self.plain_fallbacks
             .fetch_add(vectors.len() as u64, Ordering::Relaxed);

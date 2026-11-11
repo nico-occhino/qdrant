@@ -1,9 +1,11 @@
 //! Native serving-only MLP routing copied from the final frozen implementation.
+use std::sync::atomic::AtomicBool;
+
+use common::types::PointOffsetType;
+
 use super::CompactPostings;
 use crate::common::operation_error::{OperationError, OperationResult, check_process_stopped};
 use crate::data_types::vectors::{QueryVector, VectorInternal};
-use common::types::PointOffsetType;
-use std::sync::atomic::AtomicBool;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LinearLayer {
@@ -159,6 +161,38 @@ impl MlpRouter {
         bucket_ids.truncate(nprobe);
         check_process_stopped(stopped)?;
         Ok(bucket_ids)
+    }
+
+    #[cfg(feature = "lmi-research")]
+    fn top_buckets_profiled(
+        &self,
+        query: &[f32],
+        nprobe: usize,
+        stopped: &AtomicBool,
+    ) -> OperationResult<(Vec<usize>, u64, u64)> {
+        use std::time::Instant;
+        check_process_stopped(stopped)?;
+        let count = self.output_dim()?;
+        if nprobe == 0 || nprobe > count {
+            return Err(OperationError::service_error(
+                "LMI nprobe outside router output range",
+            ));
+        }
+        let tick = Instant::now();
+        let logits = self.forward_with_stop(query, stopped)?;
+        let inference_ns = tick.elapsed().as_nanos() as u64;
+        let tick = Instant::now();
+        let mut ids: Vec<usize> = (0..count).collect();
+        ids.sort_by(|&a, &b| {
+            if logits[a] == logits[b] {
+                a.cmp(&b)
+            } else {
+                logits[b].total_cmp(&logits[a])
+            }
+        });
+        ids.truncate(nprobe);
+        check_process_stopped(stopped)?;
+        Ok((ids, inference_ns, tick.elapsed().as_nanos() as u64))
     }
 }
 
@@ -317,6 +351,61 @@ impl LmiRoutingState {
         check_process_stopped(stopped)?;
         Ok(Some(candidates))
     }
+
+    #[cfg(feature = "lmi-research")]
+    pub fn candidates_for_query_profiled(
+        &self,
+        query: &QueryVector,
+        stopped: &AtomicBool,
+    ) -> OperationResult<Option<(Vec<PointOffsetType>, RouteProfile)>> {
+        use std::time::Instant;
+        let QueryVector::Nearest(VectorInternal::Dense(vector)) = query else {
+            return Ok(None);
+        };
+        let (buckets, inference_ns, bucket_rank_ns) =
+            self.router
+                .top_buckets_profiled(vector.as_slice(), self.nprobe, stopped)?;
+        let tick = Instant::now();
+        let mut candidates = Vec::new();
+        for &bucket in &buckets {
+            let posting = self.postings.get(bucket).ok_or_else(|| {
+                OperationError::service_error("LMI router selected missing bucket")
+            })?;
+            for &id in posting {
+                check_process_stopped(stopped)?;
+                candidates.push(id);
+            }
+        }
+        let raw_posting_entries = candidates.len();
+        let posting_ns = tick.elapsed().as_nanos() as u64;
+        let tick = Instant::now();
+        candidates.sort_unstable();
+        candidates.dedup();
+        check_process_stopped(stopped)?;
+        let dedup_ns = tick.elapsed().as_nanos() as u64;
+        Ok(Some((
+            candidates,
+            RouteProfile {
+                selected_buckets: buckets,
+                raw_posting_entries,
+                inference_ns,
+                bucket_rank_ns,
+                posting_ns,
+                dedup_ns,
+            },
+        )))
+    }
+}
+
+#[cfg(feature = "lmi-research")]
+#[derive(Debug, serde::Serialize)]
+pub struct RouteProfile {
+    pub selected_buckets: Vec<usize>,
+    pub raw_posting_entries: usize,
+    pub inference_ns: u64,
+    pub bucket_rank_ns: u64,
+    pub posting_ns: u64,
+    pub dedup_ns: u64,
 }
 
 /// A build-local immutable model borrow and reusable inference workspace.
@@ -557,9 +646,40 @@ impl<'a> BuildBatchRouter<'a> {
 
 #[cfg(test)]
 mod build_router_tests {
+    use rand::{RngExt, SeedableRng};
+
     use super::*;
     use crate::types::Distance;
-    use rand::{RngExt, SeedableRng};
+
+    #[cfg(feature = "lmi-research")]
+    #[test]
+    fn profiled_bucket_selection_preserves_ties_and_order() {
+        let router = MlpRouter {
+            layers: vec![RouterLayer::Linear(LinearLayer {
+                in_features: 2,
+                out_features: 4,
+                weights: vec![0.0; 8],
+                bias: vec![1.0, 1.0, 0.5, 0.0],
+            })],
+        };
+        let stopped = AtomicBool::new(false);
+        let expected = router.top_buckets(&[1.0, 0.0], 3).unwrap();
+        let (actual, _, _) = router
+            .top_buckets_profiled(&[1.0, 0.0], 3, &stopped)
+            .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(actual, vec![0, 1, 2]);
+        assert!(
+            router
+                .top_buckets_profiled(&[1.0, 0.0], 0, &stopped)
+                .is_err()
+        );
+        assert!(
+            router
+                .top_buckets_profiled(&[1.0, 0.0], 3, &AtomicBool::new(true))
+                .is_err()
+        );
+    }
 
     #[test]
     fn build_top1_matches_query_order_and_reuses_scratch() {
@@ -676,8 +796,9 @@ mod build_router_tests {
 
 #[cfg(test)]
 mod build_batch_router_tests {
-    use super::*;
     use rand::{RngExt, SeedableRng};
+
+    use super::*;
 
     fn router(buckets: usize) -> MlpRouter {
         let mut rng = rand::rngs::StdRng::seed_from_u64(91 + buckets as u64);

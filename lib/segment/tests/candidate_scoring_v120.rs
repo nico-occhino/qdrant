@@ -8,6 +8,8 @@ use segment::data_types::vectors::{DEFAULT_VECTOR_NAME, QueryVector, only_defaul
 use segment::entry::entry_point::{ReadSegmentEntry, SegmentEntry};
 use segment::id_tracker::{IdTracker, IdTrackerRead};
 use segment::index::candidate_scoring::score_candidates;
+#[cfg(feature = "lmi-research")]
+use segment::index::candidate_scoring::score_candidates_profiled;
 use segment::segment::Segment;
 use segment::segment_constructor::build_segment;
 use segment::segment_constructor::simple_segment_constructor::build_simple_segment;
@@ -169,4 +171,58 @@ fn float16_cosine_candidates_use_authoritative_storage() {
     )
     .unwrap();
     assert_eq!(result.iter().map(|p| p.idx).collect::<Vec<_>>(), vec![0, 1]);
+}
+
+#[cfg(feature = "lmi-research")]
+#[test]
+fn research_profiler_preserves_scores_and_counts_actual_scoring() {
+    let _scope = common::ambient::unmeasured_guard(common::reason::reason("LMI research profiler"));
+    let (_root, segment) = fixture();
+    let query: QueryVector = [1.0_f32, 0.0].into();
+    let tracker = segment.id_tracker.borrow();
+    let storage = segment.vector_data[DEFAULT_VECTOR_NAME]
+        .vector_storage
+        .borrow();
+    let context = VectorQueryContext::default();
+    let input = [4, 1, 1, 2, 3, 99];
+    let expected = score_candidates(&query, &input, 3, &tracker, &storage, &context).unwrap();
+    let (observed, profile) =
+        score_candidates_profiled(&query, &input, 3, &*tracker, &*storage, &context).unwrap();
+    assert_eq!(observed, expected);
+    assert_eq!(profile.input_offsets, 6);
+    assert_eq!(profile.bounded_offsets, 4);
+    assert_eq!(profile.deferred_visible_offsets, 4);
+    assert_eq!(profile.scored_vectors, 4);
+    assert_eq!(profile.returned_hits, 3);
+    assert!(profile.raw_score_ns <= profile.scorer_loop_ns);
+    assert!(profile.topk_ns <= profile.scorer_loop_ns);
+}
+
+#[cfg(feature = "lmi-research")]
+#[test]
+fn research_profiler_distinguishes_tracker_and_vector_visibility() {
+    let _scope = common::ambient::unmeasured_guard(common::reason::reason("LMI research profiler"));
+    let (_root, segment) = fixture();
+    segment.id_tracker.borrow_mut().drop(2.into()).unwrap();
+    segment.vector_data[DEFAULT_VECTOR_NAME]
+        .vector_storage
+        .borrow_mut()
+        .delete_vector(0)
+        .unwrap();
+    let query: QueryVector = [1.0_f32, 0.0].into();
+    let tracker = segment.id_tracker.borrow();
+    let storage = segment.vector_data[DEFAULT_VECTOR_NAME]
+        .vector_storage
+        .borrow();
+    let context = VectorQueryContext::default();
+    let expected =
+        score_candidates(&query, &[0, 1, 2, 3], 4, &tracker, &storage, &context).unwrap();
+    let (observed, profile) =
+        score_candidates_profiled(&query, &[0, 1, 2, 3], 4, &*tracker, &*storage, &context)
+            .unwrap();
+    assert_eq!(observed, expected);
+    assert_eq!(profile.bounded_offsets, 4);
+    assert_eq!(profile.deferred_visible_offsets, 3);
+    assert_eq!(profile.scored_vectors, 2);
+    assert_eq!(profile.returned_hits, 2);
 }

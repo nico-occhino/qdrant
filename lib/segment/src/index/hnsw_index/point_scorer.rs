@@ -588,6 +588,68 @@ impl<'a> BatchFilteredSearcher<'a> {
             .collect();
         Ok(results)
     }
+
+    /// Research-only accounting at the actual native scorer call site.
+    /// The three durations are exclusive portions of this method; `total_ns`
+    /// also includes iterator and visibility checks.
+    #[cfg(feature = "lmi-research")]
+    pub fn peek_top_iter_profiled(
+        mut self,
+        mut points: impl Iterator<Item = PointOffsetType>,
+        is_stopped: &AtomicBool,
+    ) -> OperationResult<(Vec<Vec<ScoredPointOffset>>, usize, u64, u64, u64)> {
+        use std::time::Instant;
+        let began = Instant::now();
+        let mut scored = 0usize;
+        let mut score_ns = 0u64;
+        let mut topk_ns = 0u64;
+        let mut chunk = [0; VECTOR_READ_BATCH_SIZE];
+        let mut scores_buffer = [0.0; VECTOR_READ_BATCH_SIZE];
+        loop {
+            check_process_stopped(is_stopped)?;
+            let mut chunk_size = 0;
+            for point_id in &mut points {
+                check_process_stopped(is_stopped)?;
+                if !self.filters.check_vector(point_id) {
+                    continue;
+                }
+                chunk[chunk_size] = point_id;
+                chunk_size += 1;
+                if chunk_size == VECTOR_READ_BATCH_SIZE {
+                    break;
+                }
+            }
+            if chunk_size == 0 {
+                break;
+            }
+            for BatchSearch { raw_scorer, top_k } in &mut self.scorer_batch {
+                let tick = Instant::now();
+                raw_scorer.score_points(&chunk[..chunk_size], &mut scores_buffer[..chunk_size])?;
+                score_ns = score_ns.saturating_add(tick.elapsed().as_nanos() as u64);
+                scored = scored.saturating_add(chunk_size);
+                let tick = Instant::now();
+                for i in 0..chunk_size {
+                    top_k.push(ScoredPointOffset {
+                        idx: chunk[i],
+                        score: scores_buffer[i],
+                    });
+                }
+                topk_ns = topk_ns.saturating_add(tick.elapsed().as_nanos() as u64);
+            }
+        }
+        let results = self
+            .scorer_batch
+            .into_iter()
+            .map(|BatchSearch { top_k, .. }| top_k.into_vec())
+            .collect();
+        Ok((
+            results,
+            scored,
+            score_ns,
+            topk_ns,
+            began.elapsed().as_nanos() as u64,
+        ))
+    }
 }
 
 /// Score one harvested chunk against every scorer and push into its queue.
