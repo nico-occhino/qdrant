@@ -30,14 +30,6 @@ pub fn check_build_memory(
 pub const fn training_available() -> bool {
     cfg!(feature = "lmi-training")
 }
-pub use postings::CompactPostings;
-pub use routing::{LinearLayer, LmiRoutingState, MlpRouter, RouterLayer};
-#[cfg(feature = "testing")]
-pub use state::save_fixture_state;
-pub use state::{
-    LMI_POSTINGS_FILE, LMI_ROUTER_FILE, LMI_STATE_FILE, LmiStateMetadata, RouterPreprocessing,
-};
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -47,12 +39,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use atomic_refcell::AtomicRefCell;
 use common::types::{PointOffsetType, ScoredPointOffset, TelemetryDetail};
+pub use postings::CompactPostings;
+pub use routing::{LinearLayer, LmiRoutingState, MlpRouter, RouterLayer};
 use sparse::common::types::DimId;
+#[cfg(feature = "testing")]
+pub use state::save_fixture_state;
+pub use state::{
+    LMI_POSTINGS_FILE, LMI_ROUTER_FILE, LMI_STATE_FILE, LmiStateMetadata, RouterPreprocessing,
+};
 
 use crate::common::operation_error::{OperationError, OperationResult};
 use crate::data_types::query_context::VectorQueryContext;
-use crate::data_types::vectors::VectorInternal;
-use crate::data_types::vectors::{QueryVector, VectorRef};
+use crate::data_types::vectors::{QueryVector, VectorInternal, VectorRef};
 use crate::id_tracker::IdTrackerEnum;
 use crate::index::candidate_scoring::score_candidates;
 use crate::index::plain_vector_index::PlainVectorIndex;
@@ -76,6 +74,9 @@ pub struct LmiIndex {
     learned_searches: AtomicU64,
     #[cfg(feature = "testing")]
     plain_fallbacks: AtomicU64,
+    /// Posting offsets selected by successful learned searches, before visibility filtering.
+    #[cfg(feature = "testing")]
+    selected_candidate_offsets: AtomicU64,
     routing_state: Option<LmiRoutingState>,
     routing_distance: Option<Distance>,
     state_files: Vec<PathBuf>,
@@ -105,6 +106,8 @@ impl LmiIndex {
             learned_searches: AtomicU64::new(0),
             #[cfg(feature = "testing")]
             plain_fallbacks: AtomicU64::new(0),
+            #[cfg(feature = "testing")]
+            selected_candidate_offsets: AtomicU64::new(0),
             routing_state: None,
             routing_distance: None,
             state_files: Vec::new(),
@@ -165,6 +168,12 @@ impl LmiIndex {
         )
     }
 
+    /// Counts selected posting offsets, not necessarily scored or visible points.
+    #[cfg(feature = "testing")]
+    pub fn selected_candidate_offsets_for_test(&self) -> u64 {
+        self.selected_candidate_offsets.load(Ordering::Relaxed)
+    }
+
     fn supports_candidates(
         &self,
         vectors: &[&QueryVector],
@@ -191,9 +200,6 @@ impl VectorIndexRead for LmiIndex {
     ) -> OperationResult<Vec<Vec<ScoredPointOffset>>> {
         if self.supports_candidates(vectors, filter, params) {
             if let Some(state) = &self.routing_state {
-                #[cfg(feature = "testing")]
-                self.learned_searches
-                    .fetch_add(vectors.len() as u64, Ordering::Relaxed);
                 let tracker = self.id_tracker.borrow();
                 let storage = self.vector_storage.borrow();
                 return vectors
@@ -215,14 +221,23 @@ impl VectorIndexRead for LmiIndex {
                                     "LMI candidate routing received unsupported query",
                                 )
                             })?;
-                        score_candidates(
+                        let result = score_candidates(
                             query,
                             &candidates,
                             top,
                             &*tracker,
                             &*storage,
                             query_context,
-                        )
+                        )?;
+                        #[cfg(feature = "testing")]
+                        {
+                            self.learned_searches.fetch_add(1, Ordering::Relaxed);
+                            self.selected_candidate_offsets.fetch_add(
+                                u64::try_from(candidates.len()).unwrap_or(u64::MAX),
+                                Ordering::Relaxed,
+                            );
+                        }
+                        Ok(result)
                     })
                     .collect();
             }
@@ -245,11 +260,13 @@ impl VectorIndexRead for LmiIndex {
                     .collect();
             }
         }
+        let result = self
+            .plain
+            .search(vectors, filter, top, params, query_context)?;
         #[cfg(feature = "testing")]
         self.plain_fallbacks
             .fetch_add(vectors.len() as u64, Ordering::Relaxed);
-        self.plain
-            .search(vectors, filter, top, params, query_context)
+        Ok(result)
     }
 
     fn get_telemetry_data(&self, detail: TelemetryDetail) -> VectorIndexSearchesTelemetry {

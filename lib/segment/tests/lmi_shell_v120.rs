@@ -140,6 +140,12 @@ fn exact_filter_and_nondefault_params_use_plain() {
         ids(&lmi, Some(&filter), None),
         ids(&plain, Some(&filter), None)
     );
+    let index = lmi.vector_data[DEFAULT_VECTOR_NAME].vector_index.borrow();
+    let VectorIndexEnum::Lmi(lmi_index) = &*index else {
+        panic!("expected LMI")
+    };
+    assert_eq!(lmi_index.search_path_counts_for_test(), (0, 3));
+    assert_eq!(lmi_index.selected_candidate_offsets_for_test(), 0);
 }
 
 #[test]

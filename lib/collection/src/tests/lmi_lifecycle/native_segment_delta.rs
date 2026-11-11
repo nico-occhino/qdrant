@@ -1,6 +1,6 @@
 //! Native collection mixed-index lifecycle experiment; synthetic data only.
-use super::*;
-use crate::operations::types::Datatype;
+use std::collections::BTreeMap;
+
 use common::generic_consts::Random;
 use common::types::DeferredBehavior;
 use segment::data_types::vectors::VectorInternal;
@@ -10,7 +10,9 @@ use segment::index::VectorIndexEnum;
 use segment::types::VectorStorageDatatype;
 use segment::vector_storage::VectorStorageRead;
 use shard::segment_holder::locked::LockedSegmentHolder;
-use std::collections::BTreeMap;
+
+use super::*;
+use crate::operations::types::Datatype;
 
 const N: u64 = 10_000;
 const BASE_ID: u64 = 1_000_003;
@@ -99,7 +101,7 @@ fn ownership(h: &LockedSegmentHolder) -> BTreeMap<u64, (String, u32, &'static st
     out
 }
 
-fn counters(h: &LockedSegmentHolder) -> BTreeMap<String, (u64, u64)> {
+fn counters(h: &LockedSegmentHolder) -> BTreeMap<String, (u64, u64, u64)> {
     h.read()
         .iter_original()
         .filter_map(|(_, locked)| {
@@ -109,7 +111,11 @@ fn counters(h: &LockedSegmentHolder) -> BTreeMap<String, (u64, u64)> {
                 .borrow();
             match &*idx {
                 VectorIndexEnum::Lmi(lmi) => {
-                    Some((s.uuid.to_string(), lmi.search_path_counts_for_test()))
+                    let (learned, fallback) = lmi.search_path_counts_for_test();
+                    Some((
+                        s.uuid.to_string(),
+                        (learned, fallback, lmi.selected_candidate_offsets_for_test()),
+                    ))
                 }
                 _ => None,
             }
@@ -152,9 +158,14 @@ async fn query(c: &Collection, axes: &[usize], limit: usize) -> Vec<(u64, f32)> 
             "normal collection search did not execute learned routing"
         );
         assert_eq!(now.1, counts.1, "eligible query fell back to Plain");
+        assert!(
+            now.2 > counts.2,
+            "learned route selected no posting candidates"
+        );
         println!(
-            "NATIVE_LMI_ROUTE segment={uuid} learned_delta={} fallback_delta=0",
-            now.0 - counts.0
+            "NATIVE_LMI_ROUTE segment={uuid} learned_delta={} fallback_delta=0 selected_offsets_delta={}",
+            now.0 - counts.0,
+            now.2 - counts.2
         );
     }
     let hits: Vec<_> = found
