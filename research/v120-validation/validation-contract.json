@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "status": "preflight_only",
+  "port": {
+    "branch": "port/qdrant-v1.20",
+    "pre_validation_head": "3790d4308e96a22684e0441038df02316b9ac75f",
+    "upstream_v1_20_0_commit": "222b2e44ab1c3f17e8246396ead6558e45041df7",
+    "historical_committed_lmi_source": "9b12d583b1bf9df802b2cc420244bd3c24732d86",
+    "accepted_full_scale_source_requires_separate_frozen_overlay": true
+  },
+  "historical_300k_protocol": {
+    "population": 300000,
+    "dimension": 768,
+    "stored_datatype": "float16",
+    "distance": "Cosine",
+    "external_id_origin": 1,
+    "warmup_queries": 20,
+    "measured_queries": 9980,
+    "lmi_config": {
+      "n_buckets": 548,
+      "sample_size": 32768,
+      "hidden_dim": 512,
+      "epochs": 30,
+      "batch_size": 256,
+      "routing_batch_size": 256,
+      "kmeans_iterations": 5,
+      "nprobe": 4,
+      "seed": 42
+    },
+    "source_files": [
+      {
+        "path": "/mnt/c/datasets/sisap2023/laion2B-en-clip768v2-n=300K.h5",
+        "md5": "d238b4b037c32bae41e497f95dffa895",
+        "verified": true
+      },
+      {
+        "path": "/mnt/c/datasets/sisap2023/public-queries-10k-clip768v2.h5",
+        "md5": "257b9eb3f7f25776e0d33b22451b7b32",
+        "verified": true
+      },
+      {
+        "path": "/mnt/c/datasets/sisap2023/laion2B-en-public-gold-standard-v2-300K-F64-IEEE754.h5",
+        "md5": "5d635f26630cced971358fd76f37c32e",
+        "verified": true
+      }
+    ],
+    "historical_result_file": {
+      "path": "/home/nicoo/work/qdrant/work/phase_s3/sisap2023/300k-f16-release/queries.jsonl",
+      "sha256": "5a8c2c381f7ad3a5887dfcd909dc605be01abc1b541a94afdb323dc93bc63c84"
+    },
+    "historical_persisted_state": {
+      "directory": "/home/nicoo/work/lmi-sisap2023-storage/300k-f16-release/storage/collections/sisap2023_300k_f16_lmi/0/segments/0a07455e-671e-49d0-b07c-0caf871264d9/vector_index",
+      "metadata_version": 2,
+      "state_json_sha256": "8e60d7d53e01d56162b51c26ce4acf9d021bbd60fe34db4fdfcdfe4a694037aa",
+      "router_bin_sha256": "fc305f4d41605749e8659e0768d6f61b241f511bd5d2f548453548d5aa8a353b",
+      "postings_bin_sha256": "2de90b4dd9c2aeb673ba6e74bc742c12ed5684793c9ef7510bffb03331e73c81"
+    }
+  },
+  "differential_acceptance": {
+    "identity_unit": "stable external point ID, never cross-version physical offset",
+    "posting_membership": "exact external-ID set when the same verified router and assignment are used",
+    "candidate_membership": "exact external-ID set for the same buckets and posting generation",
+    "ranking": "ordered by native score with exact-score boundary ties recorded explicitly",
+    "scores": "finite native Float32 results; any tolerance must be derived from measured scorer reduction differences",
+    "official_recall": "unchanged original SISAP23 ID-overlap metric, separate from native exactness",
+    "mutation": "applied insert/upsert/delete must respect authoritative Qdrant visibility and unique external IDs",
+    "fallback": "every tested learned or Plain path must be explicitly attributed",
+    "reopen": "clean restart retains logical IDs, visibility, config and trained route when supported"
+  },
+  "known_gate_blockers": [
+    "Historical 300K LMI metadata is version 2, while both committed v1.19 mainline and v1.20 port require version 3; direct reuse is not yet validated.",
+    "The historical 300K result was produced by an older source/protocol, so it is a reference, not a same-source v1.19 comparator.",
+    "The repository's full OpenAPI generator requires Docker; Docker is unavailable in this WSL distro."
+  ]
+}
