@@ -123,6 +123,28 @@ fn counters(h: &LockedSegmentHolder) -> BTreeMap<String, (u64, u64, u64)> {
         .collect()
 }
 
+// Experimental validator: captures every current native holder member while locked.
+// Not a production publication or concurrency boundary.
+fn test_descriptor(h: &LockedSegmentHolder) -> serde_json::Value {
+    let h = h.read();
+    let mut members = Vec::new();
+    for (_, segment) in h.iter() {
+        let s = segment.get().read();
+        let cfg = s.config().clone();
+        let uuid = s.segment_uuid().to_string();
+        let artifacts = ["lmi_state.json", "lmi_router.bin", "lmi_postings.bin"].map(|name| {
+            std::fs::read(s.data_path().join("vector_index").join(name)).ok().map(|data| Sha256::digest(data).to_vec())
+        });
+        members.push(serde_json::json!({"physical":uuid,"config":cfg,"artifacts":artifacts}));
+    }
+    members.sort_by(|a,b| a["physical"].as_str().cmp(&b["physical"].as_str()));
+    serde_json::json!({"version":1,"generation":1,"members":members})
+}
+fn test_descriptor_valid(bytes: &[u8], h: &LockedSegmentHolder) -> bool {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else { return false };
+    value == test_descriptor(h)
+}
+
 async fn query(c: &Collection, axes: &[usize], limit: usize) -> Vec<(u64, f32)> {
     let h = holder(c).await;
     let before = counters(&h);
@@ -402,6 +424,25 @@ async fn dli_recovery_control_body() {
     let stale_members: std::collections::BTreeSet<String> = before.values().map(|v| v.0.clone()).collect();
     let metadata_path = root.path().join("dli-test-metadata.json");
     std::fs::write(&metadata_path, serde_json::to_vec(&stale_members).unwrap()).unwrap();
+    let full_descriptor = serde_json::to_vec(&test_descriptor(&holder(&c).await)).unwrap();
+    assert!(test_descriptor_valid(&full_descriptor, &holder(&c).await));
+    assert!(!test_descriptor_valid(b"{", &holder(&c).await));
+    let mut wrong: serde_json::Value = serde_json::from_slice(&full_descriptor).unwrap();
+    wrong["version"] = serde_json::json!(999);
+    assert!(!test_descriptor_valid(&serde_json::to_vec(&wrong).unwrap(), &holder(&c).await));
+    let mut missing: serde_json::Value = serde_json::from_slice(&full_descriptor).unwrap();
+    missing["members"].as_array_mut().unwrap().pop();
+    assert!(!test_descriptor_valid(&serde_json::to_vec(&missing).unwrap(), &holder(&c).await));
+    let mut duplicate: serde_json::Value = serde_json::from_slice(&full_descriptor).unwrap();
+    let first = duplicate["members"][0].clone();
+    duplicate["members"].as_array_mut().unwrap().push(first);
+    assert!(!test_descriptor_valid(&serde_json::to_vec(&duplicate).unwrap(), &holder(&c).await));
+    let mut bad_generation: serde_json::Value = serde_json::from_slice(&full_descriptor).unwrap();
+    bad_generation["generation"] = serde_json::json!(2);
+    assert!(!test_descriptor_valid(&serde_json::to_vec(&bad_generation).unwrap(), &holder(&c).await));
+    let mut bad_artifact: serde_json::Value = serde_json::from_slice(&full_descriptor).unwrap();
+    bad_artifact["members"][0]["artifacts"][0] = serde_json::json!([0, 1]);
+    assert!(!test_descriptor_valid(&serde_json::to_vec(&bad_artifact).unwrap(), &holder(&c).await));
     let immutable_base_files = lmi_generations(&path);
     println!("NATIVE_LMI_STAGE static_ready points={}", expected.len());
     exact_axis_oracle(&c, &expected, 15).await;
@@ -502,14 +543,18 @@ async fn dli_recovery_control_body() {
     );
     assert!(optimized.values().all(|v| v.2 == "lmi"));
     assert_ne!(optimized[&BASE_ID].0, pre_restart[&BASE_ID].0);
+    assert!(!test_descriptor_valid(&full_descriptor, &holder(&c).await), "topology change must invalidate the old descriptor");
     let restored: std::collections::BTreeSet<String> = serde_json::from_slice(&std::fs::read(metadata_path).unwrap()).unwrap();
     let recovered_members: std::collections::BTreeSet<String> = optimized.values().map(|v| v.0.clone()).collect();
     assert_ne!(restored, recovered_members, "stale descriptor must be rejected after native reopen");
     println!("DLI_STALE_DESCRIPTOR_REJECTED old={restored:?} recovered={recovered_members:?}");
+    // Test-only dispatch: topology is quiescent; no atomicity with search is claimed.
+    let fallback = !test_descriptor_valid(&full_descriptor, &holder(&c).await);
+    assert!(fallback);
     let mut query_vector = vec![0.0; DIM]; query_vector[0] = 1.0;
     let exact = c.search(CoreSearchRequest {
         query: QueryEnum::Nearest(NamedQuery::default_dense(query_vector)), filter: None,
-        params: Some(SearchParams { exact: true, ..Default::default() }), limit: expected.len() + 10,
+        params: Some(SearchParams { exact: fallback, ..Default::default() }), limit: expected.len() + 10,
         offset: 0, with_payload: None, with_vector: None, score_threshold: None,
     }, None, None, &ShardSelectorInternal::All, None).await.unwrap();
     assert_eq!(exact.len(), expected.len());
