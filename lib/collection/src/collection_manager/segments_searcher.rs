@@ -50,6 +50,59 @@ type BatchSearchResult = Vec<SegmentBatchSearchResult>;
 // Result of batch search in one segment
 type SegmentSearchExecutedResult = CollectionResult<(SegmentBatchSearchResult, Vec<bool>)>;
 
+/// Experimental topology hint. UUIDs identify physical segments, not DLI
+/// levels or model generations. This is not a persisted DLI descriptor.
+#[cfg(feature = "dli-research")]
+#[derive(Clone, Debug)]
+pub struct DliTopologyHint {
+    pub physical_segments: Vec<uuid::Uuid>,
+}
+
+/// Reason the experimental entry point ran a complete native exact search.
+#[cfg(feature = "dli-research")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DliFallbackReason {
+    MissingHint,
+    TopologyMismatch,
+    ProxyPresent,
+    TopologyBusy,
+    LearnedRoutingUnavailable,
+}
+
+#[cfg(feature = "dli-research")]
+fn dli_fallback_reason(
+    segments: &[LockedSegment],
+    hint: Option<&DliTopologyHint>,
+) -> DliFallbackReason {
+    use std::collections::HashSet;
+    let Some(hint) = hint else {
+        return DliFallbackReason::MissingHint;
+    };
+    if segments
+        .iter()
+        .any(|s| matches!(s, LockedSegment::Proxy(_)))
+    {
+        return DliFallbackReason::ProxyPresent;
+    }
+    let expected: HashSet<_> = hint.physical_segments.iter().copied().collect();
+    let mut actual = HashSet::with_capacity(segments.len());
+    for segment in segments {
+        let Some(read) = segment.get_read().try_read() else {
+            return DliFallbackReason::TopologyBusy;
+        };
+        actual.insert(read.segment_uuid());
+    }
+    if expected.len() != hint.physical_segments.len()
+        || actual.len() != segments.len()
+        || expected != actual
+    {
+        return DliFallbackReason::TopologyMismatch;
+    }
+    // A matching topology is necessary but insufficient: level assignment,
+    // artifact integrity and coordinated learned routing are not implemented.
+    DliFallbackReason::LearnedRoutingUnavailable
+}
+
 /// Simple implementation of segment manager
 ///  - rebuild segment for memory optimization purposes
 #[derive(Default)]
@@ -294,24 +347,92 @@ impl SegmentsSearcher {
         query_context: QueryContext,
         timeout: Duration,
     ) -> CollectionResult<Vec<Vec<ScoredPoint>>> {
+        let started = Instant::now();
+        let captured = Self::capture_segments(&segments, timeout)?;
+        Self::search_captured(
+            captured,
+            batch_request,
+            runtime_handle,
+            sampling_enabled,
+            query_context,
+            timeout.saturating_sub(started.elapsed()),
+        )
+        .await
+    }
+
+    /// Experimental correctness baseline for a future derived DLI view.
+    /// Always executes native exact search: learned DLI routing is not yet
+    /// integrated. The capture and execution share the same native handles.
+    #[cfg(feature = "dli-research")]
+    pub async fn search_dli_exact_fallback(
+        holder: LockedSegmentHolder,
+        hint: Option<&DliTopologyHint>,
+        batch_request: Arc<CoreSearchRequestBatch>,
+        runtime_handle: &AdaptiveSearchHandle,
+        query_context: QueryContext,
+        timeout: Duration,
+    ) -> CollectionResult<(Vec<Vec<ScoredPoint>>, DliFallbackReason)> {
+        let started = Instant::now();
+        let segments = Self::capture_segments(&holder, timeout)?;
+        let reason = dli_fallback_reason(&segments, hint);
+        let mut exact_request = (*batch_request).clone();
+        for request in &mut exact_request.searches {
+            if !matches!(
+                &request.query,
+                shard::query::query_enum::QueryEnum::Nearest(named)
+                    if matches!(&named.query, segment::data_types::vectors::VectorInternal::Dense(_))
+            ) {
+                return Err(CollectionError::bad_request(
+                    "experimental DLI fallback supports dense nearest-neighbor queries only",
+                ));
+            }
+            let params = request.params.get_or_insert_default();
+            if params.indexed_only {
+                return Err(CollectionError::bad_request(
+                    "experimental DLI fallback requires complete segment coverage",
+                ));
+            }
+            params.exact = true;
+        }
+        log::debug!("dli_research: full native exact fallback: {reason:?}");
+        let result = Self::search_captured(
+            segments,
+            Arc::new(exact_request),
+            runtime_handle,
+            false,
+            query_context,
+            timeout.saturating_sub(started.elapsed()),
+        )
+        .await?;
+        Ok((result, reason))
+    }
+
+    /// Pin the complete holder membership for one search execution. The handles
+    /// preserve object lifetime, not a point-in-time snapshot of point contents.
+    pub(crate) fn capture_segments(
+        holder: &LockedSegmentHolder,
+        timeout: Duration,
+    ) -> CollectionResult<Vec<LockedSegment>> {
+        let Some(guard) = holder.try_read_for(timeout) else {
+            return Err(CollectionError::timeout(timeout, "search"));
+        };
+        Ok(guard.non_appendable_then_appendable_segments().collect())
+    }
+
+    /// Run native search and sampling reruns on precisely the supplied handles.
+    /// A caller must capture the complete holder set and validate any optional
+    /// routing metadata against this same set before using this entry point.
+    pub(crate) async fn search_captured(
+        segments: Vec<LockedSegment>,
+        batch_request: Arc<CoreSearchRequestBatch>,
+        runtime_handle: &AdaptiveSearchHandle,
+        sampling_enabled: bool,
+        query_context: QueryContext,
+        timeout: Duration,
+    ) -> CollectionResult<Vec<Vec<ScoredPoint>>> {
         let start = Instant::now();
         let query_context_arc = Arc::new(query_context);
-
-        // Using block to ensure `segments` variable is dropped in the end of it
         let (locked_segments, searches): (Vec<_>, Vec<_>) = {
-            let segments: Vec<_> = {
-                // Unfortunately, we have to do `segments.read()` twice, once in blocking task
-                // and once here, due to `Send` bounds :/
-                let Some(segments_lock) = segments.try_read_for(timeout) else {
-                    return Err(CollectionError::timeout(timeout, "search"));
-                };
-
-                // Collect the segments first so we don't lock the segment holder during the operations.
-                segments_lock
-                    .non_appendable_then_appendable_segments()
-                    .collect()
-            };
-
             // Probabilistic sampling for the `limit` parameter avoids over-fetching points from segments.
             // e.g. 10 segments with limit 1000 would fetch 10000 points in total and discard 9000 points.
             // With probabilistic sampling we determine a smaller sampling limit for each segment.
@@ -1019,6 +1140,187 @@ mod tests {
 
         assert!(result[0].id == 3.into() || result[0].id == 11.into());
         assert!(result[1].id == 3.into() || result[1].id == 11.into());
+    }
+
+    #[tokio::test]
+    async fn test_captured_search_uses_only_pinned_holder_members() {
+        use segment::data_types::vectors::only_default_vector;
+        use segment::entry::SegmentEntry as _;
+        use segment::segment_constructor::simple_segment_constructor::build_simple_segment;
+        use segment::types::Distance;
+
+        let _scope = ambient::test_guard();
+        let dir = Builder::new().prefix("captured-search").tempdir().unwrap();
+        let holder = build_test_holder(dir.path());
+        let captured = SegmentsSearcher::capture_segments(&holder, TEST_TIMEOUT).unwrap();
+        let mut added = build_simple_segment(dir.path(), 4, Distance::Dot).unwrap();
+        added
+            .upsert_point(
+                100,
+                999_999_u64.into(),
+                only_default_vector(&[100.0, 0.0, 0.0, 0.0]),
+            )
+            .unwrap();
+        holder.write().add_new(added);
+        let request = Arc::new(CoreSearchRequestBatch {
+            searches: vec![CoreSearchRequest {
+                query: vec![1.0, 1.0, 1.0, 1.0].into(),
+                with_payload: None,
+                with_vector: None,
+                filter: None,
+                params: None,
+                limit: 20,
+                score_threshold: None,
+                offset: 0,
+            }],
+        });
+        let context = || {
+            QueryContext::new(
+                DEFAULT_INDEXING_THRESHOLD_KB,
+                Handoff::Measured(AmbientContext::new()),
+            )
+        };
+        let old = SegmentsSearcher::search_captured(
+            captured,
+            request.clone(),
+            &AdaptiveSearchHandle::current_for_tests(),
+            false,
+            context(),
+            TEST_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        assert!(!old[0].iter().any(|p| p.id == 999_999_u64.into()));
+        let current = SegmentsSearcher::search(
+            holder,
+            request,
+            &AdaptiveSearchHandle::current_for_tests(),
+            false,
+            context(),
+            TEST_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        assert_eq!(current[0][0].id, 999_999_u64.into());
+    }
+
+    #[cfg(feature = "dli-research")]
+    #[tokio::test]
+    async fn test_dli_exact_fallback_uses_native_search() {
+        let dir = Builder::new().prefix("dli-fallback").tempdir().unwrap();
+        let holder = build_test_holder(dir.path());
+        let req = CoreSearchRequest {
+            query: vec![1.0, 1.0, 1.0, 1.0].into(),
+            with_payload: None,
+            with_vector: None,
+            filter: Some(Filter::new_must(Condition::HasId(HasIdCondition::from(
+                [3_u64.into(), 11_u64.into()]
+                    .into_iter()
+                    .collect::<AHashSet<_>>(),
+            )))),
+            params: None,
+            limit: 5,
+            score_threshold: None,
+            offset: 0,
+        };
+        let batch = Arc::new(CoreSearchRequestBatch {
+            searches: vec![req.clone()],
+        });
+        let context = || {
+            QueryContext::new(
+                DEFAULT_INDEXING_THRESHOLD_KB,
+                Handoff::Measured(AmbientContext::new()),
+            )
+        };
+        let captured = SegmentsSearcher::capture_segments(&holder, TEST_TIMEOUT).unwrap();
+        let mut hint = DliTopologyHint {
+            physical_segments: captured
+                .iter()
+                .map(|s| s.get_read().read().segment_uuid())
+                .collect(),
+        };
+        assert_eq!(
+            dli_fallback_reason(&captured, Some(&hint)),
+            DliFallbackReason::LearnedRoutingUnavailable
+        );
+        let prior_hint = hint.clone();
+        hint.physical_segments.pop();
+        assert_eq!(
+            dli_fallback_reason(&captured, Some(&hint)),
+            DliFallbackReason::TopologyMismatch
+        );
+        hint.physical_segments.push(hint.physical_segments[0]);
+        assert_eq!(
+            dli_fallback_reason(&captured, Some(&hint)),
+            DliFallbackReason::TopologyMismatch
+        );
+        let actual = SegmentsSearcher::search_dli_exact_fallback(
+            holder.clone(),
+            None,
+            batch.clone(),
+            &AdaptiveSearchHandle::current_for_tests(),
+            context(),
+            TEST_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        holder
+            .write()
+            .add_new(crate::collection_manager::fixtures::empty_segment(
+                dir.path(),
+            ));
+        let stale = SegmentsSearcher::search_dli_exact_fallback(
+            holder.clone(),
+            Some(&prior_hint),
+            batch,
+            &AdaptiveSearchHandle::current_for_tests(),
+            context(),
+            TEST_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        assert_eq!(stale.1, DliFallbackReason::TopologyMismatch);
+        assert_eq!(stale.0, actual.0);
+        let mut incomplete = req.clone();
+        incomplete.params = Some(segment::types::SearchParams {
+            indexed_only: true,
+            ..Default::default()
+        });
+        let rejected = SegmentsSearcher::search_dli_exact_fallback(
+            holder.clone(),
+            None,
+            Arc::new(CoreSearchRequestBatch {
+                searches: vec![incomplete],
+            }),
+            &AdaptiveSearchHandle::current_for_tests(),
+            context(),
+            TEST_TIMEOUT,
+        )
+        .await;
+        assert!(
+            rejected.is_err(),
+            "indexed-only cannot promise full coverage"
+        );
+        let mut exact = req;
+        exact.params = Some(segment::types::SearchParams {
+            exact: true,
+            ..Default::default()
+        });
+        let expected = SegmentsSearcher::search(
+            holder,
+            Arc::new(CoreSearchRequestBatch {
+                searches: vec![exact],
+            }),
+            &AdaptiveSearchHandle::current_for_tests(),
+            false,
+            context(),
+            TEST_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        assert_eq!(actual.1, DliFallbackReason::MissingHint);
+        assert!(!actual.0[0].is_empty());
+        assert_eq!(actual.0, expected);
     }
 
     #[tokio::test]
