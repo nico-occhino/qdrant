@@ -2966,3 +2966,41 @@ fn unproxy_phase_two_propagation_failure_keeps_change_recoverable() {
          changes log",
     );
 }
+
+/// Research control: holder membership changes while an already acquired handle remains usable.
+/// This does not exercise optimizer publication, concurrent updates or a DLI registry.
+#[test]
+fn dli_research_holder_replacement_preserves_old_handle() {
+    use common::types::DeferredBehavior;
+    let dir = Builder::new()
+        .prefix("dli_holder_control")
+        .tempdir()
+        .unwrap();
+    let mut holder = SegmentHolder::default();
+    let old_id = holder.add_new(build_segment_1(dir.path()));
+    let old_handle = holder.get(old_id).unwrap().clone();
+    assert!(
+        old_handle
+            .get()
+            .read()
+            .has_point(1.into(), DeferredBehavior::WithDeferred)
+    );
+    let (new_id, old_segments) = holder.swap_new(build_segment_1(dir.path()), &[old_id]);
+    assert_ne!(old_id, new_id);
+    assert!(holder.get(old_id).is_none());
+    assert!(
+        holder
+            .get(new_id)
+            .unwrap()
+            .get()
+            .read()
+            .has_point(1.into(), DeferredBehavior::WithDeferred)
+    );
+    assert!(
+        old_handle
+            .get()
+            .read()
+            .has_point(1.into(), DeferredBehavior::WithDeferred)
+    );
+    assert_eq!(old_segments.len(), 1);
+}
