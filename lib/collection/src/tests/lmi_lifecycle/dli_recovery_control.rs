@@ -653,6 +653,86 @@ async fn dli_recovery_control_body() {
         }
         assert_eq!(ids, expected.keys().copied().collect());
         println!("DLI_CAPTURED_EXACT_ORACLE_PASS count={}", ids.len());
+        // Research integration control: real persisted native LMI routers and
+        // postings feed the production arithmetic planner and native scorer.
+        // This is not yet the LocalShard DLI search path.
+        use crate::collection_manager::dli_bucket_plan::{BucketPrediction, select};
+        use segment::data_types::query_context::VectorQueryContext;
+        use segment::data_types::vectors::QueryVector;
+        let h = holder(&c).await;
+        let guard = h.read();
+        let mut predictions = Vec::new();
+        let mut query = vec![0.0; DIM];
+        query[0] = 1.0;
+        for (_, locked) in guard.iter_original() {
+            let s = locked.read();
+            let idx = s.vector_data[segment::data_types::vectors::DEFAULT_VECTOR_NAME]
+                .vector_index
+                .borrow();
+            if let VectorIndexEnum::Lmi(lmi) = &*idx {
+                let routing = lmi.routing_state().unwrap();
+                let logits = routing.router().forward(&query).unwrap();
+                let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                let z: f32 = logits.iter().map(|v| (v - max).exp()).sum();
+                for (bucket, logit) in logits.iter().enumerate() {
+                    predictions.push(BucketPrediction {
+                        level: 1,
+                        physical: s.uuid,
+                        bucket: Some(bucket),
+                        probability: (logit - max).exp() / z,
+                        occupancy: routing.postings().get(bucket).unwrap().len(),
+                    });
+                }
+            }
+        }
+        let planned = select(predictions, 2, 2).unwrap();
+        assert!(!planned.buckets.is_empty());
+        let mut scored_count = 0;
+        for selected in &planned.buckets {
+            let (_, locked) = guard
+                .iter_original()
+                .find(|(_, s)| s.read().uuid == selected.physical)
+                .unwrap();
+            let s = locked.read();
+            let data = &s.vector_data[segment::data_types::vectors::DEFAULT_VECTOR_NAME];
+            let idx = data.vector_index.borrow();
+            let VectorIndexEnum::Lmi(lmi) = &*idx else {
+                unreachable!()
+            };
+            let offsets = lmi
+                .routing_state()
+                .unwrap()
+                .postings()
+                .get(selected.bucket.unwrap())
+                .unwrap();
+            let tracker = s.id_tracker.borrow();
+            let storage = data.vector_storage.borrow();
+            let q: QueryVector = query.clone().into();
+            let scored = segment::index::candidate_scoring::score_candidates(
+                &q,
+                offsets,
+                expected.len(),
+                &tracker,
+                &storage,
+                &VectorQueryContext::default(),
+            )
+            .unwrap();
+            for point in scored {
+                let segment::types::PointIdType::NumId(id) =
+                    tracker.external_id(point.idx).unwrap()
+                else {
+                    unreachable!()
+                };
+                assert_eq!(point.score, if expected[&id] == 0 { 1.0 } else { 0.0 });
+                scored_count += 1;
+            }
+        }
+        assert!(scored_count > 0);
+        println!(
+            "DLI_PLANNER_NATIVE_SCORING budget=2 estimated={} scored={}",
+            planned.estimated_candidates, scored_count
+        );
+        drop(guard);
     }
     println!(
         "NATIVE_LMI_REMAP id={BASE_ID} before={:?} after={:?}",
