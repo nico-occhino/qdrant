@@ -7,3 +7,5 @@ RQ1–RQ4: native composition, pinned readers and real optimizer mutation propag
 Next: design logical generation commit semantics without making the superset-biased native manifest authoritative for exclusive membership or discarding retained WAL preimages. Implement failure injection and native reopen for that protocol before automatic compaction. Do not expose a DLI configuration or run comparative benchmarks until those dependencies pass.
 
 Derived-view continuation: classification remains PARTIAL research topology. A live-holder exact-search fallback control passed; the required recovered LocalShard, metadata and failure-boundary tests remain unrun. No functional DLI or recoverable hierarchy exists.
+
+LocalShard continuation: classification remains research topology prototype. Clean collection reopen, stale test-only owner-set detection and explicit exact native collection search passed; full coverage, automatic fallback, retained-preimage restart, publication failure injection and ongoing invalidation remain open. No functional temporal DLI exists.
