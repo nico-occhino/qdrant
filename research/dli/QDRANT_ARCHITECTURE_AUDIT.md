@@ -20,3 +20,9 @@ Still to trace: API-to-shard routing, WAL/replay, update and proxy semantics, `e
 Verdict: native mechanisms are promising building blocks, but safe registry publication and global routing are **not demonstrated**. An independently maintained registry can be invalidated by normal optimizers and cannot be declared safe; no production implementation should proceed on that assumption.
 
 On startup `LocalShard` normalizes directories, loads segments, checks consistency, and recovers persisted proxy changes before WAL replay (`lib/collection/src/shards/local_shard/mod.rs`). Reloaded segments are added to a newly built holder, reinforcing that its in-memory IDs are not durable level identities. WAL replay can reapply operations and relies on idempotent storage/version behavior. `segment_holder/proxy.rs::unproxy_segments` propagates changes in two passes and refuses to unwrap when propagation fails. These source observations are not a proof of a new registry's recoverability.
+
+## Search call sites examined during continuation
+
+The REST entry is `src/actix/api/search_api.rs::search_points`; collection batch routing is in `lib/collection/src/collection/search.rs::core_search_batch` and `do_core_search_batch`. Local shard search calls `SegmentsSearcher::search` in `lib/collection/src/shards/local_shard/search.rs`, which invokes `search_in_segment` and `ReadSegmentEntry::search_batch`; segment vector-index dispatch then reaches `LmiIndex::search`. This is a source navigation map, not an end-to-end execution trace: intermediate request conversion, read consistency and distributed replica selection remain to be verified.
+
+Static LMI has public read access to `LmiRoutingState::router()` and `postings()`, but `LmiIndex::search` internally performs route, posting lookup and scoring together. Those accessors alone do not supply a supported, generation-bound selected-bucket scoring interface with all Qdrant search semantics.
