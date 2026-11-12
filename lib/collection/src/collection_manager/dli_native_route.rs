@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+use common::types::DeferredBehavior;
 use segment::common::operation_error::{OperationError, OperationResult};
 use segment::data_types::query_context::VectorQueryContext;
 use segment::data_types::vectors::{DEFAULT_VECTOR_NAME, QueryVector};
@@ -14,7 +15,8 @@ use segment::id_tracker::IdTrackerRead;
 use segment::index::candidate_scoring::score_candidates;
 use segment::index::{VectorIndexEnum, VectorIndexRead};
 use segment::segment::Segment;
-use segment::types::{Distance, ScoredPoint, WithPayload, WithVector};
+use segment::types::{Distance, PointIdType, ScoredPoint, WithPayload, WithVector};
+use shard::search_result_aggregator::BatchResultAggregator;
 use uuid::Uuid;
 
 use super::dli_bucket_plan::{BucketPrediction, SelectedBuckets, select};
@@ -30,6 +32,97 @@ pub struct NativeRouteResult {
     /// Live point count, which can exceed the number of vectors in the buffer.
     pub buffer_point_estimate: usize,
     pub per_segment: Vec<(Uuid, Vec<ScoredPoint>)>,
+}
+
+/// Reasons this bounded check cannot establish native visibility. The caller
+/// must run complete native exact search on the same captured holder view.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResolutionFallback {
+    DeletedState,
+    DeferredState,
+    DuplicateMember,
+    AmbiguousOccurrence,
+    CandidateMismatch,
+}
+
+pub enum CandidateResolution {
+    Resolved(Vec<ScoredPoint>),
+    ExactFallback(ResolutionFallback),
+}
+
+/// Conservative version check on caller-pinned original segments. The caller
+/// must independently establish complete holder coverage and keep all segment
+/// read locks for routing and resolution; proxies and filters are unsupported.
+/// Soft-deleted heads are not exposed by `point_versions`, so *any* deleted or
+/// deferred state requires fallback. This is intentionally availability- and
+/// performance-limiting until native tombstone/proxy semantics are established.
+pub fn resolve_pinned_candidates(
+    members: &[(usize, &Segment)],
+    routed: NativeRouteResult,
+    limit: usize,
+) -> OperationResult<CandidateResolution> {
+    let fallback = |reason| Ok(CandidateResolution::ExactFallback(reason));
+    let mut physical = HashSet::new();
+    for &(_, segment) in members {
+        if !physical.insert(segment.uuid) {
+            return fallback(ResolutionFallback::DuplicateMember);
+        }
+        if segment.has_deferred_points() {
+            return fallback(ResolutionFallback::DeferredState);
+        }
+        if segment.deleted_point_count() != 0 {
+            return fallback(ResolutionFallback::DeletedState);
+        }
+    }
+    let mut selected = HashMap::new();
+    for (owner, hits) in &routed.per_segment {
+        if !physical.contains(owner) {
+            return fallback(ResolutionFallback::CandidateMismatch);
+        }
+        let segment = members
+            .iter()
+            .find(|(_, segment)| segment.uuid == *owner)
+            .expect("validated physical member")
+            .1;
+        let tracker = segment.id_tracker.borrow();
+        for hit in hits {
+            let Some(location) = hit.location else {
+                return fallback(ResolutionFallback::CandidateMismatch);
+            };
+            if location.segment != *owner
+                || tracker.external_id(location.offset) != Some(hit.id)
+                || tracker.internal_version(location.offset) != Some(hit.version)
+            {
+                return fallback(ResolutionFallback::CandidateMismatch);
+            }
+            if selected.insert(hit.id, (*owner, hit.version)).is_some() {
+                return fallback(ResolutionFallback::AmbiguousOccurrence);
+            }
+        }
+    }
+    let ids: Vec<PointIdType> = selected.keys().copied().collect();
+    let mut occurrences = HashMap::new();
+    for &(_, segment) in members {
+        let visible = segment.has_points(&ids, DeferredBehavior::VisibleOnly)?;
+        let heads = segment.point_versions(&ids)?;
+        for id in visible {
+            let Some(version) = heads.get(&id) else {
+                return fallback(ResolutionFallback::CandidateMismatch);
+            };
+            if occurrences.insert(id, (segment.uuid, *version)).is_some() {
+                return fallback(ResolutionFallback::AmbiguousOccurrence);
+            }
+        }
+    }
+    if selected != occurrences {
+        return fallback(ResolutionFallback::CandidateMismatch);
+    }
+    let mut aggregator = BatchResultAggregator::new(std::iter::once(limit));
+    aggregator.update_point_versions(routed.per_segment.iter().flat_map(|(_, hits)| hits));
+    aggregator.update_batch_results(0, routed.per_segment.into_iter().flat_map(|(_, hits)| hits));
+    Ok(CandidateResolution::Resolved(
+        aggregator.into_topk().pop().unwrap(),
+    ))
 }
 
 /// Route and score one dense, unfiltered query on explicitly pinned native
@@ -187,6 +280,20 @@ pub fn route_pinned(
     })
 }
 
+/// Route and validate before producing any mergeable results. The caller must
+/// honor `ExactFallback`; this wrapper does not execute collection search.
+pub fn route_resolved_pinned(
+    members: &[(usize, &Segment)],
+    query: &[f32],
+    arity: usize,
+    budget: usize,
+    limit: usize,
+    context: &VectorQueryContext,
+) -> OperationResult<CandidateResolution> {
+    let routed = route_pinned(members, query, arity, budget, context)?;
+    resolve_pinned_candidates(members, routed, limit)
+}
+
 #[cfg(all(test, feature = "lmi-training", feature = "testing"))]
 mod tests {
     use common::flags::FeatureFlags;
@@ -235,6 +342,237 @@ mod tests {
         .unwrap();
         builder.update(&[&src], &AtomicBool::new(false)).unwrap();
         builder.build_for_test(root)
+    }
+
+    #[test]
+    fn unselected_newer_occurrence_requires_fallback() {
+        let _scope = common::ambient::unmeasured_guard(common::reason::reason("DLI version check"));
+        let root = tempfile::tempdir().unwrap();
+        let rows = [
+            (41, [1., 0.]),
+            (42, [0.8, 0.6]),
+            (43, [0., 1.]),
+            (44, [-0.6, 0.8]),
+            (51, [-1., 0.]),
+            (52, [-0.8, -0.6]),
+            (53, [0., -1.]),
+            (54, [0.6, -0.8]),
+        ];
+        let mut a = trained(root.path(), &rows[..4], 17);
+        let b = trained(root.path(), &rows[4..], 29);
+        let mut buffer = build_simple_segment(root.path(), 2, Distance::Cosine).unwrap();
+        buffer
+            .upsert_point(100, 99_u64.into(), only_default_vector(&[0., 1.]))
+            .unwrap();
+        let context = VectorQueryContext::default();
+        let initial = route_pinned(
+            &[(1, &a), (2, &b), (0, &buffer)],
+            &[1., 0.],
+            100,
+            1,
+            &context,
+        )
+        .unwrap();
+        assert!(initial.plan.buckets.iter().all(|bucket| bucket.level != 0));
+        let old = initial
+            .per_segment
+            .iter()
+            .flat_map(|(_, hits)| hits)
+            .next()
+            .unwrap()
+            .clone();
+        assert!(matches!(
+            resolve_pinned_candidates(&[(1, &a), (2, &b), (0, &buffer)], initial, 10).unwrap(),
+            CandidateResolution::Resolved(_)
+        ));
+        // Simulate retained physical preimage and a newer visible native copy.
+        // This is a constructed holder state, not a claim about a completed upsert.
+        buffer
+            .upsert_point(1000, old.id, only_default_vector(&[0., 1.]))
+            .unwrap();
+        let members = [(1, &a), (2, &b), (0, &buffer)];
+        let selected = route_pinned(&members, &[1., 0.], 100, 1, &context).unwrap();
+        assert!(selected.plan.buckets.iter().all(|bucket| bucket.level != 0));
+        assert!(
+            selected
+                .per_segment
+                .iter()
+                .flat_map(|(_, hits)| hits)
+                .any(|h| h.id == old.id && h.version == old.version)
+        );
+        let mut naive = BatchResultAggregator::new([10]);
+        naive.update_point_versions(selected.per_segment.iter().flat_map(|(_, hits)| hits));
+        naive.update_batch_results(
+            0,
+            selected
+                .per_segment
+                .iter()
+                .flat_map(|(_, hits)| hits.iter().cloned()),
+        );
+        assert!(
+            naive.into_topk()[0]
+                .iter()
+                .any(|h| h.id == old.id && h.version == old.version)
+        );
+        assert!(matches!(
+            resolve_pinned_candidates(&members, selected, 10).unwrap(),
+            CandidateResolution::ExactFallback(ResolutionFallback::AmbiguousOccurrence)
+        ));
+        assert!(matches!(
+            route_resolved_pinned(&members, &[1., 0.], 100, 1, 10, &context).unwrap(),
+            CandidateResolution::ExactFallback(ResolutionFallback::AmbiguousOccurrence)
+        ));
+        let all = route_pinned(&members, &[1., 0.], 100, 1000, &context).unwrap();
+        let newest = all
+            .per_segment
+            .iter()
+            .flat_map(|(_, hits)| hits)
+            .find(|hit| hit.id == old.id && hit.version == 1000)
+            .unwrap();
+        assert!(newest.score.abs() < 1e-5);
+        a.delete_point(2000, 41_u64.into()).unwrap();
+        let members = [(1, &a), (2, &b), (0, &buffer)];
+        let selected = route_pinned(&members, &[1., 0.], 100, 1, &context).unwrap();
+        assert!(matches!(
+            resolve_pinned_candidates(&members, selected, 10).unwrap(),
+            CandidateResolution::ExactFallback(ResolutionFallback::DeletedState)
+        ));
+    }
+
+    #[tokio::test]
+    async fn captured_native_exact_fallback_resolves_unselected_newer_copy() {
+        use crate::collection_manager::fixtures::TEST_TIMEOUT;
+        use crate::collection_manager::holders::segment_holder::{LockedSegment, SegmentHolder};
+        use crate::collection_manager::segments_searcher::SegmentsSearcher;
+        use crate::common::adaptive_handle::AdaptiveSearchHandle;
+        use crate::operations::types::CoreSearchRequest;
+        use common::ambient::{AmbientContext, Handoff};
+        use segment::data_types::query_context::QueryContext;
+        use shard::optimizers::config::DEFAULT_INDEXING_THRESHOLD_KB;
+        use shard::search::CoreSearchRequestBatch;
+        use shard::segment_holder::locked::LockedSegmentHolder;
+        use std::sync::Arc;
+
+        let _scope = common::ambient::test_guard();
+        let root = tempfile::tempdir().unwrap();
+        let rows = [
+            (41, [1., 0.]),
+            (42, [0.8, 0.6]),
+            (43, [0., 1.]),
+            (44, [-0.6, 0.8]),
+            (51, [-1., 0.]),
+            (52, [-0.8, -0.6]),
+            (53, [0., -1.]),
+            (54, [0.6, -0.8]),
+        ];
+        let a = trained(root.path(), &rows[..4], 17);
+        let b = trained(root.path(), &rows[4..], 29);
+        let mut buffer = build_simple_segment(root.path(), 2, Distance::Cosine).unwrap();
+        buffer
+            .upsert_point(100, 99_u64.into(), only_default_vector(&[0., 1.]))
+            .unwrap();
+        let context = VectorQueryContext::default();
+        let route = route_pinned(
+            &[(1, &a), (2, &b), (0, &buffer)],
+            &[1., 0.],
+            100,
+            1,
+            &context,
+        )
+        .unwrap();
+        let old = route
+            .per_segment
+            .iter()
+            .flat_map(|(_, hits)| hits)
+            .next()
+            .unwrap()
+            .clone();
+        buffer
+            .upsert_point(1000, old.id, only_default_vector(&[0., 1.]))
+            .unwrap();
+        let uuids = (a.uuid, b.uuid, buffer.uuid);
+        let mut holder = SegmentHolder::default();
+        holder.add_new(a);
+        holder.add_new(b);
+        holder.add_new(buffer);
+        let holder = LockedSegmentHolder::new(holder);
+        let captured = SegmentsSearcher::capture_segments(&holder, TEST_TIMEOUT).unwrap();
+        {
+            let guards: Vec<_> = captured
+                .iter()
+                .map(|locked| match locked {
+                    LockedSegment::Original(segment) => segment.read(),
+                    LockedSegment::Proxy(_) => panic!("unexpected proxy"),
+                })
+                .collect();
+            let members: Vec<_> = guards
+                .iter()
+                .map(|segment| {
+                    let level = if segment.uuid == uuids.0 {
+                        1
+                    } else if segment.uuid == uuids.1 {
+                        2
+                    } else {
+                        assert_eq!(segment.uuid, uuids.2);
+                        0
+                    };
+                    (level, &**segment)
+                })
+                .collect();
+            assert!(matches!(
+                route_resolved_pinned(&members, &[1., 0.], 100, 1, 20, &context).unwrap(),
+                CandidateResolution::ExactFallback(ResolutionFallback::AmbiguousOccurrence)
+            ));
+        }
+        let request = CoreSearchRequest {
+            query: vec![1., 0.].into(),
+            with_payload: None,
+            with_vector: None,
+            filter: None,
+            params: Some(segment::types::SearchParams {
+                exact: true,
+                ..Default::default()
+            }),
+            limit: 20,
+            score_threshold: None,
+            offset: 0,
+        };
+        let result = SegmentsSearcher::search_captured(
+            captured,
+            Arc::new(CoreSearchRequestBatch {
+                searches: vec![request],
+            }),
+            &AdaptiveSearchHandle::current_for_tests(),
+            false,
+            QueryContext::new(
+                DEFAULT_INDEXING_THRESHOLD_KB,
+                Handoff::Measured(AmbientContext::new()),
+            ),
+            TEST_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        let matches: Vec<_> = result[0]
+            .iter()
+            .filter(|point| point.id == old.id)
+            .collect();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].version, 1000);
+        assert!(matches[0].score.abs() < 1e-5);
+        let mut seen = HashSet::new();
+        assert_eq!(result[0].len(), 9);
+        for hit in &result[0] {
+            assert!(seen.insert(hit.id));
+            let expected = if hit.id == old.id || hit.id == 99_u64.into() {
+                0.0
+            } else {
+                let PointIdType::NumId(id) = hit.id else {
+                    panic!("numeric fixture")
+                };
+                rows.iter().find(|row| row.0 == id).unwrap().1[0]
+            };
+            assert!((hit.score - expected).abs() < 1e-5);
+        }
     }
 
     #[test]
@@ -357,5 +695,47 @@ mod tests {
         for hit in &after.per_segment[0].1 {
             assert!((hit.score - expected_scores[&hit.id]).abs() < 1e-5);
         }
+
+        // The count scheduler chooses level 2: include level 1 and the buffer,
+        // but leave the separate level 3 untouched. This remains a private
+        // build and does not model concurrent updates or publication.
+        let plan = crate::collection_manager::dli_schedule::HierarchyConfig {
+            buffer_capacity: 2,
+            arity: 2,
+        }
+        .plan(2, &[3, 0, 3])
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            (plan.target_level, &plan.source_levels, plan.output_points),
+            (2, &vec![1], 5)
+        );
+        let staging = tempfile::tempdir().unwrap();
+        let mut selective = SegmentBuilder::new(
+            staging.path(),
+            &config,
+            &HnswGlobalConfig::default(),
+            FeatureFlags::default(),
+        )
+        .unwrap();
+        selective
+            .update(&[&a, &buffer], &AtomicBool::new(false))
+            .unwrap();
+        let selective = selective.build_for_test(root.path());
+        let subset = route_pinned(&[(2, &selective)], &[1., 0.], 2, 100, &context).unwrap();
+        let subset_ids: HashSet<_> = subset
+            .per_segment
+            .iter()
+            .flat_map(|(_, hits)| hits.iter().map(|h| h.id))
+            .collect();
+        assert_eq!(
+            subset_ids,
+            [11_u64, 12, 13, 14, 31]
+                .into_iter()
+                .map(PointIdType::from)
+                .collect()
+        );
+        let untouched = route_pinned(&[(3, &b)], &[1., 0.], 2, 100, &context).unwrap();
+        assert_eq!(untouched.per_segment[0].1.len(), 3);
     }
 }

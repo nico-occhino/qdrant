@@ -8,3 +8,6 @@ The `dli_recovery_control` test feeds a real persisted LMI's logits and postings
 
 ## Continuation 09: native routing primitive
 `dli_native_route::route_pinned` invokes real LMI routers, existing whole-bucket planning, native candidate scoring, and native per-segment result conversion using caller-pinned segments. Its output is deliberately not a collection result: it cannot establish complete holder coverage or version correctness for unselected newer point copies. It is not wired to LocalShard or automatic fallback.
+
+## Continuation 10: conservative candidate resolution
+A constructed overlap demonstrates that native candidate-only aggregation accepts an older selected copy when its newer Plain copy was not selected. `route_resolved_pinned` adds bounded batched native lookups and returns a fallback decision for ambiguous occurrences, any deleted/deferred segment state or invalid physical tokens. An explicit test uses the same captured handles for native exact search and verifies all nine fixture scores. This is not automatic collection dispatch and does not resolve proxy/filter or full-holder coverage semantics.
