@@ -93,6 +93,15 @@ impl MlpRouter {
     fn forward_with_stop(&self, query: &[f32], stopped: &AtomicBool) -> OperationResult<Vec<f32>> {
         check_process_stopped(stopped)?;
         let (input_dim, _) = self.validate()?;
+        self.forward_validated(query, input_dim, stopped)
+    }
+
+    fn forward_validated(
+        &self,
+        query: &[f32],
+        input_dim: usize,
+        stopped: &AtomicBool,
+    ) -> OperationResult<Vec<f32>> {
         if query.len() != input_dim || query.iter().any(|v| !v.is_finite()) {
             return Err(OperationError::service_error(
                 "LMI router input has wrong dimension or non-finite values",
@@ -169,17 +178,24 @@ impl MlpRouter {
         query: &[f32],
         nprobe: usize,
         stopped: &AtomicBool,
-    ) -> OperationResult<(Vec<usize>, u64, u64)> {
+    ) -> OperationResult<(Vec<usize>, u64, u64, u64)> {
         use std::time::Instant;
         check_process_stopped(stopped)?;
-        let count = self.output_dim()?;
+        let tick = Instant::now();
+        let (input_dim, count) = self.validate()?;
+        let mut validation_ns = tick.elapsed().as_nanos() as u64;
         if nprobe == 0 || nprobe > count {
             return Err(OperationError::service_error(
                 "LMI nprobe outside router output range",
             ));
         }
+        check_process_stopped(stopped)?;
         let tick = Instant::now();
-        let logits = self.forward_with_stop(query, stopped)?;
+        let (forward_input_dim, _) = self.validate()?;
+        validation_ns = validation_ns.saturating_add(tick.elapsed().as_nanos() as u64);
+        debug_assert_eq!(input_dim, forward_input_dim);
+        let tick = Instant::now();
+        let logits = self.forward_validated(query, forward_input_dim, stopped)?;
         let inference_ns = tick.elapsed().as_nanos() as u64;
         let tick = Instant::now();
         let mut ids: Vec<usize> = (0..count).collect();
@@ -192,7 +208,12 @@ impl MlpRouter {
         });
         ids.truncate(nprobe);
         check_process_stopped(stopped)?;
-        Ok((ids, inference_ns, tick.elapsed().as_nanos() as u64))
+        Ok((
+            ids,
+            validation_ns,
+            inference_ns,
+            tick.elapsed().as_nanos() as u64,
+        ))
     }
 }
 
@@ -362,9 +383,9 @@ impl LmiRoutingState {
         let QueryVector::Nearest(VectorInternal::Dense(vector)) = query else {
             return Ok(None);
         };
-        let (buckets, inference_ns, bucket_rank_ns) =
-            self.router
-                .top_buckets_profiled(vector.as_slice(), self.nprobe, stopped)?;
+        let (buckets, model_validation_ns, inference_ns, bucket_rank_ns) = self
+            .router
+            .top_buckets_profiled(vector.as_slice(), self.nprobe, stopped)?;
         let tick = Instant::now();
         let mut candidates = Vec::new();
         for &bucket in &buckets {
@@ -388,6 +409,7 @@ impl LmiRoutingState {
             RouteProfile {
                 selected_buckets: buckets,
                 raw_posting_entries,
+                model_validation_ns,
                 inference_ns,
                 bucket_rank_ns,
                 posting_ns,
@@ -402,6 +424,7 @@ impl LmiRoutingState {
 pub struct RouteProfile {
     pub selected_buckets: Vec<usize>,
     pub raw_posting_entries: usize,
+    pub model_validation_ns: u64,
     pub inference_ns: u64,
     pub bucket_rank_ns: u64,
     pub posting_ns: u64,
@@ -664,7 +687,7 @@ mod build_router_tests {
         };
         let stopped = AtomicBool::new(false);
         let expected = router.top_buckets(&[1.0, 0.0], 3).unwrap();
-        let (actual, _, _) = router
+        let (actual, _, _, _) = router
             .top_buckets_profiled(&[1.0, 0.0], 3, &stopped)
             .unwrap();
         assert_eq!(actual, expected);
