@@ -13,3 +13,5 @@ Native optimizer continuation adds a test `OptimizationStrategy` pause and calls
 Derived-view continuation adds a test-only live-holder stale-registry rejection and exact native segment-search control. No metadata persistence, LocalShard recovery or production fallback was implemented.
 
 A test-only collection lifecycle adaptation now checks a persisted stale physical owner set after clean LocalShard reopen and runs an explicit exact collection query against an independent 193-point oracle. It adds no production registry, automatic fallback, or publication mechanism.
+
+The collection research fixture now compares a versioned, full-holder JSON snapshot and uses a test-only conditional exact-search dispatch. It is neither a DLI descriptor implementation nor native automatic fallback; generation and artifact-presence validation are incomplete and validation/search are not atomic.

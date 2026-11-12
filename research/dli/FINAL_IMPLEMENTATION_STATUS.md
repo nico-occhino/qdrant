@@ -9,3 +9,5 @@ Next: design logical generation commit semantics without making the superset-bia
 Derived-view continuation: classification remains PARTIAL research topology. A live-holder exact-search fallback control passed; the required recovered LocalShard, metadata and failure-boundary tests remain unrun. No functional DLI or recoverable hierarchy exists.
 
 LocalShard continuation: classification remains research topology prototype. Clean collection reopen, stale test-only owner-set detection and explicit exact native collection search passed; full coverage, automatic fallback, retained-preimage restart, publication failure injection and ongoing invalidation remain open. No functional temporal DLI exists.
+
+Full-holder continuation remains a research prototype. One clean-restart collection test passed test-only validation and conditional exact dispatch. No runtime descriptor, native automatic fallback, production invalidation, DLI levels or compaction exist. Publication and coverage remain unproved under concurrent topology changes.
