@@ -312,7 +312,8 @@ fn pinned_view_replacement_interleaving_and_stale_rejection() {
         let ready = ready.clone();
         let resume = resume.clone();
         std::thread::spawn(move || {
-            let _scope = common::ambient::unmeasured_guard(common::reason::reason("DLI query thread"));
+            let _scope =
+                common::ambient::unmeasured_guard(common::reason::reason("DLI query thread"));
             ready.wait();
             resume.wait();
             old.score(&routes, usize::MAX).unwrap()
@@ -373,4 +374,173 @@ fn native_updates_are_visible_in_pinned_handles() {
     assert!(results.iter().find(|p| p.0 == 11).unwrap().1.abs() < 1e-5);
     assert!(results.iter().any(|p| p.0 == 99));
     assert!(!results.iter().any(|p| p.0 == 21));
+}
+
+struct PausedBuild {
+    staging: std::path::PathBuf,
+    entered: std::sync::mpsc::SyncSender<()>,
+    resume: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+impl shard::optimize::OptimizationStrategy for PausedBuild {
+    fn create_segment_builder(
+        &self,
+        inputs: &[LockedSegment],
+    ) -> segment::common::operation_error::OperationResult<SegmentBuilder> {
+        let config = inputs[0].get().read().config().clone();
+        self.entered.send(()).unwrap();
+        self.resume
+            .lock()
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap();
+        SegmentBuilder::new(
+            &self.staging,
+            &config,
+            &HnswGlobalConfig::default(),
+            FeatureFlags::default(),
+        )
+    }
+    fn create_temp_segment(
+        &self,
+    ) -> segment::common::operation_error::OperationResult<(
+        LockedSegment,
+        shard::segment_manifest::NewSegmentToken,
+    )> {
+        panic!("fixture already has an appendable buffer")
+    }
+    fn live_vector_names(&self) -> Option<std::collections::HashSet<String>> {
+        None
+    }
+}
+fn proxy_build_case(cancel: bool) {
+    use common::budget::ResourceBudget;
+    use common::progress_tracker::ProgressTracker;
+    use std::sync::atomic::Ordering;
+    let _scope = common::ambient::unmeasured_guard(common::reason::reason("DLI proxy build"));
+    let root = tempfile::tempdir().unwrap();
+    let staging = tempfile::tempdir().unwrap();
+    let c = fixture(root.path());
+    let input = c.registry.lock().members[1].holder;
+    let source_physical = c.registry.lock().members[1].physical;
+    let output = Uuid::new_v4();
+    let stopped = Arc::new(AtomicBool::new(false));
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+    let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
+    let holder = c.holder.clone();
+    let stop = stopped.clone();
+    let paths = shard::optimize::OptimizationPaths {
+        segments_path: root.path().to_owned(),
+        temp_path: staging.path().to_owned(),
+    };
+    let strategy = PausedBuild {
+        staging: staging.path().to_owned(),
+        entered: entered_tx,
+        resume: Mutex::new(resume_rx),
+    };
+    let worker = std::thread::spawn(move || {
+        let _scope =
+            common::ambient::unmeasured_guard(common::reason::reason("DLI optimizer thread"));
+        let budget = ResourceBudget::new(1, 1);
+        shard::optimize::execute_optimization(
+            "dli_research",
+            holder,
+            vec![input],
+            output,
+            None,
+            &paths,
+            budget.try_acquire(0, 1).unwrap(),
+            budget,
+            &stop,
+            ProgressTracker::new_for_test(),
+            &segment::common::operation_time_statistics::OperationDurationsAggregator::new(),
+            &strategy,
+            Box::new(|| {}),
+        )
+    });
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .unwrap();
+    assert!(matches!(
+        c.holder.read().get(input),
+        Some(LockedSegment::Proxy(_))
+    ));
+    let points = vec![
+        PointStructPersisted {
+            id: 11_u64.into(),
+            vector: VectorStructPersisted::Single(vec![0.0, 1.0]),
+            payload: None,
+        },
+        PointStructPersisted {
+            id: 99_u64.into(),
+            vector: VectorStructPersisted::Single(vec![1.0, 0.0]),
+            payload: None,
+        },
+    ];
+    {
+        let _updates = c.holder.acquire_updates_lock();
+        let holder = c.holder.read();
+        upsert_points(&holder, 100, &points, None).unwrap();
+        delete_points(&holder, 101, &[12_u64.into()]).unwrap();
+    }
+    if cancel {
+        stopped.store(true, Ordering::Relaxed);
+    }
+    resume_tx.send(()).unwrap();
+    let result = worker.join().unwrap();
+    if cancel {
+        assert!(matches!(
+            result,
+            Err(segment::common::operation_error::OperationError::Cancelled { .. })
+        ));
+        assert!(!root.path().join(output.to_string()).exists());
+    } else {
+        result.unwrap();
+        assert!(
+            root.path().join(source_physical.to_string()).exists(),
+            "native pre-image must survive until safe flush"
+        );
+        assert!(root.path().join(output.to_string()).exists());
+        println!(
+            "recovery-boundary: old source and new output coexist after publication before flush"
+        );
+    }
+    // The old registry must fail closed after a successful native optimizer swap.
+    // Rebind for post-operation oracle checking only; this is not durable publication.
+    if !cancel {
+        assert!(c.capture().is_err());
+        let mut registry = c.registry.lock();
+        let holder = c.holder.read();
+        let (id, physical) = holder
+            .iter()
+            .find_map(|(id, s)| match s {
+                LockedSegment::Original(s) if s.read().uuid == output => Some((id, output)),
+                _ => None,
+            })
+            .unwrap();
+        registry.members[1].holder = id;
+        registry.members[1].physical = physical;
+        registry.members[1].level_generation += 1;
+        registry.generation += 1;
+    }
+    let view = c.capture().unwrap();
+    let got = view.score(&view.route(), usize::MAX).unwrap();
+    let mut oracle: Vec<_> = DATA
+        .iter()
+        .filter(|(id, _)| *id != 12 && *id != 11)
+        .map(|(id, v)| (*id, v[0]))
+        .chain([(11, 0.0), (99, 1.0)])
+        .collect();
+    oracle.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    assert_eq!(got.len(), oracle.len());
+    for (actual, expected) in got.iter().zip(oracle) {
+        assert_eq!(actual.0, expected.0);
+        assert!((actual.1 - expected.1).abs() < 1e-5);
+    }
+}
+#[test]
+fn native_proxy_updates_survive_optimizer_publication() {
+    proxy_build_case(false);
+}
+#[test]
+fn native_proxy_updates_survive_optimizer_cancellation() {
+    proxy_build_case(true);
 }
