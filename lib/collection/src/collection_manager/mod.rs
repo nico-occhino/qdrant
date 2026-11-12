@@ -1,3 +1,7 @@
+#[cfg(feature = "dli-research")]
+pub mod dli_schedule;
+#[cfg(feature = "dli-research")]
+pub mod dli_bucket_plan;
 pub mod collection_updater;
 pub mod holders;
 pub mod optimizers;
