@@ -11,3 +11,5 @@ Derived-view continuation: classification remains PARTIAL research topology. A l
 LocalShard continuation: classification remains research topology prototype. Clean collection reopen, stale test-only owner-set detection and explicit exact native collection search passed; full coverage, automatic fallback, retained-preimage restart, publication failure injection and ongoing invalidation remain open. No functional temporal DLI exists.
 
 Full-holder continuation remains a research prototype. One clean-restart collection test passed test-only validation and conditional exact dispatch. No runtime descriptor, native automatic fallback, production invalidation, DLI levels or compaction exist. Publication and coverage remain unproved under concurrent topology changes.
+
+Continuation-07 classification remains RESEARCH PROTOTYPE. Production code now contains a native captured-search seam and a feature-gated, explicitly invoked exact-fallback entry point. Searcher tests and a 193-point clean-reopen oracle pass. There is no usable DLI collection, automatic fallback, temporal compaction, learned cross-level runtime routing or DLI recovery.
