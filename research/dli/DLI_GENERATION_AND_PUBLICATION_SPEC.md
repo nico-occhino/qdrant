@@ -25,3 +25,6 @@ An exact whole-holder comparison was exercised as a test-only negative control. 
 ## Production snapshot seam (continuation-07)
 
 Native `SegmentsSearcher::capture_segments` pins the holder members under one read lock; `search_captured` consumes exactly that set for initial searches and sampling reruns. Feature-gated `search_dli_exact_fallback` captures once and executes exact dense nearest-neighbor native search, rejecting indexed-only requests. An optional UUID topology hint detects missing/duplicate/stale membership or proxies, but cannot establish logical levels, model/posting identity, persistence or learned correctness. A matching hint still results in exact fallback. The public experimental entry point must be called explicitly; LocalShard does not select it. Query-context preparation remains separate; tests cover dense nearest-neighbor queries, not broader query classes.
+
+## Continuation 09
+Pinned segment references bind routing and scoring during the primitive call but do not validate holder membership or freeze native updates. A caller must supply native read-locked references. Registry validation, coordinated publication and durable generation recovery remain unimplemented.

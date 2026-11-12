@@ -5,3 +5,6 @@
 The planner rejects malformed probabilities, duplicate physical bucket identities, inconsistent level ownership of a physical segment, invalid arity and budget, and numeric overflow. It does not validate that inputs enumerate the full active topology, that probabilities sum to one, that offsets match a physical generation, or that predictions refer to actual loaded LMI postings. Its output must not be used for production learned queries until those contracts and native result merging/visibility are integrated.
 
 The `dli_recovery_control` test feeds a real persisted LMI's logits and postings to this planner after native collection reopen, then scores the selected bucket with Qdrant's candidate scorer and verifies each returned score against the fixture oracle. This one-level control does not establish a full DLI search path or compare global ranking across two independent real models.
+
+## Continuation 09: native routing primitive
+`dli_native_route::route_pinned` invokes real LMI routers, existing whole-bucket planning, native candidate scoring, and native per-segment result conversion using caller-pinned segments. Its output is deliberately not a collection result: it cannot establish complete holder coverage or version correctness for unselected newer point copies. It is not wired to LocalShard or automatic fallback.

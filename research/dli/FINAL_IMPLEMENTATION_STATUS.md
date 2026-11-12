@@ -15,3 +15,5 @@ Full-holder continuation remains a research prototype. One clean-restart collect
 Continuation-07 classification remains RESEARCH PROTOTYPE. Production code now contains a native captured-search seam and a feature-gated, explicitly invoked exact-fallback entry point. Searcher tests and a 193-point clean-reopen oracle pass. There is no usable DLI collection, automatic fallback, temporal compaction, learned cross-level runtime routing or DLI recovery.
 
 Continuation-08: RESEARCH PROTOTYPE. Checked Bentley–Saxe scheduling and global bucket policy are implemented as feature-gated production arithmetic; tests include a real one-level LMI scoring adapter. There remains no configured DLI collection, automatic native level construction, multi-level runtime routing or durable publication/recovery.
+
+Continuation 09 remains **RESEARCH PROTOTYPE**: the feature-gated native route and private multi-input build are exercised, but no configured collection DLI, safe global merge, automatic compaction, hierarchy recovery, or dynamic comparison exists.
