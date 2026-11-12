@@ -544,3 +544,36 @@ fn native_proxy_updates_survive_optimizer_publication() {
 fn native_proxy_updates_survive_optimizer_cancellation() {
     proxy_build_case(true);
 }
+
+/// A rejected derived view must not be used to choose the fallback's segments.
+/// This exercises a live recovered-holder analogue, not LocalShard restart or WAL replay.
+#[test]
+fn stale_registry_falls_back_to_exact_search_over_holder() {
+    use segment::index::VectorIndexRead;
+    use segment::types::SearchParams;
+    let _scope = common::ambient::unmeasured_guard(common::reason::reason("DLI fallback control"));
+    let root = tempfile::tempdir().unwrap();
+    let c = fixture(root.path());
+    let stale_id = c.registry.lock().members[1].holder;
+    c.holder.write().swap_new(lmi(root.path(), &DATA[..4], 53), &[stale_id]);
+    assert!(c.capture().is_err());
+    let q: QueryVector = [1.0_f32, 0.0].into();
+    let handles: Vec<_> = c.holder.read().iter().map(|(_, s)| s.clone()).collect();
+    let mut got = Vec::new();
+    for handle in handles {
+        let LockedSegment::Original(s) = handle else { panic!("unexpected proxy") };
+        let s = s.read();
+        let index = s.vector_data[DEFAULT_VECTOR_NAME].vector_index.borrow();
+        let result = index.search(&[&q], None, 20, Some(&SearchParams { exact: true, ..Default::default() }), &VectorQueryContext::default()).unwrap();
+        let tracker = s.id_tracker.borrow();
+        for point in &result[0] {
+            let segment::types::PointIdType::NumId(id) = tracker.external_id(point.idx).unwrap() else { unreachable!() };
+            got.push((id, point.score));
+        }
+    }
+    got.sort_by(|a,b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    let mut oracle: Vec<_> = DATA.iter().map(|(id,v)| (*id,v[0])).collect();
+    oracle.sort_by(|a,b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    assert_eq!(got.len(), oracle.len());
+    for (actual, expected) in got.iter().zip(oracle) { assert_eq!(actual.0,expected.0); assert!((actual.1-expected.1).abs()<1e-5); }
+}
