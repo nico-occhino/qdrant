@@ -504,3 +504,6 @@ async fn lmi_collection_builds_and_searches_with_fresh_plain_writes() {
         .in_ambient(common::ambient::Handoff::Unmeasured(None))
         .await;
 }
+
+#[cfg(feature = "lmi-training")]
+mod dli_recovery_control;
