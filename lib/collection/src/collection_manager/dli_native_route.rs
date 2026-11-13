@@ -310,6 +310,155 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dli_query_guard_and_native_upsert_complete_without_deadlock() {
+        use crate::collection_manager::segments_searcher::{
+            DliGuardHook, DliResearchConfig, SegmentsSearcher,
+        };
+        use crate::common::adaptive_handle::AdaptiveSearchHandle;
+        use crate::operations::types::CoreSearchRequest;
+        use common::ambient::{AmbientContext, Handoff};
+        use segment::data_types::query_context::QueryContext;
+        use shard::operations::point_ops::{PointStructPersisted, VectorStructPersisted};
+        use shard::optimizers::config::DEFAULT_INDEXING_THRESHOLD_KB;
+        use shard::search::CoreSearchRequestBatch;
+        use shard::segment_holder::{SegmentHolder, locked::LockedSegmentHolder};
+        use shard::update::upsert_points;
+        use std::sync::{Arc, mpsc};
+        use std::time::Duration;
+
+        let _scope = common::ambient::test_guard();
+        let root = tempfile::tempdir().unwrap();
+        let level = trained(
+            root.path(),
+            &[
+                (11, [1., 0.]),
+                (12, [0., 1.]),
+                (13, [-1., 0.]),
+                (14, [0., -1.]),
+            ],
+            17,
+        );
+        let buffer = build_simple_segment(root.path(), 2, Distance::Cosine).unwrap();
+        let config = Arc::new(
+            DliResearchConfig::new(vec![(level.uuid, 1), (buffer.uuid, 0)], 2, 100).unwrap(),
+        );
+        let mut native = SegmentHolder::default();
+        native.add_new(level);
+        native.add_new(buffer);
+        let holder = LockedSegmentHolder::new(native);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        *config.test_guard_hook.lock() = Some(DliGuardHook {
+            entered: entered_tx,
+            resume: parking_lot::Mutex::new(resume_rx),
+        });
+        let request = CoreSearchRequest {
+            query: vec![1., 0.].into(),
+            filter: None,
+            params: None,
+            limit: 10,
+            offset: 0,
+            with_payload: None,
+            with_vector: None,
+            score_threshold: None,
+        };
+        let query_holder = holder.clone();
+        let query_config = config.clone();
+        let query = tokio::spawn(async move {
+            SegmentsSearcher::search_dli_research(
+                query_holder,
+                Arc::new(CoreSearchRequestBatch {
+                    searches: vec![request],
+                }),
+                &AdaptiveSearchHandle::current_for_tests(),
+                QueryContext::new(
+                    DEFAULT_INDEXING_THRESHOLD_KB,
+                    Handoff::Measured(AmbientContext::new()),
+                ),
+                Duration::from_secs(10),
+                query_config,
+            )
+            .await
+        });
+        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let update_holder = holder.clone();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _scope = common::ambient::test_guard();
+            let _updates = update_holder.acquire_updates_lock();
+            let guard = update_holder.read();
+            started_tx.send(()).unwrap();
+            let points = [PointStructPersisted {
+                id: 11_u64.into(),
+                vector: VectorStructPersisted::Single(vec![0., 1.]),
+                payload: None,
+            }];
+            let result = upsert_points(&guard, 100, &points, None);
+            done_tx.send(result.is_ok()).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(done_rx.try_recv().is_err());
+        resume_tx.send(()).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(10), query)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            result[0]
+                .iter()
+                .any(|point| point.id == 11_u64.into() && point.score > 0.99)
+        );
+        assert!(done_rx.recv_timeout(Duration::from_secs(10)).unwrap());
+        worker.join().unwrap();
+        assert_eq!(
+            config
+                .learned_queries
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        *config.test_guard_hook.lock() = None;
+        let request = CoreSearchRequest {
+            query: vec![1., 0.].into(),
+            filter: None,
+            params: None,
+            limit: 10,
+            offset: 0,
+            with_payload: None,
+            with_vector: None,
+            score_threshold: None,
+        };
+        let after = SegmentsSearcher::search_dli_research(
+            holder,
+            Arc::new(CoreSearchRequestBatch {
+                searches: vec![request],
+            }),
+            &AdaptiveSearchHandle::current_for_tests(),
+            QueryContext::new(
+                DEFAULT_INDEXING_THRESHOLD_KB,
+                Handoff::Measured(AmbientContext::new()),
+            ),
+            Duration::from_secs(10),
+            config.clone(),
+        )
+        .await
+        .unwrap();
+        let updated = after[0]
+            .iter()
+            .find(|point| point.id == 11_u64.into())
+            .unwrap();
+        assert_eq!(updated.version, 100);
+        assert!(updated.score.abs() < 1e-5);
+        assert_eq!(
+            config
+                .exact_fallbacks
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+    }
+
     fn trained(root: &std::path::Path, rows: &[(u64, [f32; 2])], seed: u64) -> Segment {
         let staging = tempfile::tempdir().unwrap();
         let mut src = build_simple_segment(root, 2, Distance::Cosine).unwrap();

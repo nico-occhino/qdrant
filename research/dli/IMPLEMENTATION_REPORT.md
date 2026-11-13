@@ -25,3 +25,5 @@ Continuation 09 adds feature-gated `dli_native_route`, combining real LMI routin
 Continuation 10 adds a feature-gated conservative candidate resolver and composed route wrapper, using batched native ID/version lookups and physical offset checks. The wrapper returns a fallback decision; it does not itself execute native search or integrate LocalShard. Deleted/deferred segments and duplicate occurrences deliberately require exact fallback. A scheduler-selected private multi-input build is a test control, not automatic compaction.
 
 Continuation 11 adds an opt-in process-local LocalShard research dispatcher; activation is restricted to test builds pending concurrency and recovery evidence. It executes actual global learned routing or same-capture exact fallback with counters; it is not automatic temporal compaction or a recoverable DLI configuration.
+
+Continuation 12 adds a test-only bounded guard hook and a native upsert/query interleaving test. Production DLI activation and compaction behavior are unchanged.

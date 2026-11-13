@@ -21,3 +21,5 @@ Continuation 09 remains **RESEARCH PROTOTYPE**: the feature-gated native route a
 Continuation 10 remains **RESEARCH PROTOTYPE**. The stale-candidate risk now has an executable constructed counterexample and a conservative fail-closed research resolver; captured native exact fallback is invoked explicitly in a test. No configured DLI collection, production automatic fallback, safe concurrent publication, automatic compaction, DLI hierarchy recovery, or dynamic comparison exists.
 
 Continuation 11: RESEARCH PROTOTYPE. The real LocalShard collection search path was exercised under test-only activation with learned routing and exact fallback. The topology was manually assembled; automatic compaction, safe persistent activation, optimizer concurrency and hierarchy recovery remain unimplemented.
+
+Continuation 12 remains RESEARCH PROTOTYPE. One deterministic native-holder upsert/query interleaving supplements existing controls; concurrency gate, automatic compaction, durable hierarchy and DLI recovery are not complete.

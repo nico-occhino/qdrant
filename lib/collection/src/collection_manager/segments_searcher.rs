@@ -73,6 +73,14 @@ pub struct DliResearchConfig {
     pub scoring_nanos: std::sync::atomic::AtomicU64,
     pub resolution_nanos: std::sync::atomic::AtomicU64,
     pub fallback_reasons: parking_lot::Mutex<std::collections::HashMap<&'static str, u64>>,
+    #[cfg(test)]
+    pub test_guard_hook: parking_lot::Mutex<Option<DliGuardHook>>,
+}
+
+#[cfg(all(test, feature = "dli-research"))]
+pub struct DliGuardHook {
+    pub entered: std::sync::mpsc::Sender<()>,
+    pub resume: parking_lot::Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
 #[cfg(feature = "dli-research")]
@@ -95,6 +103,8 @@ impl DliResearchConfig {
             scoring_nanos: Default::default(),
             resolution_nanos: Default::default(),
             fallback_reasons: Default::default(),
+            #[cfg(test)]
+            test_guard_hook: Default::default(),
         })
     }
 }
@@ -510,6 +520,18 @@ impl SegmentsSearcher {
                 }
                 if !members.iter().any(|(level, _)| *level > 0) {
                     reject!("topology");
+                }
+                #[cfg(test)]
+                if let Some(hook) = attempt_config.test_guard_hook.lock().as_ref() {
+                    if hook.entered.send(()).is_err()
+                        || hook
+                            .resume
+                            .lock()
+                            .recv_timeout(Duration::from_secs(10))
+                            .is_err()
+                    {
+                        reject!("test_hook_timeout");
+                    }
                 }
                 let segment_context = attempt_context.get_segment_query_context();
                 let vector_context = segment_context.get_vector_context(DEFAULT_VECTOR_NAME, None);

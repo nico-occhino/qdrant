@@ -32,3 +32,5 @@ Pinned segment references bind routing and scoring during the primitive call but
 Continuation 10 validates candidate UUID/offset/version against caller-pinned original segments. Full holder membership, proxy state and synchronization with optimizer publication remain caller obligations; the experimental resolver is not an activation protocol.
 
 Continuation 11 uses an in-memory UUID-role configuration, verifies captured holder membership under nonblocking locks and keeps original segment read guards during route and resolution. It provides no durable generation or optimizer publication protocol; configuration activation is test-only.
+
+Continuation 12 lock audit: learned dispatch obtains segment read guards using `try_read`, then attempts holder revalidation using `try_read`; it never waits for the holder while holding those guards. Optimizer finalization obtains an upgradable holder read before the update mutex and upgrades the holder for swap. Segment guard lifetime spans learned query execution, so writes may be delayed; production fairness and publication interleavings remain untested.

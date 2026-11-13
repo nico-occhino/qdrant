@@ -12,3 +12,5 @@ A controlled `SegmentBuilder` test combines two trained LMI segments and a Plain
 Continuation 10: one private builder control uses scheduler input `[3,0,3]` and buffer 2 to select level 2, combines buffer and level 1, and verifies level 3 separately. No automatic trigger, publication, concurrent mutation or hierarchy recovery is established.
 
 Continuation 11 does not implement automatic compaction or optimizer publication; earlier selective private-build evidence remains unchanged.
+
+Continuation 12 does not implement automatic construction or publication; concurrency and recovery prerequisites remain open.
