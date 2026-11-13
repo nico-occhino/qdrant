@@ -23,3 +23,5 @@ Continuation 10 remains **RESEARCH PROTOTYPE**. The stale-candidate risk now has
 Continuation 11: RESEARCH PROTOTYPE. The real LocalShard collection search path was exercised under test-only activation with learned routing and exact fallback. The topology was manually assembled; automatic compaction, safe persistent activation, optimizer concurrency and hierarchy recovery remain unimplemented.
 
 Continuation 12 remains RESEARCH PROTOTYPE. One deterministic native-holder upsert/query interleaving supplements existing controls; concurrency gate, automatic compaction, durable hierarchy and DLI recovery are not complete.
+
+Continuation 13 remains RESEARCH PROTOTYPE. Fourteen targeted tests pass, including delete ordering and dispatcher fallback during actual optimizer private construction and after publication/cancellation. The minimum concurrency gate is still conditional; automatic temporal compaction and recoverable hierarchy are absent.

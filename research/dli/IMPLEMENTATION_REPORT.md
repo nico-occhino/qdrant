@@ -27,3 +27,5 @@ Continuation 10 adds a feature-gated conservative candidate resolver and compose
 Continuation 11 adds an opt-in process-local LocalShard research dispatcher; activation is restricted to test builds pending concurrency and recovery evidence. It executes actual global learned routing or same-capture exact fallback with counters; it is not automatic temporal compaction or a recoverable DLI configuration.
 
 Continuation 12 adds a test-only bounded guard hook and a native upsert/query interleaving test. Production DLI activation and compaction behavior are unchanged.
+
+Continuation 13 adds native delete/query and real optimizer proxy/publication/cancellation controls, plus guarded-worker duration accounting. Test-only activation, automatic-compaction and hierarchy-recovery status are unchanged.

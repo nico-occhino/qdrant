@@ -42,3 +42,5 @@ Continuation 10 adds no hierarchy recovery or crash evidence. The conservative r
 Continuation 11: a previously recovered collection automatically took native exact fallback under test-only activation when deleted state was present. This is not hierarchy descriptor recovery or crash evidence.
 
 Continuation 12 adds no recovery or crash-consistency evidence.
+
+Continuation 13 tests in-process optimizer publication/cancellation with native updates, not restart or crash recovery.

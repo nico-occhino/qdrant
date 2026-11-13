@@ -15,3 +15,5 @@ A constructed overlap demonstrates that native candidate-only aggregation accept
 Continuation 11: test-enabled LocalShard can opt into process-local research dispatch with complete UUID-role coverage checks, nonblocking pinned segment reads, native global routing, conservative resolution and automatic exact search on captured handles. A manually installed two-level collection fixture exercised learned and duplicate-fallback routes. The setter is test-gated; no durable or production-ready configuration is provided.
 
 Continuation 12: test-only channel hook pauses after all original segment read locks and holder identity validation. Native upsert interleaving is exercised; segment read guards still span routing, scoring and version resolution, potentially delaying writers. Optimizer/proxy interleavings and fairness are not established.
+
+Continuation 13: deterministic native delete and real optimizer proxy/private-build controls supplement the upsert test. `read_guard_nanos` measures the guarded worker interval, including any deliberate test pause. No bounded-starvation or general snapshot guarantee is established.

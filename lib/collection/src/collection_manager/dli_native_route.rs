@@ -312,6 +312,15 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dli_query_guard_and_native_upsert_complete_without_deadlock() {
+        query_guard_native_mutation(false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dli_query_guard_and_native_delete_complete_without_resurrection() {
+        query_guard_native_mutation(true).await;
+    }
+
+    async fn query_guard_native_mutation(delete: bool) {
         use crate::collection_manager::segments_searcher::{
             DliGuardHook, DliResearchConfig, SegmentsSearcher,
         };
@@ -323,7 +332,7 @@ mod tests {
         use shard::optimizers::config::DEFAULT_INDEXING_THRESHOLD_KB;
         use shard::search::CoreSearchRequestBatch;
         use shard::segment_holder::{SegmentHolder, locked::LockedSegmentHolder};
-        use shard::update::upsert_points;
+        use shard::update::{delete_points, upsert_points};
         use std::sync::{Arc, mpsc};
         use std::time::Duration;
 
@@ -395,7 +404,11 @@ mod tests {
                 vector: VectorStructPersisted::Single(vec![0., 1.]),
                 payload: None,
             }];
-            let result = upsert_points(&guard, 100, &points, None);
+            let result = if delete {
+                delete_points(&guard, 100, &[11_u64.into()]).map(|_| ())
+            } else {
+                upsert_points(&guard, 100, &points, None).map(|_| ())
+            };
             done_tx.send(result.is_ok()).unwrap();
         });
         started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -445,18 +458,213 @@ mod tests {
         )
         .await
         .unwrap();
-        let updated = after[0]
-            .iter()
-            .find(|point| point.id == 11_u64.into())
-            .unwrap();
-        assert_eq!(updated.version, 100);
-        assert!(updated.score.abs() < 1e-5);
+        if delete {
+            assert!(!after[0].iter().any(|point| point.id == 11_u64.into()));
+            assert_eq!(after[0].len(), 3);
+        } else {
+            let updated = after[0]
+                .iter()
+                .find(|point| point.id == 11_u64.into())
+                .unwrap();
+            assert_eq!(updated.version, 100);
+            assert!(updated.score.abs() < 1e-5);
+        }
         assert_eq!(
             config
                 .exact_fallbacks
                 .load(std::sync::atomic::Ordering::Relaxed),
             1
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dli_dispatch_during_native_proxy_build_and_publication() {
+        use crate::collection_manager::segments_searcher::{DliResearchConfig, SegmentsSearcher};
+        use crate::common::adaptive_handle::AdaptiveSearchHandle;
+        use crate::operations::types::CoreSearchRequest;
+        use common::ambient::{AmbientContext, Handoff};
+        use common::budget::ResourceBudget;
+        use common::progress_tracker::ProgressTracker;
+        use segment::data_types::query_context::QueryContext;
+        use shard::locked_segment::LockedSegment;
+        use shard::operations::point_ops::{PointStructPersisted, VectorStructPersisted};
+        use shard::optimizers::config::DEFAULT_INDEXING_THRESHOLD_KB;
+        use shard::search::CoreSearchRequestBatch;
+        use shard::segment_holder::{SegmentHolder, locked::LockedSegmentHolder};
+        use shard::update::{delete_points, upsert_points};
+        use std::sync::{Arc, mpsc};
+        use std::time::Duration;
+
+        struct Paused {
+            path: std::path::PathBuf,
+            entered: mpsc::Sender<()>,
+            resume: parking_lot::Mutex<mpsc::Receiver<()>>,
+        }
+        impl shard::optimize::OptimizationStrategy for Paused {
+            fn create_segment_builder(
+                &self,
+                inputs: &[LockedSegment],
+            ) -> OperationResult<SegmentBuilder> {
+                let config = inputs[0].get().read().config().clone();
+                self.entered.send(()).unwrap();
+                self.resume
+                    .lock()
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap();
+                SegmentBuilder::new(
+                    &self.path,
+                    &config,
+                    &HnswGlobalConfig::default(),
+                    FeatureFlags::default(),
+                )
+            }
+            fn create_temp_segment(
+                &self,
+            ) -> OperationResult<(LockedSegment, shard::segment_manifest::NewSegmentToken)>
+            {
+                panic!("fixture has a Plain buffer")
+            }
+            fn live_vector_names(&self) -> Option<HashSet<String>> {
+                None
+            }
+        }
+        let _scope = common::ambient::test_guard();
+        for cancel in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let staging = tempfile::tempdir().unwrap();
+            let level = trained(
+                root.path(),
+                &[
+                    (11, [1., 0.]),
+                    (12, [0., 1.]),
+                    (13, [-1., 0.]),
+                    (14, [0., -1.]),
+                ],
+                17,
+            );
+            let buffer = build_simple_segment(root.path(), 2, Distance::Cosine).unwrap();
+            let config = Arc::new(
+                DliResearchConfig::new(vec![(level.uuid, 1), (buffer.uuid, 0)], 2, 100).unwrap(),
+            );
+            let mut native = SegmentHolder::default();
+            let input = native.add_new(level);
+            native.add_new(buffer);
+            let holder = LockedSegmentHolder::new(native);
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (resume_tx, resume_rx) = mpsc::channel();
+            let strategy = Paused {
+                path: staging.path().to_owned(),
+                entered: entered_tx,
+                resume: parking_lot::Mutex::new(resume_rx),
+            };
+            let paths = shard::optimize::OptimizationPaths {
+                segments_path: root.path().to_owned(),
+                temp_path: staging.path().to_owned(),
+            };
+            let stop = Arc::new(AtomicBool::new(false));
+            let worker_holder = holder.clone();
+            let worker_stop = stop.clone();
+            let (done_tx, done_rx) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let _scope = common::ambient::test_guard();
+                let budget = ResourceBudget::new(1, 1);
+                let result = shard::optimize::execute_optimization(
+                    "dli_dispatch",
+                    worker_holder,
+                    vec![input],
+                    Uuid::new_v4(),
+                    None,
+                    &paths,
+                    budget.try_acquire(0, 1).unwrap(),
+                    budget,
+                    &worker_stop,
+                    ProgressTracker::new_for_test(),
+                    &segment::common::operation_time_statistics::OperationDurationsAggregator::new(
+                    ),
+                    &strategy,
+                    Box::new(|| {}),
+                );
+                done_tx.send(result).unwrap();
+            });
+            entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert!(matches!(
+                holder.read().get(input),
+                Some(LockedSegment::Proxy(_))
+            ));
+            let run = || {
+                let holder = holder.clone();
+                let config = config.clone();
+                async move {
+                    SegmentsSearcher::search_dli_research(
+                        holder,
+                        Arc::new(CoreSearchRequestBatch {
+                            searches: vec![CoreSearchRequest {
+                                query: vec![1., 0.].into(),
+                                filter: None,
+                                params: None,
+                                limit: 10,
+                                offset: 0,
+                                with_payload: None,
+                                with_vector: None,
+                                score_threshold: None,
+                            }],
+                        }),
+                        &AdaptiveSearchHandle::current_for_tests(),
+                        QueryContext::new(
+                            DEFAULT_INDEXING_THRESHOLD_KB,
+                            Handoff::Measured(AmbientContext::new()),
+                        ),
+                        Duration::from_secs(10),
+                        config,
+                    )
+                    .await
+                    .unwrap()
+                }
+            };
+            let before = run().await;
+            assert_eq!(before[0].len(), 4);
+            assert_eq!(config.fallback_reasons.lock().get("proxy"), Some(&1));
+            {
+                let _updates = holder.acquire_updates_lock();
+                let guard = holder.read();
+                let points = [
+                    PointStructPersisted {
+                        id: 11_u64.into(),
+                        vector: VectorStructPersisted::Single(vec![0., 1.]),
+                        payload: None,
+                    },
+                    PointStructPersisted {
+                        id: 99_u64.into(),
+                        vector: VectorStructPersisted::Single(vec![1., 0.]),
+                        payload: None,
+                    },
+                ];
+                upsert_points(&guard, 100, &points, None).unwrap();
+                delete_points(&guard, 101, &[12_u64.into()]).unwrap();
+            }
+            if cancel {
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            resume_tx.send(()).unwrap();
+            let completed = done_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            if cancel {
+                assert!(matches!(completed, Err(OperationError::Cancelled { .. })));
+            } else {
+                completed.unwrap();
+            }
+            worker.join().unwrap();
+            let after = run().await;
+            let expected = HashMap::from([(11_u64, 0.0_f32), (13, -1.0), (14, 0.0), (99, 1.0)]);
+            assert_eq!(after[0].len(), expected.len());
+            let mut ids = HashSet::new();
+            for hit in &after[0] {
+                let PointIdType::NumId(id) = hit.id else {
+                    panic!("numeric fixture")
+                };
+                assert!(ids.insert(id));
+                assert!((hit.score - expected[&id]).abs() < 1e-5);
+            }
+        }
     }
 
     fn trained(root: &std::path::Path, rows: &[(u64, [f32; 2])], seed: u64) -> Segment {

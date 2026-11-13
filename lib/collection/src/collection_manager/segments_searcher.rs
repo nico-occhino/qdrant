@@ -72,6 +72,7 @@ pub struct DliResearchConfig {
     pub routing_and_planning_nanos: std::sync::atomic::AtomicU64,
     pub scoring_nanos: std::sync::atomic::AtomicU64,
     pub resolution_nanos: std::sync::atomic::AtomicU64,
+    pub read_guard_nanos: std::sync::atomic::AtomicU64,
     pub fallback_reasons: parking_lot::Mutex<std::collections::HashMap<&'static str, u64>>,
     #[cfg(test)]
     pub test_guard_hook: parking_lot::Mutex<Option<DliGuardHook>>,
@@ -102,6 +103,7 @@ impl DliResearchConfig {
             routing_and_planning_nanos: Default::default(),
             scoring_nanos: Default::default(),
             resolution_nanos: Default::default(),
+            read_guard_nanos: Default::default(),
             fallback_reasons: Default::default(),
             #[cfg(test)]
             test_guard_hook: Default::default(),
@@ -491,6 +493,24 @@ impl SegmentsSearcher {
                     };
                     guards.push(guard);
                 }
+                struct GuardTimer<'a> {
+                    counter: &'a std::sync::atomic::AtomicU64,
+                    started: Instant,
+                }
+                impl Drop for GuardTimer<'_> {
+                    fn drop(&mut self) {
+                        self.counter.fetch_add(
+                            u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                            Ordering::Relaxed,
+                        );
+                    }
+                }
+                // Declared after guards, so recorded before their release on
+                // every return path. Includes deliberate pauses in test builds.
+                let _guard_timer = GuardTimer {
+                    counter: &attempt_config.read_guard_nanos,
+                    started: Instant::now(),
+                };
                 // Reject replacement between capture and lock acquisition. A
                 // nonblocking holder read avoids lock-order deadlocks.
                 let Some(holder_guard) = attempt_holder.try_read() else {
