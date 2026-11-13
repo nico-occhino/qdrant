@@ -701,6 +701,304 @@ async fn dli_recovery_control_body() {
         );
         drop(pinned);
         drop(guard);
+
+        // Exercise the normal collection -> LocalShard -> searcher path with
+        // process-local research configuration. A new native member invalidates
+        // coverage and must force exact fallback on the same captured handles.
+        use crate::collection_manager::segments_searcher::DliResearchConfig;
+        use std::sync::atomic::Ordering;
+        let roles = {
+            let guard = h.read();
+            guard
+                .iter_original()
+                .map(|(_, locked)| {
+                    let segment = locked.read();
+                    let index = segment.vector_data
+                        [segment::data_types::vectors::DEFAULT_VECTOR_NAME]
+                        .vector_index
+                        .borrow();
+                    (
+                        segment.uuid,
+                        if matches!(&*index, VectorIndexEnum::Lmi(_)) {
+                            1
+                        } else {
+                            0
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let config = Arc::new(DliResearchConfig::new(roles, 2, 1000).unwrap());
+        let local = shard(&c).await;
+        assert!(
+            local
+                .configure_local_dli_for_test(Some(config.clone()))
+                .await
+        );
+        let search = || async {
+            let mut vector = vec![0.0; DIM];
+            vector[0] = 1.0;
+            c.search(
+                CoreSearchRequest {
+                    query: QueryEnum::Nearest(NamedQuery::default_dense(vector)),
+                    filter: None,
+                    params: None,
+                    limit: expected.len() + 10,
+                    offset: 0,
+                    with_payload: None,
+                    with_vector: None,
+                    score_threshold: None,
+                },
+                None,
+                None,
+                &ShardSelectorInternal::All,
+                None,
+            )
+            .await
+            .unwrap()
+        };
+        let learned = search().await;
+        assert_eq!(config.learned_queries.load(Ordering::Relaxed), 0);
+        assert_eq!(config.exact_fallbacks.load(Ordering::Relaxed), 1);
+        assert_eq!(config.fallback_reasons.lock().get("deleted"), Some(&1));
+        assert_eq!(learned.len(), expected.len());
+        for hit in &learned {
+            let segment::types::PointIdType::NumId(id) = hit.id else {
+                panic!("numeric fixture")
+            };
+            assert_eq!(hit.score, if expected[&id] == 0 { 1.0 } else { 0.0 });
+        }
+        let extra = tempfile::tempdir().unwrap();
+        let mut new_buffer =
+            segment::segment_constructor::simple_segment_constructor::build_simple_segment(
+                extra.path(),
+                DIM,
+                segment::types::Distance::Cosine,
+            )
+            .unwrap();
+        use segment::entry::SegmentEntry;
+        let victim = *expected.iter().find(|(_, axis)| **axis != 0).unwrap().0;
+        let mut updated_vector = vec![0.0; DIM];
+        updated_vector[0] = 1.0;
+        new_buffer
+            .upsert_point(
+                1000,
+                victim.into(),
+                segment::data_types::vectors::only_default_vector(&updated_vector),
+            )
+            .unwrap();
+        let new_id = h.write().add_new(new_buffer);
+        let fallback = search().await;
+        assert_eq!(config.exact_fallbacks.load(Ordering::Relaxed), 2);
+        assert_eq!(config.fallback_reasons.lock().get("topology"), Some(&1));
+        assert_eq!(fallback.len(), expected.len());
+        assert_eq!(
+            fallback.iter().map(|p| p.id).collect::<HashSet<_>>(),
+            learned.iter().map(|p| p.id).collect()
+        );
+        for hit in &fallback {
+            let segment::types::PointIdType::NumId(id) = hit.id else {
+                panic!("numeric fixture")
+            };
+            assert_eq!(
+                hit.score,
+                if id == victim || expected[&id] == 0 {
+                    1.0
+                } else {
+                    0.0
+                }
+            );
+            if id == victim {
+                assert_eq!(hit.version, 1000);
+            }
+        }
+        h.write().remove(&[new_id]);
+        assert!(local.configure_local_dli_for_test(None).await);
+        println!(
+            "DLI_LOCAL_COLLECTION deleted_fallback=1 topology_fallback=1 oracle={}",
+            learned.len()
+        );
+
+        // Temporarily install a fresh, manually constructed two-level topology
+        // into the real LocalShard. This is not optimizer publication or WAL
+        // recovery. Restore the original holder before the test exits.
+        use common::flags::FeatureFlags;
+        use segment::segment_constructor::segment_builder::SegmentBuilder;
+        use segment::types::{HnswGlobalConfig, Indexes, VectorStorageDatatype};
+        use std::sync::atomic::AtomicBool;
+        let experiment = tempfile::tempdir().unwrap();
+        let make_level = |base: u64, seed: u64| {
+            let template =
+                segment::segment_constructor::simple_segment_constructor::build_simple_segment(
+                    experiment.path(),
+                    DIM,
+                    segment::types::Distance::Cosine,
+                )
+                .unwrap();
+            let mut source_config = template.config().clone();
+            source_config.vector_data.get_mut(segment::data_types::vectors::DEFAULT_VECTOR_NAME).unwrap().datatype = Some(VectorStorageDatatype::Float16);
+            let (mut source, _) = segment::segment_constructor::build_segment(experiment.path(), &source_config, None, true).unwrap();
+            for i in 0..4_u64 {
+                let mut vector = vec![0.0; DIM];
+                vector[i as usize] = 1.0;
+                source
+                    .upsert_point(
+                        base + i,
+                        (base + i).into(),
+                        segment::data_types::vectors::only_default_vector(&vector),
+                    )
+                    .unwrap();
+            }
+            let mut segment_config = source.config().clone();
+            let vector_config = segment_config
+                .vector_data
+                .get_mut(segment::data_types::vectors::DEFAULT_VECTOR_NAME)
+                .unwrap();
+            vector_config.datatype = Some(VectorStorageDatatype::Float16);
+            vector_config.index = Indexes::LmiTrained(LmiConfig {
+                n_buckets: 2,
+                sample_size: 4,
+                hidden_dim: 4,
+                epochs: 1,
+                batch_size: 4,
+                routing_batch_size: 4,
+                kmeans_iterations: 2,
+                nprobe: 2,
+                seed,
+            });
+            let staging = tempfile::tempdir().unwrap();
+            let mut builder = SegmentBuilder::new(
+                staging.path(),
+                &segment_config,
+                &HnswGlobalConfig::default(),
+                FeatureFlags::default(),
+            )
+            .unwrap();
+            builder.update(&[&source], &AtomicBool::new(false)).unwrap();
+            builder.build_for_test(experiment.path())
+        };
+        let level1 = make_level(101, 17);
+        let level2 = make_level(201, 29);
+        let mut plain =
+            segment::segment_constructor::simple_segment_constructor::build_simple_segment(
+                experiment.path(),
+                DIM,
+                segment::types::Distance::Cosine,
+            )
+            .unwrap();
+        let mut plain_vector = vec![0.0; DIM];
+        plain_vector[1] = 1.0;
+        plain
+            .upsert_point(
+                99,
+                99_u64.into(),
+                segment::data_types::vectors::only_default_vector(&plain_vector),
+            )
+            .unwrap();
+        let mut axis_query = vec![0.0; DIM];
+        axis_query[0] = 1.0;
+        let route = route_pinned(
+            &[(1, &level1), (2, &level2), (0, &plain)],
+            &axis_query,
+            100,
+            1,
+            &VectorQueryContext::default(),
+        )
+        .unwrap();
+        let old = route
+            .per_segment
+            .iter()
+            .flat_map(|(_, hits)| hits)
+            .next()
+            .unwrap()
+            .clone();
+        let uuids = (level1.uuid, level2.uuid, plain.uuid);
+        let previous_ids: Vec<_> = h.read().iter().map(|(id, _)| id).collect();
+        let previous = h.write().remove(&previous_ids);
+        let (id1, id2, buffer_id) = {
+            let mut holder = h.write();
+            (
+                holder.add_new(level1),
+                holder.add_new(level2),
+                holder.add_new(plain),
+            )
+        };
+        let config = Arc::new(
+            DliResearchConfig::new(vec![(uuids.0, 1), (uuids.1, 2), (uuids.2, 0)], 100, 1).unwrap(),
+        );
+        assert!(
+            local
+                .configure_local_dli_for_test(Some(config.clone()))
+                .await
+        );
+        let fixture_search = || async {
+            c.search(
+                CoreSearchRequest {
+                    query: QueryEnum::Nearest(NamedQuery::default_dense(axis_query.clone())),
+                    filter: None,
+                    params: None,
+                    limit: 20,
+                    offset: 0,
+                    with_payload: None,
+                    with_vector: None,
+                    score_threshold: None,
+                },
+                None,
+                None,
+                &ShardSelectorInternal::All,
+                None,
+            )
+            .await
+            .unwrap()
+        };
+        let routed = fixture_search().await;
+        assert_eq!(
+            config.learned_queries.load(Ordering::Relaxed),
+            1,
+            "{:?}",
+            config.fallback_reasons.lock()
+        );
+        assert!(
+            routed
+                .iter()
+                .any(|hit| hit.id == old.id && hit.version == old.version)
+        );
+        assert!(config.selected_postings.load(Ordering::Relaxed) > 0);
+        let new_axis = if old.score > 0.5 { 1 } else { 0 };
+        let mut replacement = vec![0.0; DIM];
+        replacement[new_axis] = 1.0;
+        let buffer_handle = h.read().get(buffer_id).unwrap().clone();
+        buffer_handle
+            .get()
+            .write()
+            .upsert_point(
+                1000,
+                old.id,
+                segment::data_types::vectors::only_default_vector(&replacement),
+            )
+            .unwrap();
+        let repaired = fixture_search().await;
+        assert_eq!(config.exact_fallbacks.load(Ordering::Relaxed), 1);
+        assert_eq!(config.fallback_reasons.lock().get("duplicate"), Some(&1));
+        assert_eq!(repaired.len(), 9);
+        let hit = repaired.iter().find(|hit| hit.id == old.id).unwrap();
+        assert_eq!(hit.version, 1000);
+        assert_eq!(hit.score, if new_axis == 0 { 1.0 } else { 0.0 });
+        assert_eq!(
+            repaired
+                .iter()
+                .map(|hit| hit.id)
+                .collect::<HashSet<_>>()
+                .len(),
+            9
+        );
+        assert!(local.configure_local_dli_for_test(None).await);
+        drop(buffer_handle);
+        h.write().remove(&[id1, id2, buffer_id]);
+        for segment in previous {
+            h.write().add_new_locked(segment);
+        }
+        println!("DLI_TWO_LEVEL_LOCAL_COLLECTION learned=1 duplicate_fallback=1 live=9");
     }
     println!(
         "NATIVE_LMI_REMAP id={BASE_ID} before={:?} after={:?}",

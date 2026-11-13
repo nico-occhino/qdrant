@@ -38,3 +38,5 @@ Continuation-07: feature-gated captured native exact search passed after the 193
 Continuation 09: one privately built LMI segment was flushed and manually reopened, then routed; the existing collection clean-reopen test exercised the primitive against its recovered holder. Neither result validates DLI hierarchy restart, interrupted publication, WAL-tail readiness or power-loss recovery.
 
 Continuation 10 adds no hierarchy recovery or crash evidence. The conservative resolver fails closed on any deleted/deferred segment state and does not support proxy handles; an explicit test-only dispatcher executes exact search over its captured handles.
+
+Continuation 11: a previously recovered collection automatically took native exact fallback under test-only activation when deleted state was present. This is not hierarchy descriptor recovery or crash evidence.

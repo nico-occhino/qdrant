@@ -58,6 +58,47 @@ pub struct DliTopologyHint {
     pub physical_segments: Vec<uuid::Uuid>,
 }
 
+/// Explicit, process-local research configuration; never a durable hierarchy.
+/// Level zero is a Plain member. Every captured segment must be listed.
+#[cfg(feature = "dli-research")]
+pub struct DliResearchConfig {
+    pub members: std::collections::HashMap<uuid::Uuid, usize>,
+    pub arity: usize,
+    pub candidate_budget: usize,
+    pub learned_queries: std::sync::atomic::AtomicU64,
+    pub exact_fallbacks: std::sync::atomic::AtomicU64,
+    pub selected_postings: std::sync::atomic::AtomicU64,
+    pub unique_posting_offsets: std::sync::atomic::AtomicU64,
+    pub routing_and_planning_nanos: std::sync::atomic::AtomicU64,
+    pub scoring_nanos: std::sync::atomic::AtomicU64,
+    pub resolution_nanos: std::sync::atomic::AtomicU64,
+    pub fallback_reasons: parking_lot::Mutex<std::collections::HashMap<&'static str, u64>>,
+}
+
+#[cfg(feature = "dli-research")]
+impl DliResearchConfig {
+    pub fn new(members: Vec<(uuid::Uuid, usize)>, arity: usize, budget: usize) -> Option<Self> {
+        let len = members.len();
+        let members: std::collections::HashMap<_, _> = members.into_iter().collect();
+        if arity < 2 || budget == 0 || len != members.len() || len == 0 {
+            return None;
+        }
+        Some(Self {
+            members,
+            arity,
+            candidate_budget: budget,
+            learned_queries: Default::default(),
+            exact_fallbacks: Default::default(),
+            selected_postings: Default::default(),
+            unique_posting_offsets: Default::default(),
+            routing_and_planning_nanos: Default::default(),
+            scoring_nanos: Default::default(),
+            resolution_nanos: Default::default(),
+            fallback_reasons: Default::default(),
+        })
+    }
+}
+
 /// Reason the experimental entry point ran a complete native exact search.
 #[cfg(feature = "dli-research")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -354,6 +395,203 @@ impl SegmentsSearcher {
             batch_request,
             runtime_handle,
             sampling_enabled,
+            query_context,
+            timeout.saturating_sub(started.elapsed()),
+        )
+        .await
+    }
+
+    /// Experimental process-local DLI dispatch. Unsupported or unsafe states
+    /// execute exact native search over the *same* captured handles.
+    #[cfg(feature = "dli-research")]
+    pub async fn search_dli_research(
+        holder: LockedSegmentHolder,
+        batch_request: Arc<CoreSearchRequestBatch>,
+        runtime_handle: &AdaptiveSearchHandle,
+        query_context: QueryContext,
+        timeout: Duration,
+        config: Arc<DliResearchConfig>,
+    ) -> CollectionResult<Vec<Vec<ScoredPoint>>> {
+        use crate::collection_manager::dli_native_route::{
+            CandidateResolution, resolve_pinned_candidates, route_pinned,
+        };
+        use segment::data_types::vectors::{DEFAULT_VECTOR_NAME, VectorInternal};
+        use shard::query::query_enum::QueryEnum;
+        use std::sync::atomic::Ordering;
+
+        let started = Instant::now();
+        let captured = Self::capture_segments(&holder, timeout)?;
+        let attempt_segments = captured.clone();
+        let attempt_request = batch_request.clone();
+        let attempt_holder = holder.clone();
+        let attempt_context = query_context.clone();
+        let cpu_utilization = attempt_context.handoff().cpu_utilization();
+        let handoff = attempt_context.handoff().clone();
+        let attempt_config = config.clone();
+        let attempt = runtime_handle.spawn_blocking(move || {
+            let _scope = handoff.enter_guard();
+            cpu_utilization.measure(|| {
+                macro_rules! reject {
+                    ($reason:expr) => {{
+                        *attempt_config
+                            .fallback_reasons
+                            .lock()
+                            .entry($reason)
+                            .or_default() += 1;
+                        return None;
+                    }};
+                }
+                let [request] = attempt_request.searches.as_slice() else {
+                    reject!("unsupported_query");
+                };
+                let QueryEnum::Nearest(named) = &request.query else {
+                    reject!("unsupported_query");
+                };
+                let VectorInternal::Dense(query) = &named.query else {
+                    reject!("unsupported_query");
+                };
+                if named.using.as_deref().unwrap_or(DEFAULT_VECTOR_NAME) != DEFAULT_VECTOR_NAME
+                    || request.filter.is_some()
+                    || request
+                        .with_payload
+                        .as_ref()
+                        .is_some_and(|payload| payload.is_required())
+                    || request
+                        .with_vector
+                        .as_ref()
+                        .is_some_and(|vector| vector.is_enabled())
+                    || request
+                        .params
+                        .as_ref()
+                        .is_some_and(|params| *params != Default::default())
+                {
+                    reject!("unsupported_query");
+                }
+                let Some(limit) = request.limit.checked_add(request.offset) else {
+                    reject!("unsupported_query")
+                };
+                let mut guards = Vec::with_capacity(attempt_segments.len());
+                for segment in &attempt_segments {
+                    let LockedSegment::Original(segment) = segment else {
+                        reject!("proxy");
+                    };
+                    // Never wait while holding other segment locks.
+                    let Some(guard) = segment.try_read() else {
+                        reject!("busy")
+                    };
+                    guards.push(guard);
+                }
+                // Reject replacement between capture and lock acquisition. A
+                // nonblocking holder read avoids lock-order deadlocks.
+                let Some(holder_guard) = attempt_holder.try_read() else {
+                    reject!("busy")
+                };
+                let active: Vec<_> = holder_guard
+                    .non_appendable_then_appendable_segments()
+                    .collect();
+                if active.len() != attempt_segments.len()
+                    || !active
+                        .iter()
+                        .zip(&attempt_segments)
+                        .all(|(a, b)| std::ptr::eq(a.get(), b.get()))
+                {
+                    reject!("topology");
+                }
+                drop(holder_guard);
+                if guards.len() != attempt_config.members.len() {
+                    reject!("topology");
+                }
+                let mut members = Vec::with_capacity(guards.len());
+                for segment in &guards {
+                    let Some(&level) = attempt_config.members.get(&segment.uuid) else {
+                        reject!("topology")
+                    };
+                    members.push((level, &**segment));
+                }
+                if !members.iter().any(|(level, _)| *level > 0) {
+                    reject!("topology");
+                }
+                let segment_context = attempt_context.get_segment_query_context();
+                let vector_context = segment_context.get_vector_context(DEFAULT_VECTOR_NAME, None);
+                let routed = match route_pinned(
+                    &members,
+                    query,
+                    attempt_config.arity,
+                    attempt_config.candidate_budget,
+                    &vector_context,
+                ) {
+                    Ok(routed) => routed,
+                    Err(error) => {
+                        log::debug!("dli_research: routing fallback: {error}");
+                        reject!("routing_error");
+                    }
+                };
+                if !routed.plan.buckets.iter().any(|bucket| bucket.level > 0) {
+                    reject!("no_learned_bucket");
+                }
+                attempt_config.selected_postings.fetch_add(
+                    u64::try_from(routed.posting_candidates).unwrap_or(u64::MAX),
+                    Ordering::Relaxed,
+                );
+                attempt_config.unique_posting_offsets.fetch_add(
+                    u64::try_from(routed.unique_posting_offsets).unwrap_or(u64::MAX),
+                    Ordering::Relaxed,
+                );
+                attempt_config.routing_and_planning_nanos.fetch_add(
+                    u64::try_from(routed.routing_and_planning_time.as_nanos()).unwrap_or(u64::MAX),
+                    Ordering::Relaxed,
+                );
+                attempt_config.scoring_nanos.fetch_add(
+                    u64::try_from(routed.scoring_time.as_nanos()).unwrap_or(u64::MAX),
+                    Ordering::Relaxed,
+                );
+                let resolution_start = Instant::now();
+                let resolution = resolve_pinned_candidates(&members, routed, limit);
+                attempt_config.resolution_nanos.fetch_add(
+                    u64::try_from(resolution_start.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                    Ordering::Relaxed,
+                );
+                match resolution {
+                    Ok(CandidateResolution::Resolved(hits)) => Some(hits),
+                    Ok(CandidateResolution::ExactFallback(reason)) => {
+                        log::debug!("dli_research: candidate fallback: {reason:?}");
+                        use crate::collection_manager::dli_native_route::ResolutionFallback;
+                        let reason = match reason {
+                            ResolutionFallback::AmbiguousOccurrence => "duplicate",
+                            ResolutionFallback::DeletedState => "deleted",
+                            ResolutionFallback::DeferredState => "deferred",
+                            ResolutionFallback::DuplicateMember
+                            | ResolutionFallback::CandidateMismatch => "identity",
+                        };
+                        reject!(reason);
+                    }
+                    Err(error) => {
+                        log::debug!("dli_research: routing fallback: {error}");
+                        reject!("resolution_error");
+                    }
+                }
+            })
+        });
+        if let Some(hits) = AbortOnDropHandle::new(attempt).await? {
+            config.learned_queries.fetch_add(1, Ordering::Relaxed);
+            return Ok(vec![hits]);
+        }
+        let mut exact_request = (*batch_request).clone();
+        for request in &mut exact_request.searches {
+            let params = request.params.get_or_insert_default();
+            if params.indexed_only {
+                return Err(CollectionError::bad_request(
+                    "experimental DLI fallback requires complete segment coverage",
+                ));
+            }
+            params.exact = true;
+        }
+        config.exact_fallbacks.fetch_add(1, Ordering::Relaxed);
+        Self::search_captured(
+            captured,
+            Arc::new(exact_request),
+            runtime_handle,
+            false,
             query_context,
             timeout.saturating_sub(started.elapsed()),
         )

@@ -55,3 +55,5 @@ Final command and hashes are recorded in the journal: `cargo test --locked --off
 
 ## Continuation 10
 Feature-gated collection DLI-filtered suite PASS 11/11, `continuation-10/verified.log`. Includes a native constructed stale-candidate counterexample, conservative fallback decision, same-captured-handle explicit native exact search versus nine-point oracle, and scheduler-selected private LMI build leaving an unrelated level untouched. No normal collection DLI dispatch, native concurrent optimizer transition, deferred/proxy/filter matrix or hierarchy reopen was tested. Command and hashes are in the journal.
+
+Continuation 11: collection DLI-filtered suite PASS 11/11 (`continuation-11/final-retry2.log`). Includes normal collection/LocalShard search with two manually built LMI levels and Plain, learned route and duplicate-version fallback; 193-point recovered collection used deleted-state and topology fallback. Initial ambient scope and storage datatype failures are preserved. No optimizer-interleaving or DLI hierarchy recovery test.

@@ -10,3 +10,5 @@ This is a scheduling policy only. Real compaction must choose native segments, o
 A controlled `SegmentBuilder` test combines two trained LMI segments and a Plain buffer into a newly trained LMI replacement and reopens it. This establishes a bounded source-to-destination adapter control only: no scheduler-triggered transition, concurrent proxy update or publication is implemented.
 
 Continuation 10: one private builder control uses scheduler input `[3,0,3]` and buffer 2 to select level 2, combines buffer and level 1, and verifies level 3 separately. No automatic trigger, publication, concurrent mutation or hierarchy recovery is established.
+
+Continuation 11 does not implement automatic compaction or optimizer publication; earlier selective private-build evidence remains unchanged.

@@ -405,6 +405,23 @@ impl ShardReplicaSet {
         }
     }
 
+    #[cfg(all(feature = "testing", feature = "dli-research"))]
+    pub async fn configure_local_dli_for_test(
+        &self,
+        config: Option<
+            std::sync::Arc<crate::collection_manager::segments_searcher::DliResearchConfig>,
+        >,
+    ) -> bool {
+        use crate::shards::shard::Shard;
+        match &*self.local.read().await {
+            Some(Shard::Local(local)) => {
+                local.configure_dli_research(config);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Config cached by each optimizer on the local shard.
     #[cfg(feature = "testing")]
     pub async fn local_optimizer_configs_for_test(

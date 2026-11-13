@@ -30,3 +30,5 @@ Native `SegmentsSearcher::capture_segments` pins the holder members under one re
 Pinned segment references bind routing and scoring during the primitive call but do not validate holder membership or freeze native updates. A caller must supply native read-locked references. Registry validation, coordinated publication and durable generation recovery remain unimplemented.
 
 Continuation 10 validates candidate UUID/offset/version against caller-pinned original segments. Full holder membership, proxy state and synchronization with optimizer publication remain caller obligations; the experimental resolver is not an activation protocol.
+
+Continuation 11 uses an in-memory UUID-role configuration, verifies captured holder membership under nonblocking locks and keeps original segment read guards during route and resolution. It provides no durable generation or optimizer publication protocol; configuration activation is test-only.

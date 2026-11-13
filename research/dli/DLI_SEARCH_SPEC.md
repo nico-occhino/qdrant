@@ -11,3 +11,5 @@ The `dli_recovery_control` test feeds a real persisted LMI's logits and postings
 
 ## Continuation 10: conservative candidate resolution
 A constructed overlap demonstrates that native candidate-only aggregation accepts an older selected copy when its newer Plain copy was not selected. `route_resolved_pinned` adds bounded batched native lookups and returns a fallback decision for ambiguous occurrences, any deleted/deferred segment state or invalid physical tokens. An explicit test uses the same captured handles for native exact search and verifies all nine fixture scores. This is not automatic collection dispatch and does not resolve proxy/filter or full-holder coverage semantics.
+
+Continuation 11: test-enabled LocalShard can opt into process-local research dispatch with complete UUID-role coverage checks, nonblocking pinned segment reads, native global routing, conservative resolution and automatic exact search on captured handles. A manually installed two-level collection fixture exercised learned and duplicate-fallback routes. The setter is test-gated; no durable or production-ready configuration is provided.

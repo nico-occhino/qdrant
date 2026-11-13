@@ -26,6 +26,15 @@ use crate::operations::types::{CollectionError, CollectionResult};
 const CHUNK_SIZE: usize = 16;
 
 impl LocalShard {
+    /// Enable or disable the non-persistent internal DLI research path.
+    #[cfg(all(feature = "dli-research", feature = "testing"))]
+    pub fn configure_dli_research(
+        &self,
+        config: Option<Arc<crate::collection_manager::segments_searcher::DliResearchConfig>>,
+    ) {
+        *self.dli_research.write() = config;
+    }
+
     pub async fn do_search(
         &self,
         core_request: Arc<CoreSearchRequestBatch>,
@@ -134,14 +143,32 @@ impl LocalShard {
         // update timeout
         let timeout = timeout.saturating_sub(start.elapsed());
 
-        let search_request = SegmentsSearcher::search(
-            self.segments.clone(),
-            core_request.clone(),
-            search_runtime_handle,
-            true,
-            query_context,
-            timeout,
-        );
+        let search_request = async {
+            #[cfg(feature = "dli-research")]
+            {
+                let config = self.dli_research.read().clone();
+                if let Some(config) = config {
+                    return SegmentsSearcher::search_dli_research(
+                        self.segments.clone(),
+                        core_request.clone(),
+                        search_runtime_handle,
+                        query_context,
+                        timeout,
+                        config,
+                    )
+                    .await;
+                }
+            }
+            SegmentsSearcher::search(
+                self.segments.clone(),
+                core_request.clone(),
+                search_runtime_handle,
+                true,
+                query_context,
+                timeout,
+            )
+            .await
+        };
 
         let res = tokio::time::timeout(timeout, search_request)
             .await

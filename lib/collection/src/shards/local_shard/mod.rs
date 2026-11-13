@@ -112,6 +112,11 @@ const WAL_SLOW_OP_REPORT_THRESHOLD: Duration = Duration::from_secs(30);
 pub struct LocalShard {
     collection_name: CollectionId,
     pub(super) segments: LockedSegmentHolder,
+    /// Process-local research opt-in; never restored from disk.
+    #[cfg(feature = "dli-research")]
+    pub(super) dli_research: parking_lot::RwLock<
+        Option<Arc<crate::collection_manager::segments_searcher::DliResearchConfig>>,
+    >,
     pub(super) collection_config: Arc<TokioRwLock<CollectionConfigInternal>>,
     pub(super) shared_storage_config: Arc<SharedStorageConfig>,
     pub(crate) payload_index_schema: Arc<SaveOnDisk<PayloadIndexSchema>>,
@@ -336,6 +341,8 @@ impl LocalShard {
         Self {
             collection_name,
             segments: segment_holder,
+            #[cfg(feature = "dli-research")]
+            dli_research: parking_lot::RwLock::new(None),
             collection_config,
             shared_storage_config,
             payload_index_schema,

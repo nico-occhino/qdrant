@@ -537,6 +537,46 @@ mod tests {
             score_threshold: None,
             offset: 0,
         };
+        // Production searcher research dispatch makes the same fallback
+        // decision automatically on its captured holder membership.
+        let config = Arc::new(
+            crate::collection_manager::segments_searcher::DliResearchConfig::new(
+                vec![(uuids.0, 1), (uuids.1, 2), (uuids.2, 0)],
+                100,
+                1,
+            )
+            .unwrap(),
+        );
+        let mut normal_request = request.clone();
+        normal_request.params = None;
+        let automatic = SegmentsSearcher::search_dli_research(
+            holder.clone(),
+            Arc::new(CoreSearchRequestBatch {
+                searches: vec![normal_request],
+            }),
+            &AdaptiveSearchHandle::current_for_tests(),
+            QueryContext::new(
+                DEFAULT_INDEXING_THRESHOLD_KB,
+                Handoff::Measured(AmbientContext::new()),
+            ),
+            TEST_TIMEOUT,
+            config.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            config
+                .exact_fallbacks
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(config.fallback_reasons.lock().get("duplicate"), Some(&1));
+        assert_eq!(
+            config
+                .learned_queries
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
         let result = SegmentsSearcher::search_captured(
             captured,
             Arc::new(CoreSearchRequestBatch {
@@ -561,6 +601,7 @@ mod tests {
         assert!(matches[0].score.abs() < 1e-5);
         let mut seen = HashSet::new();
         assert_eq!(result[0].len(), 9);
+        assert_eq!(automatic, result);
         for hit in &result[0] {
             assert!(seen.insert(hit.id));
             let expected = if hit.id == old.id || hit.id == 99_u64.into() {
