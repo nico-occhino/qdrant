@@ -511,12 +511,23 @@ mod tests {
                     .lock()
                     .recv_timeout(Duration::from_secs(10))
                     .unwrap();
-                SegmentBuilder::new(
-                    &self.path,
-                    &config,
-                    &HnswGlobalConfig::default(),
-                    FeatureFlags::default(),
-                )
+                let adapter = crate::collection_manager::dli_maintenance::DliOptimizationStrategy {
+                    staging: self.path.clone(),
+                    segments_path: self.path.clone(),
+                    segment_config: config,
+                    model: LmiConfig {
+                        n_buckets: 2,
+                        sample_size: 4,
+                        hidden_dim: 4,
+                        epochs: 1,
+                        batch_size: 4,
+                        routing_batch_size: 4,
+                        kmeans_iterations: 2,
+                        nprobe: 2,
+                        seed: 17,
+                    },
+                };
+                shard::optimize::OptimizationStrategy::create_segment_builder(&adapter, inputs)
             }
             fn create_temp_segment(
                 &self,

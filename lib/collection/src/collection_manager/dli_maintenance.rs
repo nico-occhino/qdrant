@@ -17,6 +17,96 @@ use std::sync::{
 };
 use uuid::Uuid;
 
+/// Native optimizer adapter. The native optimizer owns proxy installation,
+/// propagation and publication; constructing this adapter does not claim that
+/// a previously observed plan is still current.
+pub struct DliOptimizationStrategy {
+    pub staging: PathBuf,
+    pub segments_path: PathBuf,
+    pub segment_config: segment::types::SegmentConfig,
+    pub model: LmiConfig,
+}
+
+impl shard::optimize::OptimizationStrategy for DliOptimizationStrategy {
+    fn create_segment_builder(
+        &self,
+        inputs: &[LockedSegment],
+    ) -> segment::common::operation_error::OperationResult<SegmentBuilder> {
+        let mut config = self.segment_config.clone();
+        if config.vector_data.len() != 1 || !config.sparse_vector_data.is_empty() {
+            return Err(
+                segment::common::operation_error::OperationError::service_error(
+                    "unsupported DLI vector configuration",
+                ),
+            );
+        }
+        let vector = config
+            .vector_data
+            .get_mut(segment::data_types::vectors::DEFAULT_VECTOR_NAME)
+            .ok_or_else(|| {
+                segment::common::operation_error::OperationError::service_error(
+                    "missing DLI vector configuration",
+                )
+            })?;
+        if vector.multivector_config.is_some() {
+            return Err(
+                segment::common::operation_error::OperationError::service_error(
+                    "unsupported DLI vector configuration",
+                ),
+            );
+        }
+        for input in inputs {
+            let guard = input.get().read();
+            let source = guard.config();
+            let Some(source_vector) = source
+                .vector_data
+                .get(segment::data_types::vectors::DEFAULT_VECTOR_NAME)
+            else {
+                return Err(
+                    segment::common::operation_error::OperationError::service_error(
+                        "missing source vector",
+                    ),
+                );
+            };
+            if source.vector_data.len() != 1
+                || !source.sparse_vector_data.is_empty()
+                || source_vector.size != vector.size
+                || source_vector.distance != vector.distance
+                || source_vector.datatype != vector.datatype
+                || source_vector.multivector_config.is_some()
+            {
+                return Err(
+                    segment::common::operation_error::OperationError::service_error(
+                        "incompatible DLI source vector configuration",
+                    ),
+                );
+            }
+        }
+        vector.index = Indexes::LmiTrained(self.model.clone());
+        SegmentBuilder::new(
+            &self.staging,
+            &config,
+            &HnswGlobalConfig::default(),
+            FeatureFlags::default(),
+        )
+    }
+
+    fn create_temp_segment(
+        &self,
+    ) -> segment::common::operation_error::OperationResult<(
+        LockedSegment,
+        shard::segment_manifest::NewSegmentToken,
+    )> {
+        Err(segment::common::operation_error::OperationError::service_error(
+            "DLI optimizer requires an existing appendable segment outside its inputs",
+        ))
+    }
+
+    fn live_vector_names(&self) -> Option<std::collections::HashSet<String>> {
+        Some(self.segment_config.vector_data.keys().cloned().collect())
+    }
+}
+
 #[derive(Debug)]
 pub struct PrivateBuild {
     pub plan: CompactionPlan,

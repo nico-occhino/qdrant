@@ -31,3 +31,5 @@ Continuation 12 adds a test-only bounded guard hook and a native upsert/query in
 Continuation 13 adds native delete/query and real optimizer proxy/publication/cancellation controls, plus guarded-worker duration accounting. Test-only activation, automatic-compaction and hierarchy-recovery status are unchanged.
 
 Continuation 14 adds a test-activated update-completion maintenance observer via UpdateTracker and a selective asynchronous native LMI private builder. No training runs under the native update mutex. Automatic publication and persistent hierarchy integration remain disabled.
+
+Continuation 15 introduces a test-gated native `OptimizationStrategy` LMI builder adapter and exercises it through real proxy mutation, publication and cancellation. The insert-triggered coordinator still only builds private outputs; connecting it safely requires synchronized DLI source-plan revalidation and lifecycle ownership.

@@ -27,3 +27,5 @@ Continuation 12 remains RESEARCH PROTOTYPE. One deterministic native-holder upse
 Continuation 13 remains RESEARCH PROTOTYPE. Fourteen targeted tests pass, including delete ordering and dispatcher fallback during actual optimizer private construction and after publication/cancellation. The minimum concurrency gate is still conditional; automatic temporal compaction and recoverable hierarchy are absent.
 
 Continuation 14: RESEARCH PROTOTYPE with ordinary-insert-triggered selective private learned-level construction. Publication, actual temporal transitions, optimizer-integrated maintenance and durable hierarchy recovery are unimplemented.
+
+Continuation 15: RESEARCH PROTOTYPE. A manually invoked native optimizer uses the DLI LMI builder adapter, but zero ordinary-insert-triggered temporal transitions have been published. Durable hierarchy, automatic publication and recovery are unimplemented.
