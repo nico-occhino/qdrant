@@ -127,11 +127,35 @@ impl shard::optimize::OptimizationStrategy for DliOptimizationStrategy {
         LockedSegment,
         shard::segment_manifest::NewSegmentToken,
     )> {
-        Err(
-            segment::common::operation_error::OperationError::service_error(
-                "DLI optimizer requires an existing appendable segment outside its inputs",
-            ),
-        )
+        let mut config = self.segment_config.clone();
+        if config.vector_data.len() != 1 || !config.sparse_vector_data.is_empty() {
+            return Err(
+                segment::common::operation_error::OperationError::service_error(
+                    "unsupported DLI COW vector configuration",
+                ),
+            );
+        }
+        for vector in config.vector_data.values_mut() {
+            if vector.multivector_config.is_some() || vector.quantization_config.is_some() {
+                return Err(
+                    segment::common::operation_error::OperationError::service_error(
+                        "unsupported DLI COW vector options",
+                    ),
+                );
+            }
+            vector.index = Indexes::Plain {};
+            vector.storage_type = segment::types::VectorStorageType::InRamChunkedMmap;
+        }
+        let (segment, token) =
+            segment::segment_constructor::build_segment(&self.segments_path, &config, None, false)?;
+        if !segment.is_appendable() {
+            return Err(
+                segment::common::operation_error::OperationError::service_error(
+                    "DLI COW segment is not appendable",
+                ),
+            );
+        }
+        Ok((LockedSegment::from(segment), token))
     }
 
     fn live_vector_names(&self) -> Option<std::collections::HashSet<String>> {
@@ -227,6 +251,7 @@ impl DliMaintenance {
             let level = self.members[uuid];
             level == 0 || level == plan.target_level || plan.source_levels.contains(&level)
         });
+        let expected_sources = fingerprints.iter().map(|(uuid, _)| *uuid).collect();
         {
             let mut last = self.last.lock();
             if *last == fingerprints {
@@ -251,6 +276,25 @@ impl DliMaintenance {
             let mut physical = vec![];
             let result = (|| -> Result<Segment, String> {
                 std::fs::create_dir_all(&state.path).map_err(|e| e.to_string())?;
+                let source_config = sources
+                    .first()
+                    .ok_or("no inputs")?
+                    .get()
+                    .read()
+                    .config()
+                    .clone();
+                let staging = tempfile::tempdir_in(&state.path).map_err(|e| e.to_string())?;
+                let adapter = DliOptimizationStrategy {
+                    staging: staging.path().to_owned(),
+                    segments_path: state.path.clone(),
+                    segment_config: source_config,
+                    model: state.model.clone(),
+                    expected_sources,
+                };
+                let mut builder = shard::optimize::OptimizationStrategy::create_segment_builder(
+                    &adapter, &sources,
+                )
+                .map_err(|e| e.to_string())?;
                 let mut guards = vec![];
                 for source in &sources {
                     let LockedSegment::Original(segment) = source else {
@@ -258,23 +302,9 @@ impl DliMaintenance {
                     };
                     guards.push(segment.try_read().ok_or("private source busy")?);
                 }
-                let mut config = guards.first().ok_or("no inputs")?.config().clone();
                 for guard in &guards {
                     physical.push(guard.uuid);
                 }
-                let vector = config
-                    .vector_data
-                    .get_mut(segment::data_types::vectors::DEFAULT_VECTOR_NAME)
-                    .ok_or("missing vector")?;
-                vector.index = Indexes::LmiTrained(state.model.clone());
-                let staging = tempfile::tempdir_in(&state.path).map_err(|e| e.to_string())?;
-                let mut builder = SegmentBuilder::new(
-                    staging.path(),
-                    &config,
-                    &HnswGlobalConfig::default(),
-                    FeatureFlags::default(),
-                )
-                .map_err(|e| e.to_string())?;
                 let refs: Vec<_> = guards.iter().map(|g| &**g).collect();
                 builder
                     .update(&refs, &AtomicBool::new(false))

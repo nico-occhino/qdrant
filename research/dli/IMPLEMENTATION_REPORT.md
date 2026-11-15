@@ -37,3 +37,5 @@ Continuation 15 introduces a test-gated native `OptimizationStrategy` LMI builde
 Continuation 16 adds an expected UUID-set check to the native optimizer LMI adapter. The automatic private builder remains disconnected from native optimizer publication.
 
 Continuation 17 adds a default native optimizer source-validation callback and physical UUID validation in the research LMI strategy before proxy installation. The maintenance scheduler is not yet wired to native optimization.
+
+Continuation 18 carries observed source UUIDs into the private LMI adapter and implements restricted Plain COW construction. It does not connect the maintenance job to `execute_optimization`.

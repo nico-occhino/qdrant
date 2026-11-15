@@ -25,3 +25,5 @@ Continuation 15 leaves DLI search activation unchanged; manually invoked optimiz
 Continuation 16 does not change serving or LocalShard activation.
 
 Continuation 17 makes no change to search activation.
+
+Continuation 18 does not change DLI search activation.

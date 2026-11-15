@@ -324,6 +324,18 @@ mod tests {
             expected_sources: HashSet::from([Uuid::new_v4()]),
         };
         let inputs = vec![shard::locked_segment::LockedSegment::from(source)];
+        let (cow, _token) =
+            shard::optimize::OptimizationStrategy::create_temp_segment(&adapter).unwrap();
+        assert!(cow.get().read().is_appendable());
+        cow.get()
+            .write()
+            .upsert_point(1, 7_u64.into(), only_default_vector(&[1.0, 0.0]))
+            .unwrap();
+        assert!(
+            cow.get()
+                .read()
+                .has_point(7_u64.into(), common::types::DeferredBehavior::VisibleOnly)
+        );
         assert!(
             shard::optimize::OptimizationStrategy::validate_sources(&adapter, &inputs).is_err()
         );

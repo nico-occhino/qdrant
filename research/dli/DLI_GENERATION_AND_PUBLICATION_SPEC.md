@@ -44,3 +44,5 @@ Continuation 15: native optimizer verifies selected runtime IDs exist and are or
 Continuation 16 adds adapter-level expected physical UUID checks. This is not atomic logical hierarchy validation or a publication protocol; the test's expected UUIDs are obtained from actual optimizer inputs.
 
 Continuation 17 adds a default native optimizer source-validation hook under the upgradable holder read before proxy installation. The DLI adapter checks expected physical UUIDs there. The scheduled job does not yet carry its original expectations into this path; roles, occupancy and hierarchy generation remain unvalidated.
+
+Continuation 18 passes selected observed UUIDs to private-build adapter validation, without native holder protection; a captured stale handle can still pass. Publication remains disabled.

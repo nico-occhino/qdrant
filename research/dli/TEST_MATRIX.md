@@ -69,3 +69,5 @@ Continuation 15: native optimizer proxy/publication/cancellation control PASS 1/
 Continuation 16: DLI-targeted collection suite PASS 15/15 (`continuation-16/final.log`), including direct stale UUID rejection and the existing manually invoked native optimizer mutation/publication/cancellation control. No scheduled stale-plan optimizer rollback or automatic compaction tested.
 
 Continuation 17: DLI-filtered suite PASS 15/15 (`continuation-17/final.log`), including an optimizer control asserting its source-validation hook ran and a separate direct stale-UUID adapter rejection. No stale scheduled-plan optimizer rollback, extra-COW or automatic publication test.
+
+Continuation 18: collection DLI-filtered suite PASS 15/15 (`continuation-18/final.log`); includes direct appendable COW construction/native write and the ordinary-insert private build. No actual optimizer extra-COW, scheduled stale-plan rollback or automatic publication is established.

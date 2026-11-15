@@ -24,3 +24,5 @@ Continuation 15 adds a test-gated LMI `OptimizationStrategy` adapter exercised b
 Continuation 16: the native optimizer LMI adapter rejects physical UUID-set mismatches after source proxies are installed. The ordinary-update scheduler is not connected to this check or to optimizer publication; level roles and occupancy are not validated at the protection boundary.
 
 Continuation 17 supplies a source-validation seam before native proxy installation; automatic publication remains disabled until scheduled roles and generation are coordinated.
+
+Continuation 18 passes the scheduled UUID set to the native LMI adapter for the existing private builder. It implements restricted native Plain COW-segment construction, tested directly. The scheduled job still does not execute the optimizer or publish.

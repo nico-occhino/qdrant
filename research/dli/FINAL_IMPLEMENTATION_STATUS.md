@@ -33,3 +33,5 @@ Continuation 15: RESEARCH PROTOTYPE. A manually invoked native optimizer uses th
 Continuation 16 remains RESEARCH PROTOTYPE: zero automatically published temporal transitions; direct stale physical source rejection and the manually invoked optimizer control pass.
 
 Continuation 17 remains RESEARCH PROTOTYPE. The native source-validation seam is implemented but the update-triggered job is not connected; no automatic temporal transitions or hierarchy recovery have been demonstrated.
+
+Continuation 18 remains RESEARCH PROTOTYPE: scheduled UUIDs reach the private builder adapter and a restricted native COW segment can be constructed, but zero automatic optimizer publications, durable hierarchy transitions or DLI recoveries are demonstrated.
