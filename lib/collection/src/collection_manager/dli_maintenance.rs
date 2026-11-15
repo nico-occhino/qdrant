@@ -1,12 +1,15 @@
-//! Insert-driven private build research pipeline. Outputs are never published.
+//! Insert-driven experimental DLI maintenance. Native mode publishes through
+//! Qdrant's optimizer; the private mode remains a construction control.
 use super::dli_schedule::{CompactionPlan, HierarchyConfig};
 use common::flags::FeatureFlags;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use segment::entry::{ReadSegmentEntry, StorageSegmentEntry};
+use segment::index::VectorIndexEnum;
 use segment::index::lmi_index::LmiConfig;
 use segment::segment::Segment;
 use segment::segment_constructor::segment_builder::SegmentBuilder;
 use segment::types::{HnswGlobalConfig, Indexes};
+use serde::{Deserialize, Serialize};
 use shard::locked_segment::LockedSegment;
 use shard::segment_holder::locked::LockedSegmentHolder;
 use std::collections::HashMap;
@@ -16,6 +19,74 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use uuid::Uuid;
+
+const DLI_DESCRIPTOR: &str = "dli_hierarchy.json";
+
+/// Derived metadata only. The native active holder, not this file, owns data.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DliHierarchyDescriptor {
+    schema: u32,
+    pub generation: usize,
+    buffer_capacity: usize,
+    arity: usize,
+    members: Vec<(Uuid, usize)>,
+}
+
+impl DliHierarchyDescriptor {
+    fn validate(
+        &self,
+        holder: &LockedSegmentHolder,
+        hierarchy: HierarchyConfig,
+    ) -> Result<HashMap<Uuid, usize>, String> {
+        if self.schema != 1
+            || self.generation == 0
+            || self.buffer_capacity != hierarchy.buffer_capacity
+            || self.arity != hierarchy.arity
+        {
+            return Err("incompatible DLI descriptor version or policy".into());
+        }
+        let roles: HashMap<_, _> = self.members.iter().copied().collect();
+        if roles.len() != self.members.len() {
+            return Err("duplicate DLI descriptor member".into());
+        }
+        let guard = holder.read();
+        if guard.iter().count() != roles.len() {
+            return Err("DLI descriptor does not cover active native membership".into());
+        }
+        for (_, locked) in guard.iter() {
+            let LockedSegment::Original(segment) = locked else {
+                return Err("DLI descriptor cannot activate over a proxy".into());
+            };
+            let segment = segment.read();
+            let level = *roles
+                .get(&segment.uuid)
+                .ok_or("stale DLI descriptor member")?;
+            if segment.has_deferred_points() {
+                return Err("deferred DLI member needs native fallback".into());
+            }
+            let index = segment
+                .vector_data
+                .get(segment::data_types::vectors::DEFAULT_VECTOR_NAME)
+                .ok_or("missing DLI vector")?
+                .vector_index
+                .borrow();
+            match (level, &*index) {
+                (0, VectorIndexEnum::Plain(_)) if segment.is_appendable() => {}
+                (1.., VectorIndexEnum::Lmi(lmi)) if lmi.routing_state().is_some() => {
+                    if segment.available_point_count_without_deferred()
+                        > hierarchy
+                            .level_capacity(level)
+                            .map_err(|e| format!("{e:?}"))?
+                    {
+                        return Err("DLI level exceeds geometric capacity".into());
+                    }
+                }
+                _ => return Err("DLI member role or learned artifacts are invalid".into()),
+            }
+        }
+        Ok(roles)
+    }
+}
 
 /// Native optimizer adapter. The native optimizer owns proxy installation,
 /// propagation and publication; constructing this adapter does not claim that
@@ -230,10 +301,11 @@ pub struct PrivateBuild {
     pub sources: Vec<Uuid>,
     pub output: Result<Segment, String>,
 }
-#[derive(Debug)]
 pub struct DliMaintenance {
     pub hierarchy: HierarchyConfig,
-    pub members: HashMap<Uuid, usize>,
+    pub members: RwLock<HashMap<Uuid, usize>>,
+    pub generation: AtomicUsize,
+    pub search: Mutex<Option<Arc<super::segments_searcher::DliResearchConfig>>>,
     pub model: LmiConfig,
     pub path: PathBuf,
     running: AtomicBool,
@@ -247,7 +319,58 @@ pub struct DliMaintenance {
     pub builds: Mutex<Vec<PrivateBuild>>,
     pub completed: tokio::sync::Notify,
 }
+impl std::fmt::Debug for DliMaintenance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DliMaintenance")
+            .field("generation", &self.generation.load(Ordering::Relaxed))
+            .field("members", &*self.members.read())
+            .finish_non_exhaustive()
+    }
+}
 impl DliMaintenance {
+    pub fn load_validated_descriptor(
+        &self,
+        holder: &LockedSegmentHolder,
+    ) -> Result<DliHierarchyDescriptor, String> {
+        // Fail closed before parsing: a corrupt file must not leave a former
+        // process-local learned view active. Empty membership selects exact
+        // native fallback in the search dispatcher.
+        if let Some(search) = self.search.lock().as_ref() {
+            search.members.write().clear();
+        }
+        let path = self.path.join(DLI_DESCRIPTOR);
+        let descriptor: DliHierarchyDescriptor =
+            common::fs::read_json(&path).map_err(|e| e.to_string())?;
+        let roles = descriptor.validate(holder, self.hierarchy)?;
+        *self.members.write() = roles.clone();
+        self.generation
+            .store(descriptor.generation, Ordering::Release);
+        if let Some(search) = self.search.lock().as_ref() {
+            *search.members.write() = roles;
+        }
+        Ok(descriptor)
+    }
+
+    fn save_descriptor(
+        &self,
+        members: &HashMap<Uuid, usize>,
+        generation: usize,
+    ) -> Result<(), String> {
+        let mut sorted: Vec<_> = members
+            .iter()
+            .map(|(uuid, level)| (*uuid, *level))
+            .collect();
+        sorted.sort_unstable_by_key(|(uuid, _)| *uuid);
+        let descriptor = DliHierarchyDescriptor {
+            schema: 1,
+            generation,
+            buffer_capacity: self.hierarchy.buffer_capacity,
+            arity: self.hierarchy.arity,
+            members: sorted,
+        };
+        common::fs::atomic_save_json(&self.path.join(DLI_DESCRIPTOR), &descriptor)
+            .map_err(|e| e.to_string())
+    }
     pub fn new(
         hierarchy: HierarchyConfig,
         members: HashMap<Uuid, usize>,
@@ -256,7 +379,9 @@ impl DliMaintenance {
     ) -> Arc<Self> {
         Arc::new(Self {
             hierarchy,
-            members,
+            members: RwLock::new(members),
+            generation: AtomicUsize::new(0),
+            search: Mutex::new(None),
             model,
             path,
             running: AtomicBool::new(false),
@@ -269,6 +394,9 @@ impl DliMaintenance {
             builds: Mutex::new(Vec::new()),
             completed: Default::default(),
         })
+    }
+    pub fn attach_search(&self, search: Arc<super::segments_searcher::DliResearchConfig>) {
+        *self.search.lock() = Some(search);
     }
     /// Called after native update locks have been released. One private job per
     /// observed source version set; no authoritative point state is stored here.
@@ -284,6 +412,7 @@ impl DliMaintenance {
             .read()
             .non_appendable_then_appendable_segments()
             .collect();
+        let roles_snapshot = self.members.read().clone();
         let mut counts = vec![];
         let mut buffer = 0usize;
         let mut fingerprints = vec![];
@@ -294,7 +423,7 @@ impl DliMaintenance {
                 return;
             };
             let guard = segment.read();
-            let Some(&level) = self.members.get(&guard.uuid) else {
+            let Some(&level) = roles_snapshot.get(&guard.uuid) else {
                 self.running.store(false, Ordering::Release);
                 return;
             };
@@ -318,7 +447,7 @@ impl DliMaintenance {
             return;
         };
         fingerprints.retain(|(uuid, _, _)| {
-            let level = self.members[uuid];
+            let level = roles_snapshot[uuid];
             level == 0 || level == plan.target_level || plan.source_levels.contains(&level)
         });
         let expected_sources: std::collections::HashSet<_> =
@@ -375,7 +504,7 @@ impl DliMaintenance {
                         expected_sources,
                         expected_topology: Some((
                             state.hierarchy,
-                            state.members.clone(),
+                            roles_snapshot.clone(),
                             plan.clone(),
                         )),
                     };
@@ -393,6 +522,51 @@ impl DliMaintenance {
                         .any(|(_, segment)| segment.read().uuid == output)
                     {
                         return Err("optimizer returned without publishing expected output".into());
+                    }
+                    // Native publication precedes derived hierarchy activation.
+                    // While this map is stale, the searcher's complete-membership
+                    // check forces exact fallback on its captured handles.
+                    let new_roles = {
+                        let guard = job_holder.read();
+                        let mut next = roles_snapshot.clone();
+                        for source in &adapter.expected_sources {
+                            next.remove(source);
+                        }
+                        next.insert(output, plan.target_level);
+                        let mut active = std::collections::HashSet::new();
+                        for (_, member) in guard.iter_original() {
+                            let segment = member.read();
+                            let uuid = segment.uuid;
+                            if !active.insert(uuid) {
+                                return Err("duplicate active DLI physical identity".into());
+                            }
+                            if !next.contains_key(&uuid) {
+                                if !segment.is_appendable() {
+                                    return Err("new DLI member is not appendable".into());
+                                }
+                                next.insert(uuid, 0);
+                            }
+                        }
+                        if active.len() != next.len()
+                            || next.keys().any(|uuid| !active.contains(uuid))
+                        {
+                            return Err("published DLI membership is incomplete".into());
+                        }
+                        next
+                    };
+                    let generation = state.generation.load(Ordering::Acquire) + 1;
+                    // A failed metadata write cannot undo native publication.
+                    // Keep in-memory search safe and report degraded durability.
+                    if let Err(error) = state.save_descriptor(&new_roles, generation) {
+                        state
+                            .optimizer_errors
+                            .lock()
+                            .push(format!("DLI descriptor: {error}"));
+                    }
+                    *state.members.write() = new_roles.clone();
+                    state.generation.store(generation, Ordering::Release);
+                    if let Some(search) = state.search.lock().as_ref() {
+                        *search.members.write() = new_roles;
                     }
                     state.published_uuids.lock().push(output);
                     state.published.fetch_add(1, Ordering::Relaxed);
@@ -423,7 +597,11 @@ impl DliMaintenance {
                     segment_config: source_config,
                     model: state.model.clone(),
                     expected_sources,
-                    expected_topology: Some((state.hierarchy, state.members.clone(), plan.clone())),
+                    expected_topology: Some((
+                        state.hierarchy,
+                        roles_snapshot.clone(),
+                        plan.clone(),
+                    )),
                 };
                 let mut builder = shard::optimize::OptimizationStrategy::create_segment_builder(
                     &adapter, &sources,

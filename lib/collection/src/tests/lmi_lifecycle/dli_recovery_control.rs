@@ -924,8 +924,8 @@ async fn dli_recovery_control_body() {
         let route = route_pinned(
             &[(1, &level1), (2, &level2), (0, &plain)],
             &axis_query,
+            2,
             100,
-            1,
             &VectorQueryContext::default(),
         )
         .unwrap();
@@ -933,7 +933,7 @@ async fn dli_recovery_control_body() {
             .per_segment
             .iter()
             .flat_map(|(_, hits)| hits)
-            .next()
+            .find(|hit| hit.id == 101_u64.into())
             .unwrap()
             .clone();
         let uuids = (level1.uuid, level2.uuid, plain.uuid);
@@ -948,7 +948,7 @@ async fn dli_recovery_control_body() {
             )
         };
         let config = Arc::new(
-            DliResearchConfig::new(vec![(uuids.0, 1), (uuids.1, 2), (uuids.2, 0)], 100, 1).unwrap(),
+            DliResearchConfig::new(vec![(uuids.0, 1), (uuids.1, 2), (uuids.2, 0)], 2, 100).unwrap(),
         );
         assert!(
             local
@@ -1144,6 +1144,16 @@ async fn dli_recovery_control_body() {
         );
         // An ordinary subsequent insert requests the experimental native
         // optimizer path; this fixture is disposable and manually assembled.
+        let active_config = Arc::new(
+            DliResearchConfig::new(vec![(uuids.0, 1), (uuids.1, 3), (uuids.2, 0)], 2, 1000)
+                .unwrap(),
+        );
+        maintenance.attach_search(active_config.clone());
+        assert!(
+            local
+                .configure_local_dli_for_test(Some(active_config.clone()))
+                .await
+        );
         maintenance.native_enabled.store(true, Ordering::Release);
         put(&c, vec![point(302, 3)]).await;
         tokio::time::timeout(Duration::from_secs(30), async {
@@ -1196,11 +1206,6 @@ async fn dli_recovery_control_body() {
             "DLI_AUTOMATIC_NATIVE_PUBLICATION old={:?} destination={} current={:?}",
             uuids, destination, after_native
         );
-        assert!(
-            local
-                .configure_local_dli_for_test(Some(config.clone()))
-                .await
-        );
         let after_search = fixture_search().await;
         assert_eq!(after_search.len(), 11);
         let mut seen = HashSet::new();
@@ -1218,7 +1223,94 @@ async fn dli_recovery_control_body() {
             };
             assert_eq!(hit.score, score);
         }
-        assert!(config.exact_fallbacks.load(Ordering::Relaxed) >= 2);
+        assert_eq!(maintenance.generation.load(Ordering::Relaxed), 1);
+        assert_eq!(active_config.members.read().len(), after_native.len());
+        assert_eq!(active_config.members.read().get(&destination), Some(&2));
+        assert!(
+            active_config.learned_queries.load(Ordering::Relaxed) > 0,
+            "{:?}",
+            active_config.fallback_reasons.lock()
+        );
+        let first_learned = active_config.learned_queries.load(Ordering::Relaxed);
+        // The optimizer's new appendable COW member is the next insertion
+        // buffer. A normal update must trigger a second, independently trained
+        // target without rebuilding either existing learned level.
+        let first_buffer = *active_config
+            .members
+            .read()
+            .iter()
+            .find_map(|(uuid, level)| (*level == 0).then_some(uuid))
+            .unwrap();
+        put(&c, vec![point(303, 1), point(304, 2), point(305, 3)]).await;
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let notified = maintenance.completed.notified();
+                if maintenance.published.load(Ordering::Acquire) >= 2
+                    || !maintenance.optimizer_errors.lock().is_empty()
+                {
+                    break;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .unwrap();
+        let errors = maintenance.optimizer_errors.lock().clone();
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(maintenance.published.load(Ordering::Relaxed), 2);
+        assert_eq!(maintenance.generation.load(Ordering::Relaxed), 2);
+        let second_destination = maintenance.published_uuids.lock()[1];
+        let second_members = active_config.members.read().clone();
+        assert!(!second_members.contains_key(&first_buffer));
+        assert_eq!(second_members.get(&second_destination), Some(&1));
+        assert_eq!(second_members.get(&destination), Some(&2));
+        assert_eq!(second_members.get(&uuids.1), Some(&3));
+        let second_search = fixture_search().await;
+        assert_eq!(second_search.len(), 14);
+        assert_eq!(
+            second_search
+                .iter()
+                .map(|hit| hit.id)
+                .collect::<HashSet<_>>()
+                .len(),
+            14
+        );
+        for hit in &second_search {
+            let segment::types::PointIdType::NumId(id) = hit.id else {
+                panic!("numeric fixture")
+            };
+            let expected_score = if id == 201 { 1.0 } else { 0.0 };
+            assert_eq!(hit.score, expected_score, "id={id}");
+        }
+        assert!(
+            active_config.learned_queries.load(Ordering::Relaxed) > first_learned,
+            "{:?}",
+            active_config.fallback_reasons.lock()
+        );
+        println!(
+            "DLI_TWO_AUTOMATIC_PUBLICATIONS first={} second={} members={:?} learned={}",
+            destination,
+            second_destination,
+            second_members,
+            active_config.learned_queries.load(Ordering::Relaxed)
+        );
+        let descriptor_path = private_root.path().join("dli_hierarchy.json");
+        let valid_descriptor = std::fs::read(&descriptor_path).unwrap();
+        let restored = maintenance.load_validated_descriptor(&h).unwrap();
+        assert_eq!(restored.generation, 2);
+        // Derived metadata cannot override the active native holder. Corrupt
+        // metadata disables the learned map and selects exact fallback.
+        std::fs::write(&descriptor_path, b"{corrupt").unwrap();
+        assert!(maintenance.load_validated_descriptor(&h).is_err());
+        assert!(active_config.members.read().is_empty());
+        let fallbacks_before = active_config.exact_fallbacks.load(Ordering::Relaxed);
+        assert_eq!(fixture_search().await.len(), 14);
+        assert!(active_config.exact_fallbacks.load(Ordering::Relaxed) > fallbacks_before);
+        std::fs::write(&descriptor_path, valid_descriptor).unwrap();
+        maintenance.load_validated_descriptor(&h).unwrap();
+        let learned_before = active_config.learned_queries.load(Ordering::Relaxed);
+        assert_eq!(fixture_search().await.len(), 14);
+        assert!(active_config.learned_queries.load(Ordering::Relaxed) > learned_before);
         assert!(local.configure_local_dli_for_test(None).await);
         assert!(local.configure_local_dli_maintenance_for_test(None).await);
         drop(buffer_handle);

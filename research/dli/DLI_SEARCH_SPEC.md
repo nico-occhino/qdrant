@@ -29,3 +29,4 @@ Continuation 17 makes no change to search activation.
 Continuation 18 does not change DLI search activation.
 
 Continuation 19: a normal collection query after the test-only automatic physical replacement falls back on stale topology and matches 11 live IDs/scores. Learned hierarchy reactivation after publication is not implemented.
+Continuation 20: a stale role map between native physical swap and in-memory logical activation fails complete-membership validation and uses exact fallback. After a validated map update, normal collection queries execute learned global routing across the newly published and unaffected LMI levels. A corrupt derived descriptor clears the learned map and causes exact fallback until a valid descriptor is loaded. This remains test-only activation.

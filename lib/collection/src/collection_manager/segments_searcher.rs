@@ -62,7 +62,7 @@ pub struct DliTopologyHint {
 /// Level zero is a Plain member. Every captured segment must be listed.
 #[cfg(feature = "dli-research")]
 pub struct DliResearchConfig {
-    pub members: std::collections::HashMap<uuid::Uuid, usize>,
+    pub members: parking_lot::RwLock<std::collections::HashMap<uuid::Uuid, usize>>,
     pub arity: usize,
     pub candidate_budget: usize,
     pub learned_queries: std::sync::atomic::AtomicU64,
@@ -93,7 +93,7 @@ impl DliResearchConfig {
             return None;
         }
         Some(Self {
-            members,
+            members: parking_lot::RwLock::new(members),
             arity,
             candidate_budget: budget,
             learned_queries: Default::default(),
@@ -528,12 +528,13 @@ impl SegmentsSearcher {
                     reject!("topology");
                 }
                 drop(holder_guard);
-                if guards.len() != attempt_config.members.len() {
+                let expected_members = attempt_config.members.read().clone();
+                if guards.len() != expected_members.len() {
                     reject!("topology");
                 }
                 let mut members = Vec::with_capacity(guards.len());
                 for segment in &guards {
-                    let Some(&level) = attempt_config.members.get(&segment.uuid) else {
+                    let Some(&level) = expected_members.get(&segment.uuid) else {
                         reject!("topology")
                     };
                     members.push((level, &**segment));
