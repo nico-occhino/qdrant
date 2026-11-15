@@ -62,6 +62,11 @@ pub struct OptimizationPaths {
 ///
 /// This abstracts policy decisions (what config to use) from the execution logic.
 pub trait OptimizationStrategy: Send {
+    /// Validate an optional policy plan against the holder while the optimizer
+    /// holds its upgradable membership lock. Do not acquire that lock again.
+    fn validate_topology(&self, _holder: &SegmentHolder) -> OperationResult<()> {
+        Ok(())
+    }
     /// Validate policy-specific source expectations while holder membership is
     /// protected by the optimizer's upgradable read lock. Implementations must
     /// not attempt to acquire the holder write lock here.
@@ -695,6 +700,7 @@ pub fn execute_optimization<F: ?Sized + OptimizationStrategy>(
         return Ok(OptimizationResult { points_count: 0 });
     }
 
+    factory.validate_topology(&segment_holder_read)?;
     factory.validate_sources(&input_segments)?;
 
     check_segments_size(optimizer_name, &input_segments, &paths.temp_path)?;

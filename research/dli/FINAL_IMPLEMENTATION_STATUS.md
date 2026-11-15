@@ -35,3 +35,5 @@ Continuation 16 remains RESEARCH PROTOTYPE: zero automatically published tempora
 Continuation 17 remains RESEARCH PROTOTYPE. The native source-validation seam is implemented but the update-triggered job is not connected; no automatic temporal transitions or hierarchy recovery have been demonstrated.
 
 Continuation 18 remains RESEARCH PROTOTYPE: scheduled UUIDs reach the private builder adapter and a restricted native COW segment can be constructed, but zero automatic optimizer publications, durable hierarchy transitions or DLI recoveries are demonstrated.
+
+Continuation 19 remains RESEARCH PROTOTYPE: one ordinary-insert-triggered physical native LMI replacement is demonstrated in a manually assembled test-only collection. Search uses exact fallback after replacement; there is no updated logical hierarchy, second temporal transition, hierarchy recovery or dynamic evaluation.

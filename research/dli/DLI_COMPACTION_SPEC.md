@@ -26,3 +26,5 @@ Continuation 16: the native optimizer LMI adapter rejects physical UUID-set mism
 Continuation 17 supplies a source-validation seam before native proxy installation; automatic publication remains disabled until scheduled roles and generation are coordinated.
 
 Continuation 18 passes the scheduled UUID set to the native LMI adapter for the existing private builder. It implements restricted native Plain COW-segment construction, tested directly. The scheduled job still does not execute the optimizer or publish.
+
+Continuation 19: test-enabled ordinary insert can schedule real `execute_optimization`, consume the selected level1 and buffer, create an extra COW and publish one trained physical LMI. This is a manually assembled disposable fixture; logical hierarchy advancement, concurrent mutation on this automatic job, repeated transitions and recovery are not validated.

@@ -46,3 +46,5 @@ Continuation 16 adds adapter-level expected physical UUID checks. This is not at
 Continuation 17 adds a default native optimizer source-validation hook under the upgradable holder read before proxy installation. The DLI adapter checks expected physical UUIDs there. The scheduled job does not yet carry its original expectations into this path; roles, occupancy and hierarchy generation remain unvalidated.
 
 Continuation 18 passes selected observed UUIDs to private-build adapter validation, without native holder protection; a captured stale handle can still pass. Publication remains disabled.
+
+Continuation 19 adds a native optimizer topology validation callback under the holder's upgradable read, checking the original role map, UUID coverage and recomputed target. It does not freeze updates across validation and proxy installation or validate a durable logical generation. After native swap, the old DLI search config is intentionally stale and the tested query uses exact fallback.

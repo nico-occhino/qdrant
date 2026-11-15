@@ -39,3 +39,5 @@ Continuation 16 adds an expected UUID-set check to the native optimizer LMI adap
 Continuation 17 adds a default native optimizer source-validation callback and physical UUID validation in the research LMI strategy before proxy installation. The maintenance scheduler is not yet wired to native optimization.
 
 Continuation 18 carries observed source UUIDs into the private LMI adapter and implements restricted Plain COW construction. It does not connect the maintenance job to `execute_optimization`.
+
+Continuation 19 introduces test-only native optimization from the update-triggered maintenance worker and validates an original UUID/role map under the native holder's upgradable read. It produces one observed physical publication and COW; logical activation, mutable/recoverable hierarchy and safe lifecycle are not implemented.

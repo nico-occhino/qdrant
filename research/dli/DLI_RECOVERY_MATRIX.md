@@ -54,3 +54,5 @@ Continuation 16 adds no hierarchy recovery or crash-consistency evidence.
 Continuation 17 adds no recovery or crash evidence.
 
 Continuation 18 adds no optimizer COW recovery or hierarchy recovery evidence.
+
+Continuation 19 demonstrates one in-process native physical publication with an extra COW in a disposable manually assembled holder, not collection reopen, hierarchy recovery, process termination or power-loss safety.

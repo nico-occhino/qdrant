@@ -939,7 +939,7 @@ async fn dli_recovery_control_body() {
         let uuids = (level1.uuid, level2.uuid, plain.uuid);
         let previous_ids: Vec<_> = h.read().iter().map(|(id, _)| id).collect();
         let previous = h.write().remove(&previous_ids);
-        let (id1, id2, buffer_id) = {
+        let (_id1, _id2, buffer_id) = {
             let mut holder = h.write();
             (
                 holder.add_new(level1),
@@ -1142,9 +1142,88 @@ async fn dli_recovery_control_body() {
             built.plan.output_points,
             hits.per_segment[0].1.len()
         );
+        // An ordinary subsequent insert requests the experimental native
+        // optimizer path; this fixture is disposable and manually assembled.
+        maintenance.native_enabled.store(true, Ordering::Release);
+        put(&c, vec![point(302, 3)]).await;
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let notified = maintenance.completed.notified();
+                if maintenance.published.load(Ordering::Acquire) > 0
+                    || !maintenance.optimizer_errors.lock().is_empty()
+                {
+                    break;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .unwrap();
+        let errors = maintenance.optimizer_errors.lock().clone();
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(maintenance.published.load(Ordering::Relaxed), 1);
+        let destination = maintenance.published_uuids.lock()[0];
+        let after_native = h
+            .read()
+            .iter_original()
+            .map(|(_, segment)| segment.read().uuid)
+            .collect::<HashSet<_>>();
+        assert!(!after_native.contains(&uuids.0));
+        assert!(!after_native.contains(&uuids.2));
+        assert!(after_native.contains(&uuids.1));
+        assert!(after_native.contains(&destination));
+        {
+            let guard = h.read();
+            let (_, output) = guard
+                .iter_original()
+                .find(|(_, segment)| segment.read().uuid == destination)
+                .unwrap();
+            let output = output.read();
+            let index = output.vector_data[segment::data_types::vectors::DEFAULT_VECTOR_NAME]
+                .vector_index
+                .borrow();
+            let VectorIndexEnum::Lmi(lmi) = &*index else {
+                panic!("published segment must contain LMI")
+            };
+            assert!(lmi.routing_state().is_some());
+            assert!(
+                guard
+                    .iter_original()
+                    .any(|(_, segment)| segment.read().is_appendable())
+            );
+        }
+        println!(
+            "DLI_AUTOMATIC_NATIVE_PUBLICATION old={:?} destination={} current={:?}",
+            uuids, destination, after_native
+        );
+        assert!(
+            local
+                .configure_local_dli_for_test(Some(config.clone()))
+                .await
+        );
+        let after_search = fixture_search().await;
+        assert_eq!(after_search.len(), 11);
+        let mut seen = HashSet::new();
+        for hit in &after_search {
+            let segment::types::PointIdType::NumId(id) = hit.id else {
+                panic!("numeric fixture")
+            };
+            assert!(seen.insert(id));
+            let score = if hit.id == old.id {
+                if new_axis == 0 { 1.0 } else { 0.0 }
+            } else if id == 101 || id == 201 {
+                1.0
+            } else {
+                0.0
+            };
+            assert_eq!(hit.score, score);
+        }
+        assert!(config.exact_fallbacks.load(Ordering::Relaxed) >= 2);
+        assert!(local.configure_local_dli_for_test(None).await);
         assert!(local.configure_local_dli_maintenance_for_test(None).await);
         drop(buffer_handle);
-        h.write().remove(&[id1, id2, buffer_id]);
+        let current_ids: Vec<_> = h.read().iter().map(|(id, _)| id).collect();
+        h.write().remove(&current_ids);
         for segment in previous {
             h.write().add_new_locked(segment);
         }

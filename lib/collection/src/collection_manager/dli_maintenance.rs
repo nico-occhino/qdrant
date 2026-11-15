@@ -27,9 +27,70 @@ pub struct DliOptimizationStrategy {
     pub model: LmiConfig,
     /// Physical generations expected by the already selected job.
     pub expected_sources: std::collections::HashSet<Uuid>,
+    pub expected_topology: Option<(HierarchyConfig, HashMap<Uuid, usize>, CompactionPlan)>,
 }
 
 impl shard::optimize::OptimizationStrategy for DliOptimizationStrategy {
+    fn validate_topology(
+        &self,
+        holder: &shard::segment_holder::SegmentHolder,
+    ) -> segment::common::operation_error::OperationResult<()> {
+        let Some((hierarchy, roles, expected)) = &self.expected_topology else {
+            return Ok(());
+        };
+        let fail = || {
+            segment::common::operation_error::OperationError::service_error(
+                "stale DLI hierarchy topology or plan",
+            )
+        };
+        let mut seen = std::collections::HashSet::new();
+        let mut counts = Vec::new();
+        let mut buffer = 0usize;
+        for (_, member) in holder.iter() {
+            let LockedSegment::Original(segment) = member else {
+                return Err(fail());
+            };
+            let guard = segment.read();
+            let Some(&level) = roles.get(&guard.uuid) else {
+                return Err(fail());
+            };
+            if !seen.insert(guard.uuid) || guard.has_deferred_points() {
+                return Err(fail());
+            }
+            let count = guard.available_point_count_without_deferred();
+            if level == 0 {
+                buffer = buffer.checked_add(count).ok_or_else(fail)?;
+            } else {
+                counts.resize(counts.len().max(level), 0usize);
+                counts[level - 1] = counts[level - 1].checked_add(count).ok_or_else(fail)?;
+            }
+        }
+        if seen.len() != roles.len() {
+            return Err(fail());
+        }
+        let actual = hierarchy
+            .plan(buffer, &counts)
+            .map_err(|_| fail())?
+            .ok_or_else(fail)?;
+        if actual.target_level != expected.target_level
+            || actual.source_levels != expected.source_levels
+        {
+            return Err(fail());
+        }
+        let selected: std::collections::HashSet<_> = roles
+            .iter()
+            .filter_map(|(uuid, level)| {
+                (*level == 0
+                    || *level == actual.target_level
+                    || actual.source_levels.contains(level))
+                .then_some(*uuid)
+            })
+            .collect();
+        if selected != self.expected_sources {
+            return Err(fail());
+        }
+        Ok(())
+    }
     fn validate_sources(
         &self,
         inputs: &[LockedSegment],
@@ -176,7 +237,12 @@ pub struct DliMaintenance {
     pub model: LmiConfig,
     pub path: PathBuf,
     running: AtomicBool,
-    last: Mutex<Vec<(Uuid, u64)>>,
+    last: Mutex<Vec<(Uuid, u64, usize)>>,
+    /// Experimental native publication is explicitly enabled by a test only.
+    pub native_enabled: AtomicBool,
+    pub published: AtomicUsize,
+    pub published_uuids: Mutex<Vec<Uuid>>,
+    pub optimizer_errors: Mutex<Vec<String>>,
     pub scheduled: AtomicUsize,
     pub builds: Mutex<Vec<PrivateBuild>>,
     pub completed: tokio::sync::Notify,
@@ -195,6 +261,10 @@ impl DliMaintenance {
             path,
             running: AtomicBool::new(false),
             last: Mutex::new(Vec::new()),
+            native_enabled: AtomicBool::new(false),
+            published: AtomicUsize::new(0),
+            published_uuids: Mutex::new(Vec::new()),
+            optimizer_errors: Mutex::new(Vec::new()),
             scheduled: AtomicUsize::new(0),
             builds: Mutex::new(Vec::new()),
             completed: Default::default(),
@@ -239,7 +309,7 @@ impl DliMaintenance {
                 counts.resize(counts.len().max(level), 0);
                 counts[level - 1] += count;
             }
-            fingerprints.push((guard.uuid, guard.version()));
+            fingerprints.push((guard.uuid, guard.version(), count));
             roles.push(level);
         }
         fingerprints.sort_unstable();
@@ -247,11 +317,12 @@ impl DliMaintenance {
             self.running.store(false, Ordering::Release);
             return;
         };
-        fingerprints.retain(|(uuid, _)| {
+        fingerprints.retain(|(uuid, _, _)| {
             let level = self.members[uuid];
             level == 0 || level == plan.target_level || plan.source_levels.contains(&level)
         });
-        let expected_sources = fingerprints.iter().map(|(uuid, _)| *uuid).collect();
+        let expected_sources: std::collections::HashSet<_> =
+            fingerprints.iter().map(|(uuid, _, _)| *uuid).collect();
         {
             let mut last = self.last.lock();
             if *last == fingerprints {
@@ -269,10 +340,72 @@ impl DliMaintenance {
             .collect();
         self.scheduled.fetch_add(1, Ordering::Relaxed);
         let state = self.clone();
+        let job_holder = holder.clone();
         tokio::task::spawn_blocking(move || {
             let _scope = common::ambient::unmeasured_guard(common::reason::reason(
                 "DLI private maintenance",
             ));
+            if state.native_enabled.load(Ordering::Acquire) {
+                let run = || -> Result<(), String> {
+                    let source = sources.first().ok_or("no sources")?.get().read();
+                    let segment_config = source.config().clone();
+                    let segments_path = source
+                        .data_path()
+                        .parent()
+                        .ok_or("missing segments path")?
+                        .to_owned();
+                    drop(source);
+                    let staging = tempfile::tempdir_in(&state.path).map_err(|e| e.to_string())?;
+                    let ids: Vec<_> = job_holder
+                        .read()
+                        .iter()
+                        .filter_map(|(id, member)| {
+                            let uuid = member.get().read().segment_uuid();
+                            expected_sources.contains(&uuid).then_some(id)
+                        })
+                        .collect();
+                    if ids.len() != expected_sources.len() {
+                        return Err("scheduled source missing".into());
+                    }
+                    let adapter = DliOptimizationStrategy {
+                        staging: staging.path().to_owned(),
+                        segments_path: segments_path.clone(),
+                        segment_config,
+                        model: state.model.clone(),
+                        expected_sources,
+                        expected_topology: Some((
+                            state.hierarchy,
+                            state.members.clone(),
+                            plan.clone(),
+                        )),
+                    };
+                    let output = Uuid::new_v4();
+                    let budget = common::budget::ResourceBudget::new(1, 1);
+                    let result = shard::optimize::execute_optimization("dli_research", job_holder.clone(), ids, output,
+                        None, &shard::optimize::OptimizationPaths { segments_path, temp_path: staging.path().to_owned() },
+                        budget.try_acquire(0,1).ok_or("resource unavailable")?, budget, &AtomicBool::new(false),
+                        common::progress_tracker::ProgressTracker::new_for_test(),
+                        &segment::common::operation_time_statistics::OperationDurationsAggregator::new(), &adapter, Box::new(|| {}));
+                    result.map_err(|e| e.to_string())?;
+                    if !job_holder
+                        .read()
+                        .iter_original()
+                        .any(|(_, segment)| segment.read().uuid == output)
+                    {
+                        return Err("optimizer returned without publishing expected output".into());
+                    }
+                    state.published_uuids.lock().push(output);
+                    state.published.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                };
+                if let Err(error) = run() {
+                    state.optimizer_errors.lock().push(error);
+                    state.last.lock().clear();
+                }
+                state.running.store(false, Ordering::Release);
+                state.completed.notify_one();
+                return;
+            }
             let mut physical = vec![];
             let result = (|| -> Result<Segment, String> {
                 std::fs::create_dir_all(&state.path).map_err(|e| e.to_string())?;
@@ -290,6 +423,7 @@ impl DliMaintenance {
                     segment_config: source_config,
                     model: state.model.clone(),
                     expected_sources,
+                    expected_topology: Some((state.hierarchy, state.members.clone(), plan.clone())),
                 };
                 let mut builder = shard::optimize::OptimizationStrategy::create_segment_builder(
                     &adapter, &sources,

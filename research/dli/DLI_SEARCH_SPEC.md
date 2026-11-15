@@ -27,3 +27,5 @@ Continuation 16 does not change serving or LocalShard activation.
 Continuation 17 makes no change to search activation.
 
 Continuation 18 does not change DLI search activation.
+
+Continuation 19: a normal collection query after the test-only automatic physical replacement falls back on stale topology and matches 11 live IDs/scores. Learned hierarchy reactivation after publication is not implemented.
