@@ -29,3 +29,5 @@ Continuation 11 adds an opt-in process-local LocalShard research dispatcher; act
 Continuation 12 adds a test-only bounded guard hook and a native upsert/query interleaving test. Production DLI activation and compaction behavior are unchanged.
 
 Continuation 13 adds native delete/query and real optimizer proxy/publication/cancellation controls, plus guarded-worker duration accounting. Test-only activation, automatic-compaction and hierarchy-recovery status are unchanged.
+
+Continuation 14 adds a test-activated update-completion maintenance observer via UpdateTracker and a selective asynchronous native LMI private builder. No training runs under the native update mutex. Automatic publication and persistent hierarchy integration remain disabled.

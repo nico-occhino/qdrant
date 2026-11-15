@@ -17,3 +17,5 @@ Continuation 11: test-enabled LocalShard can opt into process-local research dis
 Continuation 12: test-only channel hook pauses after all original segment read locks and holder identity validation. Native upsert interleaving is exercised; segment read guards still span routing, scoring and version resolution, potentially delaying writers. Optimizer/proxy interleavings and fairness are not established.
 
 Continuation 13: deterministic native delete and real optimizer proxy/private-build controls supplement the upsert test. `read_guard_nanos` measures the guarded worker interval, including any deliberate test pause. No bounded-starvation or general snapshot guarantee is established.
+
+Continuation 14 leaves serving unchanged. Insert-triggered maintenance outputs are private and cannot activate learned routing.

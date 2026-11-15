@@ -6,6 +6,12 @@ use tokio::sync::watch;
 
 #[derive(Clone, Debug)]
 pub struct UpdateTracker {
+    #[cfg(all(feature = "dli-research", feature = "testing"))]
+    pub dli_maintenance: Arc<
+        parking_lot::RwLock<
+            Option<Arc<crate::collection_manager::dli_maintenance::DliMaintenance>>,
+        >,
+    >,
     update_operations: Arc<AtomicUsize>,
     update_notifier: Arc<watch::Sender<()>>,
 }
@@ -15,6 +21,8 @@ impl Default for UpdateTracker {
         let (update_notifier, _) = watch::channel(());
 
         Self {
+            #[cfg(all(feature = "dli-research", feature = "testing"))]
+            dli_maintenance: Default::default(),
             update_operations: Default::default(),
             update_notifier: Arc::new(update_notifier),
         }

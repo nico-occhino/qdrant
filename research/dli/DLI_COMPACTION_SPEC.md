@@ -16,3 +16,5 @@ Continuation 11 does not implement automatic compaction or optimizer publication
 Continuation 12 does not implement automatic construction or publication; concurrency and recovery prerequisites remain open.
 
 Continuation 13 validates dispatcher fallback during manually invoked native optimizer publication and cancellation. No ordinary-write threshold trigger or scheduler-driven automatic compaction is implemented.
+
+Continuation 14 connects successful ordinary update completion to the scheduler and a private native LMI builder, under test-only research activation. A threshold-crossing collection insert selects buffer plus level1 into private level2 while preserving level3. Seven live output points are verified and manually reopened. Outputs never enter the holder; automatic publication, repeated published transitions and recovery remain absent.

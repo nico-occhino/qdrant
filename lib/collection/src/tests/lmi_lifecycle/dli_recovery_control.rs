@@ -1,5 +1,5 @@
 //! Native collection mixed-index lifecycle experiment; synthetic data only.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use common::generic_consts::Random;
 use common::types::DeferredBehavior;
@@ -836,8 +836,18 @@ async fn dli_recovery_control_body() {
                 )
                 .unwrap();
             let mut source_config = template.config().clone();
-            source_config.vector_data.get_mut(segment::data_types::vectors::DEFAULT_VECTOR_NAME).unwrap().datatype = Some(VectorStorageDatatype::Float16);
-            let (mut source, _) = segment::segment_constructor::build_segment(experiment.path(), &source_config, None, true).unwrap();
+            source_config
+                .vector_data
+                .get_mut(segment::data_types::vectors::DEFAULT_VECTOR_NAME)
+                .unwrap()
+                .datatype = Some(VectorStorageDatatype::Float16);
+            let (mut source, _) = segment::segment_constructor::build_segment(
+                experiment.path(),
+                &source_config,
+                None,
+                true,
+            )
+            .unwrap();
             for i in 0..4_u64 {
                 let mut vector = vec![0.0; DIM];
                 vector[i as usize] = 1.0;
@@ -887,6 +897,20 @@ async fn dli_recovery_control_body() {
             )
             .unwrap();
         let mut plain_vector = vec![0.0; DIM];
+        let mut plain_config = plain.config().clone();
+        plain_config
+            .vector_data
+            .get_mut(segment::data_types::vectors::DEFAULT_VECTOR_NAME)
+            .unwrap()
+            .datatype = Some(VectorStorageDatatype::Float16);
+        plain = segment::segment_constructor::build_segment(
+            experiment.path(),
+            &plain_config,
+            None,
+            true,
+        )
+        .unwrap()
+        .0;
         plain_vector[1] = 1.0;
         plain
             .upsert_point(
@@ -993,6 +1017,132 @@ async fn dli_recovery_control_body() {
             9
         );
         assert!(local.configure_local_dli_for_test(None).await);
+        use crate::collection_manager::dli_maintenance::DliMaintenance;
+        let private_root = tempfile::tempdir().unwrap();
+        let maintenance = DliMaintenance::new(
+            crate::collection_manager::dli_schedule::HierarchyConfig {
+                buffer_capacity: 3,
+                arity: 2,
+            },
+            HashMap::from([(uuids.0, 1), (uuids.1, 3), (uuids.2, 0)]),
+            LmiConfig {
+                n_buckets: 2,
+                sample_size: 16,
+                hidden_dim: 4,
+                epochs: 1,
+                batch_size: 4,
+                routing_batch_size: 4,
+                kmeans_iterations: 2,
+                nprobe: 2,
+                seed: 71,
+            },
+            private_root.path().to_owned(),
+        );
+        assert!(
+            local
+                .configure_local_dli_maintenance_for_test(Some(maintenance.clone()))
+                .await
+        );
+        put(&c, vec![point(301, 2)]).await;
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let notified = maintenance.completed.notified();
+                if !maintenance.builds.lock().is_empty() {
+                    break;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(maintenance.scheduled.load(Ordering::Relaxed), 1);
+        // A repeated observation of the identical native generation is suppressed.
+        maintenance.observe(&h);
+        std::thread::scope(|scope| {
+            for _ in 0..2 {
+                let state = maintenance.clone();
+                let holder = h.clone();
+                scope.spawn(move || {
+                    let _scope = common::ambient::test_guard();
+                    state.observe(&holder);
+                });
+            }
+        });
+        assert_eq!(maintenance.scheduled.load(Ordering::Relaxed), 1);
+        let built = maintenance.builds.lock().pop().unwrap();
+        assert_eq!(built.plan.target_level, 2);
+        assert!(built.sources.contains(&uuids.0));
+        assert!(built.sources.contains(&uuids.2));
+        assert!(!built.sources.contains(&uuids.1));
+        let output = built.output.unwrap();
+        let hits = route_pinned(
+            &[(2, &output)],
+            &axis_query,
+            2,
+            1000,
+            &VectorQueryContext::default(),
+        )
+        .unwrap();
+        assert!(hits.per_segment[0].1.iter().any(|p| p.id == 301_u64.into()));
+        let mut private_oracle = std::collections::HashMap::from([
+            (101_u64, 1.0_f32),
+            (102, 0.0),
+            (103, 0.0),
+            (104, 0.0),
+            (99, 0.0),
+            (301, 0.0),
+        ]);
+        let segment::types::PointIdType::NumId(old_id) = old.id else {
+            panic!("numeric fixture")
+        };
+        private_oracle.insert(old_id, if new_axis == 0 { 1.0 } else { 0.0 });
+        assert_eq!(hits.per_segment[0].1.len(), private_oracle.len());
+        for hit in &hits.per_segment[0].1 {
+            let segment::types::PointIdType::NumId(id) = hit.id else {
+                panic!("numeric fixture")
+            };
+            assert_eq!(hit.score, private_oracle[&id]);
+        }
+        use segment::entry::StorageSegmentEntry;
+        output.flush(true).unwrap();
+        let path = output.segment_path.clone();
+        let uuid = output.uuid;
+        drop(output);
+        let reopened = segment::segment_constructor::load_segment(
+            &path,
+            uuid,
+            None,
+            &AtomicBool::new(false),
+            true,
+        )
+        .unwrap();
+        let reloaded = route_pinned(
+            &[(2, &reopened)],
+            &axis_query,
+            2,
+            1000,
+            &VectorQueryContext::default(),
+        )
+        .unwrap();
+        assert_eq!(reloaded.per_segment[0].1.len(), private_oracle.len());
+        for hit in &reloaded.per_segment[0].1 {
+            let segment::types::PointIdType::NumId(id) = hit.id else {
+                panic!("numeric fixture")
+            };
+            assert_eq!(hit.score, private_oracle[&id]);
+        }
+        assert!(
+            !hits.per_segment[0]
+                .1
+                .iter()
+                .any(|p| p.id == 201_u64.into() && p.id != old.id)
+        );
+        println!(
+            "DLI_INSERT_TRIGGER_PRIVATE_BUILD target=2 input_estimate={} live_output={}",
+            built.plan.output_points,
+            hits.per_segment[0].1.len()
+        );
+        assert!(local.configure_local_dli_maintenance_for_test(None).await);
         drop(buffer_handle);
         h.write().remove(&[id1, id2, buffer_id]);
         for segment in previous {
