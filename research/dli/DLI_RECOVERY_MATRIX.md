@@ -48,3 +48,5 @@ Continuation 13 tests in-process optimizer publication/cancellation with native 
 Continuation 14 flushes and manually reloads a private newly trained LMI segment. No hierarchy reopen, WAL recovery, native publication or crash guarantee is added.
 
 Continuation 15 exercises native optimizer publication/cancellation in-process, without DLI hierarchy persistence or reopen; no new crash guarantee.
+
+Continuation 16 adds no hierarchy recovery or crash-consistency evidence.

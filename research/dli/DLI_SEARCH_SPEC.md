@@ -21,3 +21,5 @@ Continuation 13: deterministic native delete and real optimizer proxy/private-bu
 Continuation 14 leaves serving unchanged. Insert-triggered maintenance outputs are private and cannot activate learned routing.
 
 Continuation 15 leaves DLI search activation unchanged; manually invoked optimizer test exercises the existing proxy fallback.
+
+Continuation 16 does not change serving or LocalShard activation.

@@ -33,3 +33,5 @@ Continuation 13 adds native delete/query and real optimizer proxy/publication/ca
 Continuation 14 adds a test-activated update-completion maintenance observer via UpdateTracker and a selective asynchronous native LMI private builder. No training runs under the native update mutex. Automatic publication and persistent hierarchy integration remain disabled.
 
 Continuation 15 introduces a test-gated native `OptimizationStrategy` LMI builder adapter and exercises it through real proxy mutation, publication and cancellation. The insert-triggered coordinator still only builds private outputs; connecting it safely requires synchronized DLI source-plan revalidation and lifecycle ownership.
+
+Continuation 16 adds an expected UUID-set check to the native optimizer LMI adapter. The automatic private builder remains disconnected from native optimizer publication.

@@ -40,3 +40,5 @@ Continuation 13: the real native optimizer installs a proxy; queries use exact f
 Continuation 14 suppresses duplicate private jobs by running state and selected physical UUID/version fingerprint. This is process-local scheduling metadata, not a durable hierarchy or native transaction. Private source observations must not be used to publish without native proxy/COW and generation revalidation.
 
 Continuation 15: native optimizer verifies selected runtime IDs exist and are original under its upgradable holder lock, then installs proxies. This does not validate a previously observed DLI UUID/role/occupancy plan; the coordinator must not publish by translating stale IDs without a coordinated validation boundary.
+
+Continuation 16 adds adapter-level expected physical UUID checks. This is not atomic logical hierarchy validation or a publication protocol; the test's expected UUIDs are obtained from actual optimizer inputs.

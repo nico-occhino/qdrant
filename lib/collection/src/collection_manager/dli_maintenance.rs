@@ -25,6 +25,8 @@ pub struct DliOptimizationStrategy {
     pub segments_path: PathBuf,
     pub segment_config: segment::types::SegmentConfig,
     pub model: LmiConfig,
+    /// Physical generations expected by the already selected job.
+    pub expected_sources: std::collections::HashSet<Uuid>,
 }
 
 impl shard::optimize::OptimizationStrategy for DliOptimizationStrategy {
@@ -33,6 +35,17 @@ impl shard::optimize::OptimizationStrategy for DliOptimizationStrategy {
         inputs: &[LockedSegment],
     ) -> segment::common::operation_error::OperationResult<SegmentBuilder> {
         let mut config = self.segment_config.clone();
+        let actual: std::collections::HashSet<_> = inputs
+            .iter()
+            .map(|input| input.get().read().segment_uuid())
+            .collect();
+        if actual.len() != inputs.len() || actual != self.expected_sources {
+            return Err(
+                segment::common::operation_error::OperationError::service_error(
+                    "stale DLI physical source generations",
+                ),
+            );
+        }
         if config.vector_data.len() != 1 || !config.sparse_vector_data.is_empty() {
             return Err(
                 segment::common::operation_error::OperationError::service_error(
@@ -97,9 +110,11 @@ impl shard::optimize::OptimizationStrategy for DliOptimizationStrategy {
         LockedSegment,
         shard::segment_manifest::NewSegmentToken,
     )> {
-        Err(segment::common::operation_error::OperationError::service_error(
-            "DLI optimizer requires an existing appendable segment outside its inputs",
-        ))
+        Err(
+            segment::common::operation_error::OperationError::service_error(
+                "DLI optimizer requires an existing appendable segment outside its inputs",
+            ),
+        )
     }
 
     fn live_vector_names(&self) -> Option<std::collections::HashSet<String>> {

@@ -310,6 +310,26 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn optimizer_adapter_rejects_stale_physical_sources() {
+        let _scope = common::ambient::test_guard();
+        let root = tempfile::tempdir().unwrap();
+        let source = build_simple_segment(root.path(), 2, Distance::Cosine).unwrap();
+        let config = source.config().clone();
+        let adapter = crate::collection_manager::dli_maintenance::DliOptimizationStrategy {
+            staging: root.path().to_owned(),
+            segments_path: root.path().to_owned(),
+            segment_config: config,
+            model: LmiConfig::default(),
+            expected_sources: HashSet::from([Uuid::new_v4()]),
+        };
+        let inputs = vec![shard::locked_segment::LockedSegment::from(source)];
+        assert!(
+            shard::optimize::OptimizationStrategy::create_segment_builder(&adapter, &inputs)
+                .is_err()
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dli_query_guard_and_native_upsert_complete_without_deadlock() {
         query_guard_native_mutation(false).await;
@@ -526,6 +546,10 @@ mod tests {
                         nprobe: 2,
                         seed: 17,
                     },
+                    expected_sources: inputs
+                        .iter()
+                        .map(|input| input.get().read().segment_uuid())
+                        .collect(),
                 };
                 shard::optimize::OptimizationStrategy::create_segment_builder(&adapter, inputs)
             }

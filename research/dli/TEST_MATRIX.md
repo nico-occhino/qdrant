@@ -65,3 +65,5 @@ Continuation 13: DLI-filtered collection suite PASS 14/14 (`continuation-13/fina
 Continuation 14 extends the collection recovery fixture: normal collection insert crosses threshold3, schedules private level2, builds seven live source points excluding level3, verifies native scores and manually reopens output. Repeated/concurrent trigger suppression is checked. Focused PASS is in `continuation-14/retry.log`; final combined test log is `continuation-14/final.log`. This is not published temporal compaction.
 
 Continuation 15: native optimizer proxy/publication/cancellation control PASS 1/1 using the new LMI strategy adapter (`continuation-15/final.log`). It is manually invoked, has an existing Plain buffer and is not an automatic temporal transition. Initial E0502 failure preserved in `adapter.log`.
+
+Continuation 16: DLI-targeted collection suite PASS 15/15 (`continuation-16/final.log`), including direct stale UUID rejection and the existing manually invoked native optimizer mutation/publication/cancellation control. No scheduled stale-plan optimizer rollback or automatic compaction tested.
