@@ -42,3 +42,5 @@ Continuation 14 suppresses duplicate private jobs by running state and selected 
 Continuation 15: native optimizer verifies selected runtime IDs exist and are original under its upgradable holder lock, then installs proxies. This does not validate a previously observed DLI UUID/role/occupancy plan; the coordinator must not publish by translating stale IDs without a coordinated validation boundary.
 
 Continuation 16 adds adapter-level expected physical UUID checks. This is not atomic logical hierarchy validation or a publication protocol; the test's expected UUIDs are obtained from actual optimizer inputs.
+
+Continuation 17 adds a default native optimizer source-validation hook under the upgradable holder read before proxy installation. The DLI adapter checks expected physical UUIDs there. The scheduled job does not yet carry its original expectations into this path; roles, occupancy and hierarchy generation remain unvalidated.

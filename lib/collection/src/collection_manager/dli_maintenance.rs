@@ -30,6 +30,23 @@ pub struct DliOptimizationStrategy {
 }
 
 impl shard::optimize::OptimizationStrategy for DliOptimizationStrategy {
+    fn validate_sources(
+        &self,
+        inputs: &[LockedSegment],
+    ) -> segment::common::operation_error::OperationResult<()> {
+        let actual: std::collections::HashSet<_> = inputs
+            .iter()
+            .map(|input| input.get().read().segment_uuid())
+            .collect();
+        if actual.len() != inputs.len() || actual != self.expected_sources {
+            return Err(
+                segment::common::operation_error::OperationError::service_error(
+                    "stale DLI physical source generations",
+                ),
+            );
+        }
+        Ok(())
+    }
     fn create_segment_builder(
         &self,
         inputs: &[LockedSegment],

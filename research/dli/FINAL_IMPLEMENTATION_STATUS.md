@@ -31,3 +31,5 @@ Continuation 14: RESEARCH PROTOTYPE with ordinary-insert-triggered selective pri
 Continuation 15: RESEARCH PROTOTYPE. A manually invoked native optimizer uses the DLI LMI builder adapter, but zero ordinary-insert-triggered temporal transitions have been published. Durable hierarchy, automatic publication and recovery are unimplemented.
 
 Continuation 16 remains RESEARCH PROTOTYPE: zero automatically published temporal transitions; direct stale physical source rejection and the manually invoked optimizer control pass.
+
+Continuation 17 remains RESEARCH PROTOTYPE. The native source-validation seam is implemented but the update-triggered job is not connected; no automatic temporal transitions or hierarchy recovery have been demonstrated.

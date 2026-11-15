@@ -22,3 +22,5 @@ Continuation 14 connects successful ordinary update completion to the scheduler 
 Continuation 15 adds a test-gated LMI `OptimizationStrategy` adapter exercised by the existing real native optimizer publication/cancellation control. The automatic scheduler still does not invoke it: its source plan needs UUID/role/occupancy revalidation coordinated with native source protection. Extra COW segment creation is explicitly unsupported.
 
 Continuation 16: the native optimizer LMI adapter rejects physical UUID-set mismatches after source proxies are installed. The ordinary-update scheduler is not connected to this check or to optimizer publication; level roles and occupancy are not validated at the protection boundary.
+
+Continuation 17 supplies a source-validation seam before native proxy installation; automatic publication remains disabled until scheduled roles and generation are coordinated.

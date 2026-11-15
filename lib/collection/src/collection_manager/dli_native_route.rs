@@ -325,6 +325,9 @@ mod tests {
         };
         let inputs = vec![shard::locked_segment::LockedSegment::from(source)];
         assert!(
+            shard::optimize::OptimizationStrategy::validate_sources(&adapter, &inputs).is_err()
+        );
+        assert!(
             shard::optimize::OptimizationStrategy::create_segment_builder(&adapter, &inputs)
                 .is_err()
         );
@@ -517,10 +520,19 @@ mod tests {
 
         struct Paused {
             path: std::path::PathBuf,
+            expected: Uuid,
+            validated: Arc<AtomicBool>,
             entered: mpsc::Sender<()>,
             resume: parking_lot::Mutex<mpsc::Receiver<()>>,
         }
         impl shard::optimize::OptimizationStrategy for Paused {
+            fn validate_sources(&self, inputs: &[LockedSegment]) -> OperationResult<()> {
+                assert_eq!(inputs.len(), 1);
+                assert_eq!(inputs[0].get().read().segment_uuid(), self.expected);
+                self.validated
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                Ok(())
+            }
             fn create_segment_builder(
                 &self,
                 inputs: &[LockedSegment],
@@ -582,6 +594,8 @@ mod tests {
                 DliResearchConfig::new(vec![(level.uuid, 1), (buffer.uuid, 0)], 2, 100).unwrap(),
             );
             let mut native = SegmentHolder::default();
+            let expected = level.uuid;
+            let validated = Arc::new(AtomicBool::new(false));
             let input = native.add_new(level);
             native.add_new(buffer);
             let holder = LockedSegmentHolder::new(native);
@@ -589,6 +603,8 @@ mod tests {
             let (resume_tx, resume_rx) = mpsc::channel();
             let strategy = Paused {
                 path: staging.path().to_owned(),
+                expected,
+                validated: validated.clone(),
                 entered: entered_tx,
                 resume: parking_lot::Mutex::new(resume_rx),
             };
@@ -622,6 +638,7 @@ mod tests {
                 done_tx.send(result).unwrap();
             });
             entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert!(validated.load(std::sync::atomic::Ordering::Relaxed));
             assert!(matches!(
                 holder.read().get(input),
                 Some(LockedSegment::Proxy(_))

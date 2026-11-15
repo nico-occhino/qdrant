@@ -62,6 +62,12 @@ pub struct OptimizationPaths {
 ///
 /// This abstracts policy decisions (what config to use) from the execution logic.
 pub trait OptimizationStrategy: Send {
+    /// Validate policy-specific source expectations while holder membership is
+    /// protected by the optimizer's upgradable read lock. Implementations must
+    /// not attempt to acquire the holder write lock here.
+    fn validate_sources(&self, _input_segments: &[LockedSegment]) -> OperationResult<()> {
+        Ok(())
+    }
     /// Create a segment builder for the given input segments.
     fn create_segment_builder(
         &self,
@@ -688,6 +694,8 @@ pub fn execute_optimization<F: ?Sized + OptimizationStrategy>(
     if !all_segments_ok {
         return Ok(OptimizationResult { points_count: 0 });
     }
+
+    factory.validate_sources(&input_segments)?;
 
     check_segments_size(optimizer_name, &input_segments, &paths.temp_path)?;
 

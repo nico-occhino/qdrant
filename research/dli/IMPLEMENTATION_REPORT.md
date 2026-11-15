@@ -35,3 +35,5 @@ Continuation 14 adds a test-activated update-completion maintenance observer via
 Continuation 15 introduces a test-gated native `OptimizationStrategy` LMI builder adapter and exercises it through real proxy mutation, publication and cancellation. The insert-triggered coordinator still only builds private outputs; connecting it safely requires synchronized DLI source-plan revalidation and lifecycle ownership.
 
 Continuation 16 adds an expected UUID-set check to the native optimizer LMI adapter. The automatic private builder remains disconnected from native optimizer publication.
+
+Continuation 17 adds a default native optimizer source-validation callback and physical UUID validation in the research LMI strategy before proxy installation. The maintenance scheduler is not yet wired to native optimization.

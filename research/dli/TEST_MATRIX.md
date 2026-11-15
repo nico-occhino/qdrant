@@ -67,3 +67,5 @@ Continuation 14 extends the collection recovery fixture: normal collection inser
 Continuation 15: native optimizer proxy/publication/cancellation control PASS 1/1 using the new LMI strategy adapter (`continuation-15/final.log`). It is manually invoked, has an existing Plain buffer and is not an automatic temporal transition. Initial E0502 failure preserved in `adapter.log`.
 
 Continuation 16: DLI-targeted collection suite PASS 15/15 (`continuation-16/final.log`), including direct stale UUID rejection and the existing manually invoked native optimizer mutation/publication/cancellation control. No scheduled stale-plan optimizer rollback or automatic compaction tested.
+
+Continuation 17: DLI-filtered suite PASS 15/15 (`continuation-17/final.log`), including an optimizer control asserting its source-validation hook ran and a separate direct stale-UUID adapter rejection. No stale scheduled-plan optimizer rollback, extra-COW or automatic publication test.

@@ -23,3 +23,5 @@ Continuation 14 leaves serving unchanged. Insert-triggered maintenance outputs a
 Continuation 15 leaves DLI search activation unchanged; manually invoked optimizer test exercises the existing proxy fallback.
 
 Continuation 16 does not change serving or LocalShard activation.
+
+Continuation 17 makes no change to search activation.
