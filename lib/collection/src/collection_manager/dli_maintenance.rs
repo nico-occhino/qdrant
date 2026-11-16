@@ -381,6 +381,17 @@ impl std::fmt::Debug for DliMaintenance {
     }
 }
 impl DliMaintenance {
+    #[cfg(test)]
+    pub fn diagnostics_for_test(&self) -> (usize, usize, usize, bool, Vec<String>) {
+        (
+            self.scheduled.load(Ordering::Acquire),
+            self.published.load(Ordering::Acquire),
+            self.generation.load(Ordering::Acquire),
+            self.running.load(Ordering::Acquire),
+            self.optimizer_errors.lock().clone(),
+        )
+    }
+
     pub fn load_validated_descriptor(
         &self,
         holder: &LockedSegmentHolder,

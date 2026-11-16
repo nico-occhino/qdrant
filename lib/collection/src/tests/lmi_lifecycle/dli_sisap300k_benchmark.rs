@@ -55,9 +55,12 @@ fn collection_config(dli: bool) -> CollectionConfigInternal {
     let model = model_config();
     vectors.lmi_config = (!dli).then_some(model.clone());
     let mut optimizer_config = OptimizersConfig::fixture();
-    optimizer_config.indexing_threshold = Some(20_000);
+    // The comparison baseline uses Qdrant's ordinary optimizer. DLI owns its
+    // learned-level transitions and must not have a second optimizer rewrite
+    // its logical level segments into unrelated HNSW generations.
+    optimizer_config.indexing_threshold = (!dli).then_some(20_000);
     optimizer_config.default_segment_number = 1;
-    optimizer_config.max_optimization_threads = Some(1);
+    optimizer_config.max_optimization_threads = if dli { Some(0) } else { Some(1) };
     CollectionConfigInternal {
         params: CollectionParams {
             vectors: VectorsConfig::Single(vectors),
@@ -179,31 +182,56 @@ async fn wait_for_dli_publications(
     replica: &crate::shards::replica_set::ShardReplicaSet,
     target: usize,
 ) {
-    tokio::time::timeout(Duration::from_secs(30 * 60), async {
+    let started = Instant::now();
+    let mut last_report = Duration::ZERO;
+    let result = tokio::time::timeout(Duration::from_secs(30 * 60), async {
         loop {
-            if replica
-                .local_dli_counts_for_test()
-                .await
-                .is_some_and(|counts| counts.0 >= target)
-            {
+            let diagnostics = replica.local_dli_diagnostics_for_test().await.unwrap();
+            if diagnostics.1 >= target {
                 break;
             }
-            tokio::task::yield_now().await;
+            if !diagnostics.4.is_empty() {
+                panic!(
+                    "DLI maintenance failed before publication {target}: diagnostics={diagnostics:?}"
+                );
+            }
+            if started.elapsed().saturating_sub(last_report) >= Duration::from_secs(30) {
+                println!(
+                    "SISAP23_DLI_WAIT target={target} elapsed_s={} diagnostics={diagnostics:?}",
+                    started.elapsed().as_secs()
+                );
+                last_report = started.elapsed();
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for DLI publication {target}"));
+    .await;
+    if result.is_err() {
+        let diagnostics = replica.local_dli_diagnostics_for_test().await;
+        panic!("timed out waiting for DLI publication {target}: diagnostics={diagnostics:?}")
+    }
 }
 
 async fn wait_for_static_index(collection: &Collection, target: usize) -> Duration {
     let started = Instant::now();
+    let mut last_report = Duration::ZERO;
     tokio::time::timeout(Duration::from_secs(30 * 60), async {
         loop {
             let info = collection.info(&ShardSelectorInternal::All).await.unwrap();
-            if info.indexed_vectors_count.unwrap_or_default() >= target {
+            let indexed = info.indexed_vectors_count.unwrap_or_default();
+            let lmi = active_static_lmi_stats(collection).await;
+            if indexed >= target && lmi.0 > 0 && lmi.1 >= target {
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            if started.elapsed().saturating_sub(last_report) >= Duration::from_secs(30) {
+                println!(
+                    "SISAP23_STATIC_WAIT target={target} indexed={indexed} points={:?} active_lmi={lmi:?} elapsed_s={}",
+                    info.points_count,
+                    started.elapsed().as_secs()
+                );
+                last_report = started.elapsed();
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
     })
     .await

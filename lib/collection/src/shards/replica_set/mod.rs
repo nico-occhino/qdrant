@@ -492,6 +492,19 @@ impl ShardReplicaSet {
     }
 
     #[cfg(all(test, feature = "dli-research"))]
+    pub async fn local_dli_diagnostics_for_test(
+        &self,
+    ) -> Option<(usize, usize, usize, bool, Vec<String>)> {
+        use crate::shards::shard::Shard;
+        let local = self.local.read().await;
+        let Some(Shard::Local(local)) = local.as_ref() else {
+            return None;
+        };
+        let maintenance = local.update_tracker.dli_maintenance.read().clone()?;
+        Some(maintenance.diagnostics_for_test())
+    }
+
+    #[cfg(all(test, feature = "dli-research"))]
     pub async fn local_dli_search_metrics_for_test(
         &self,
     ) -> Option<(u64, u64, u64, u64, u64, u64)> {
