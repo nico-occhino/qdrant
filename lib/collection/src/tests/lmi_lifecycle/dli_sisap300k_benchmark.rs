@@ -76,9 +76,14 @@ fn collection_config(dli: bool) -> CollectionConfigInternal {
         metadata: None,
         created_at: None,
         dli_experimental: dli.then_some(DliExperimentalConfig {
-            maintenance_policy: if std::env::var("DLI_BENCH_POLICY").as_deref() == Ok("size-tiered") {
+            materialize_topk: false,
+            routing_policy: Default::default(),
+            maintenance_policy: if std::env::var("DLI_BENCH_POLICY").as_deref() == Ok("size-tiered")
+            {
                 crate::collection_manager::dli_schedule::MaintenancePolicy::SizeTiered
-            } else { Default::default() },
+            } else {
+                Default::default()
+            },
             buffer_capacity: DLI_BUFFER_CAPACITY,
             arity: 2,
             candidate_budget: 2_000,
@@ -428,7 +433,8 @@ async fn sisap23_300k_static_lmi_vs_temporal_dli() {
     let mut dli_write_ms = Vec::new();
     let mut dli_publication_targets = Vec::new();
     let mut dli_inserted = 0usize;
-    let population = std::env::var("DLI_BENCH_POINTS").ok()
+    let population = std::env::var("DLI_BENCH_POINTS")
+        .ok()
         .map(|s| s.parse::<usize>().expect("positive checkpoint size"))
         .unwrap_or(FULL_COUNT);
     assert!(population >= 100_000 && population <= FULL_COUNT && population % BATCH_SIZE == 0);
@@ -502,7 +508,8 @@ async fn sisap23_300k_static_lmi_vs_temporal_dli() {
         &empty_deleted,
     )
     .await;
-    let static_scored = std::array::from_fn::<_, 3, _>(|i| scorer_snapshot()[i] - static_score_start[i]);
+    let static_scored =
+        std::array::from_fn::<_, 3, _>(|i| scorer_snapshot()[i] - static_score_start[i]);
     let dli_score_start = scorer_snapshot();
     let dli_before = run_queries(
         &dli_collection,

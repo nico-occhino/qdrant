@@ -3,6 +3,14 @@
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
+/// Experimental routing choices; topology and native visibility semantics are unchanged.
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum RoutingPolicy {
+    #[default]
+    SlotWeighted,
+    ReservedPerLevel,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct BucketPrediction {
     /// Buffer is level 0, learned levels use paper's one-based numbering.
@@ -103,6 +111,50 @@ pub fn select(
     })
 }
 
+/// Reserve the highest-probability nonempty bucket of each learned physical
+/// member, then fill remaining work in the baseline order. Whole buckets impose
+/// an explicit cost floor; `budget` remains a minimum, never a hard work bound.
+pub fn select_reserved(
+    predictions: Vec<BucketPrediction>,
+    arity: usize,
+    budget: usize,
+) -> Result<SelectedBuckets, PlanError> {
+    if budget == 0 {
+        return Err(PlanError::ZeroBudget);
+    }
+    // Reuse all baseline validation and deterministic ordering.
+    let ranked = select(predictions, arity, usize::MAX)?.buckets;
+    let mut covered = HashSet::new();
+    let mut chosen = HashSet::new();
+    let mut buckets = Vec::new();
+    let mut count = 0usize;
+    for p in &ranked {
+        if p.level > 0 && covered.insert(p.physical) {
+            count = count
+                .checked_add(p.occupancy)
+                .ok_or(PlanError::NumericOverflow)?;
+            chosen.insert((p.physical, p.bucket));
+            buckets.push(p.clone());
+        }
+    }
+    for p in ranked {
+        if count >= budget {
+            break;
+        }
+        if chosen.insert((p.physical, p.bucket)) {
+            count = count
+                .checked_add(p.occupancy)
+                .ok_or(PlanError::NumericOverflow)?;
+            buckets.push(p);
+        }
+    }
+    Ok(SelectedBuckets {
+        requested: budget,
+        estimated_candidates: count,
+        buckets,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,6 +173,25 @@ mod tests {
             occupancy,
         }
     }
+    #[test]
+    fn reserved_coverage_has_explicit_cost_floor_and_no_duplicates() {
+        let input = vec![
+            b(1, 1, Some(0), 0.8, 10),
+            b(1, 1, Some(1), 0.2, 10),
+            b(5, 2, Some(0), 0.9, 100),
+            b(0, 3, None, 1., 3),
+        ];
+        let baseline = select(input.clone(), 2, 1).unwrap();
+        assert_eq!(baseline.buckets.len(), 1);
+        let reserved = select_reserved(input.clone(), 2, 1).unwrap();
+        assert_eq!(reserved.estimated_candidates, 110);
+        assert_eq!(reserved.buckets.len(), 2);
+        let all = select_reserved(input, 2, 1000).unwrap();
+        assert_eq!(all.buckets.len(), 4);
+        assert_eq!(all.estimated_candidates, 123);
+        assert_eq!(select_reserved(vec![], 2, 0), Err(PlanError::ZeroBudget));
+    }
+
     #[test]
     fn globally_ranks_across_levels_and_buffer_with_whole_bucket_overshoot() {
         let result = select(

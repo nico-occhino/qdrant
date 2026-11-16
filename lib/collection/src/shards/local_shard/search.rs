@@ -88,6 +88,10 @@ impl LocalShard {
                 "Experimental DLI requires at least one unique active native segment".to_owned(),
             ));
         };
+        *search.routing_policy.write() = config.routing_policy;
+        search
+            .materialize_topk
+            .store(config.materialize_topk, Ordering::Relaxed);
         let search = Arc::new(search);
         let maintenance = DliMaintenance::new(
             HierarchyConfig {

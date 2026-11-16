@@ -1,0 +1,11 @@
+# Native scorer and resolver profile
+
+New named counters split router inference, global bucket planning, native scorer execution and full-hit materialization. Existing broad scoring includes preparation, sorting, scorer and materialization; resolution includes membership-wide visibility and aggregation. These counters are nested; do not sum broad scoring with its subphases. Read-guard time includes hook pauses in deterministic tests and must not be treated as production contention.
+
+The new native maintenance `native_phases` additionally separates copy, populate, permit wait, segment build and first propagation. These are wall durations, not CPU time. No new maintenance run is needed for the frozen search experiment.
+
+A bounded reopen diagnostic supports `DLI_PROFILE_QUERY_COUNT` and two identical rounds, or `DLI_PROFILE_COMPARE_TOPK=1` for four alternating full/top-k rounds. It uses native Collection::load/search/stop, no insertion or model training. The initial attempt failed at the missing ambient hardware scope, before completing queries; `frozen-debug-profile.log` preserves the failure. The corrected test establishes an ambient scope. Debug measurements are mechanism diagnostics, not credible optimized latency benchmarks.
+
+Opt-in `materialize_topk` scores all selected vectors but asks each native scorer for only `limit+offset` winners. A discarded local candidate has at least that many local candidates ahead of it. If those possible winners are unique and native-visible, it cannot enter the global requested result. Every retained candidate is still checked against every captured member; duplicated/shadowed/deferred/unsupported winners still trigger complete exact fallback. Thus this is not candidate truncation before scoring and does not remove the newer-Plain-copy safety check. Default remains false pending measurement and regressions. The routing-only primitive retains the full-hit behavior for controls.
+
+Correctness checks compare bounded/full native output on a trained two-level fixture with deletion and Plain reinsertion. The configured runtime fixture exercises both reserved routing and bounded materialization through four publications, clean reopen, corrupt-derived-metadata fallback and reconstruction. Final logs/results are documented in05 after execution.

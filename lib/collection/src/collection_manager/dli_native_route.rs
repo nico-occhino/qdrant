@@ -19,7 +19,9 @@ use segment::types::{Distance, PointIdType, ScoredPoint, WithPayload, WithVector
 use shard::search_result_aggregator::BatchResultAggregator;
 use uuid::Uuid;
 
-use super::dli_bucket_plan::{BucketPrediction, SelectedBuckets, select};
+use super::dli_bucket_plan::{
+    BucketPrediction, RoutingPolicy, SelectedBuckets, select, select_reserved,
+};
 
 /// Output is partitioned by physical segment. It must not be returned to clients
 /// until complete native point-version/visibility resolution has been applied.
@@ -140,6 +142,26 @@ pub fn route_pinned(
     budget: usize,
     context: &VectorQueryContext,
 ) -> OperationResult<NativeRouteResult> {
+    route_pinned_with_policy(
+        members,
+        query,
+        arity,
+        budget,
+        context,
+        RoutingPolicy::SlotWeighted,
+        usize::MAX,
+    )
+}
+
+pub fn route_pinned_with_policy(
+    members: &[(usize, &Segment)],
+    query: &[f32],
+    arity: usize,
+    budget: usize,
+    context: &VectorQueryContext,
+    policy: RoutingPolicy,
+    materialize_limit: usize,
+) -> OperationResult<NativeRouteResult> {
     let fail = |message: &str| OperationError::service_error(message.to_owned());
     let start = Instant::now();
     let mut predictions = Vec::new();
@@ -215,8 +237,11 @@ pub fn route_pinned(
         }
     }
     let planning_started = Instant::now();
-    let plan = select(predictions, arity, budget)
-        .map_err(|e| fail(&format!("invalid DLI candidate plan: {e:?}")))?;
+    let plan = match policy {
+        RoutingPolicy::SlotWeighted => select(predictions, arity, budget),
+        RoutingPolicy::ReservedPerLevel => select_reserved(predictions, arity, budget),
+    }
+    .map_err(|e| fail(&format!("invalid DLI candidate plan: {e:?}")))?;
     let bucket_planning_time = planning_started.elapsed();
     let routing_and_planning_time = start.elapsed();
     let mut native_scorer_time = Duration::ZERO;
@@ -241,12 +266,18 @@ pub fn route_pinned(
         let data = &segment.vector_data[DEFAULT_VECTOR_NAME];
         let index = data.vector_index.borrow();
         let offsets = if level == 0 {
-            // Whole buffer, not a partial top-k: the outer caller owns global top-k.
+            // Every selected vector is scored, but only potential global winners need materialization.
             let count = segment.id_tracker.borrow().available_point_count();
             buffer_point_estimate += count;
             let score_started = Instant::now();
             let offsets = index
-                .search(&[&query_vector], None, count, None, context)?
+                .search(
+                    &[&query_vector],
+                    None,
+                    count.min(materialize_limit),
+                    None,
+                    context,
+                )?
                 .pop()
                 .expect("one buffer query");
             native_scorer_time += score_started.elapsed();
@@ -270,7 +301,7 @@ pub fn route_pinned(
             let offsets = score_candidates(
                 &query_vector,
                 &candidates,
-                candidates.len(),
+                candidates.len().min(materialize_limit),
                 &tracker,
                 &storage,
                 context,
@@ -1295,6 +1326,40 @@ mod tests {
             }
         }
         assert_eq!(ids, HashSet::from([11, 12, 13, 14, 22, 23, 24, 31]));
+        // Per-member top-k is sufficient only because every retained ID is
+        // subsequently checked against the complete pinned membership. Any
+        // ambiguous possible winner still invokes exact fallback.
+        for limit in [1, 3, 100] {
+            let complete = resolve_pinned_candidates(
+                &members,
+                route_pinned(&members, &[1., 0.], 2, 100, &context).unwrap(),
+                limit,
+            )
+            .unwrap();
+            let bounded = route_pinned_with_policy(
+                &members,
+                &[1., 0.],
+                2,
+                100,
+                &context,
+                RoutingPolicy::SlotWeighted,
+                limit,
+            )
+            .unwrap();
+            assert!(
+                bounded
+                    .per_segment
+                    .iter()
+                    .all(|(_, hits)| hits.len() <= limit)
+            );
+            let bounded = resolve_pinned_candidates(&members, bounded, limit).unwrap();
+            match (complete, bounded) {
+                (CandidateResolution::Resolved(a), CandidateResolution::Resolved(b)) => {
+                    assert_eq!(a, b)
+                }
+                _ => panic!("unambiguous live oracle must resolve"),
+            }
+        }
         let limited = route_pinned(&members, &[1., 0.], 2, 2, &context).unwrap();
         assert!(limited.plan.estimated_candidates >= 2);
         assert!(

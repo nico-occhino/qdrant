@@ -76,6 +76,8 @@ fn collection_config(dli: bool) -> CollectionConfigInternal {
         metadata: None,
         created_at: None,
         dli_experimental: dli.then_some(DliExperimentalConfig {
+            materialize_topk: false,
+            routing_policy: Default::default(),
             maintenance_policy: if std::env::var("DLI_BENCH_POLICY").as_deref() == Ok("size-tiered")
             {
                 crate::collection_manager::dli_schedule::MaintenancePolicy::SizeTiered
@@ -534,6 +536,7 @@ async fn sisap23_scaling_static_lmi_vs_temporal_dli() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "reopen retained frozen collection and profile two identical query rounds"]
 async fn dli_frozen_scaling_reopen_profile() {
+    let _ambient = common::ambient::test_guard();
     let root = PathBuf::from(std::env::var("DLI_REOPEN_COLLECTION_ROOT").unwrap());
     let inputs = PathBuf::from(std::env::var("DLI_SISAP_INPUTS").unwrap());
     let output = PathBuf::from(std::env::var("DLI_SISAP_OUTPUT").unwrap());
@@ -561,6 +564,11 @@ async fn dli_frozen_scaling_reopen_profile() {
     let info = collection.info(&ShardSelectorInternal::All).await.unwrap();
     assert_eq!(info.points_count, Some(population));
     let local = replica(&collection).await;
+    let topk = std::env::var("DLI_PROFILE_TOPK").as_deref() == Ok("1");
+    let reserved = std::env::var("DLI_PROFILE_RESERVED").as_deref() == Ok("1");
+    local
+        .set_local_dli_search_profile_for_test(topk, reserved)
+        .await;
     let queries = std::fs::read(inputs.join("queries.f32")).unwrap();
     let gold = std::fs::read(inputs.join("ground_truth.i32")).unwrap();
     let query_count = std::env::var("DLI_PROFILE_QUERY_COUNT")
@@ -569,13 +577,18 @@ async fn dli_frozen_scaling_reopen_profile() {
         .unwrap_or(QUERY_COUNT);
     assert!((1..=QUERY_COUNT).contains(&query_count));
     let mut rounds = Vec::new();
-    for round in 0..2 {
+    let compare_topk = std::env::var("DLI_PROFILE_COMPARE_TOPK").as_deref() == Ok("1");
+    for round in 0..if compare_topk { 4 } else { 2 } {
+        let topk = if compare_topk { round % 2 == 1 } else { topk };
+        local
+            .set_local_dli_search_profile_for_test(topk, reserved)
+            .await;
         let before = local.local_dli_named_profile_for_test().await.unwrap();
         let counts_before = segment::index::hnsw_index::point_scorer::scoring_work_snapshot();
         let result = run_queries(&collection, &queries, &gold, query_count, &HashSet::new()).await;
         let counts_after = segment::index::hnsw_index::point_scorer::scoring_work_snapshot();
         let after = local.local_dli_named_profile_for_test().await.unwrap();
-        rounds.push(serde_json::json!({"round":round,"population":population,"query_count":query_count,
+        rounds.push(serde_json::json!({"round":round,"materialize_topk":topk,"reserved":reserved,"population":population,"query_count":query_count,
             "recall10":result.0,"recall30":result.1,"p50_ms":result.2,"p95_ms":result.3,"mean_ms":result.4,
             "scored_vectors":counts_after[2]-counts_before[2],"before":before,"after":after}));
         std::fs::write(

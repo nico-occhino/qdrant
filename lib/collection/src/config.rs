@@ -400,6 +400,11 @@ pub struct CollectionConfigInternal {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DliExperimentalConfig {
+    /// Limit materialized hits per physical member; full selected vectors are still scored.
+    #[serde(default)]
+    pub materialize_topk: bool,
+    #[serde(default)]
+    pub routing_policy: crate::collection_manager::dli_bucket_plan::RoutingPolicy,
     #[serde(default)]
     pub maintenance_policy: crate::collection_manager::dli_schedule::MaintenancePolicy,
     pub buffer_capacity: usize,

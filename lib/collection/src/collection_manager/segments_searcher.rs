@@ -65,6 +65,8 @@ pub struct DliResearchConfig {
     pub members: parking_lot::RwLock<std::collections::HashMap<uuid::Uuid, usize>>,
     pub arity: usize,
     pub candidate_budget: usize,
+    pub materialize_topk: std::sync::atomic::AtomicBool,
+    pub routing_policy: parking_lot::RwLock<super::dli_bucket_plan::RoutingPolicy>,
     pub learned_queries: std::sync::atomic::AtomicU64,
     pub exact_fallbacks: std::sync::atomic::AtomicU64,
     pub selected_postings: std::sync::atomic::AtomicU64,
@@ -102,6 +104,8 @@ impl DliResearchConfig {
             members: parking_lot::RwLock::new(members),
             arity,
             candidate_budget: budget,
+            materialize_topk: Default::default(),
+            routing_policy: Default::default(),
             learned_queries: Default::default(),
             exact_fallbacks: Default::default(),
             selected_postings: Default::default(),
@@ -437,7 +441,7 @@ impl SegmentsSearcher {
         config: Arc<DliResearchConfig>,
     ) -> CollectionResult<Vec<Vec<ScoredPoint>>> {
         use crate::collection_manager::dli_native_route::{
-            CandidateResolution, resolve_pinned_candidates, route_pinned,
+            CandidateResolution, resolve_pinned_candidates, route_pinned_with_policy,
         };
         use segment::data_types::vectors::{DEFAULT_VECTOR_NAME, VectorInternal};
         use shard::query::query_enum::QueryEnum;
@@ -568,12 +572,18 @@ impl SegmentsSearcher {
                 }
                 let segment_context = attempt_context.get_segment_query_context();
                 let vector_context = segment_context.get_vector_context(DEFAULT_VECTOR_NAME, None);
-                let routed = match route_pinned(
+                let routed = match route_pinned_with_policy(
                     &members,
                     query,
                     attempt_config.arity,
                     attempt_config.candidate_budget,
                     &vector_context,
+                    *attempt_config.routing_policy.read(),
+                    if attempt_config.materialize_topk.load(Ordering::Relaxed) {
+                        limit
+                    } else {
+                        usize::MAX
+                    },
                 ) {
                     Ok(routed) => routed,
                     Err(error) => {

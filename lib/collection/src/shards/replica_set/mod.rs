@@ -504,6 +504,30 @@ impl ShardReplicaSet {
         Some(maintenance.diagnostics_for_test())
     }
 
+    /// Frozen-topology experimental override; does not rewrite collection metadata.
+    #[cfg(all(test, feature = "dli-research"))]
+    pub async fn set_local_dli_search_profile_for_test(&self, topk: bool, reserved: bool) {
+        use crate::collection_manager::dli_bucket_plan::RoutingPolicy;
+        use crate::shards::shard::Shard;
+        let local = self.local.read().await;
+        let Some(Shard::Local(local)) = local.as_ref() else {
+            panic!("local shard required");
+        };
+        let search = local
+            .dli_research
+            .read()
+            .clone()
+            .expect("configured DLI required");
+        search
+            .materialize_topk
+            .store(topk, std::sync::atomic::Ordering::Relaxed);
+        *search.routing_policy.write() = if reserved {
+            RoutingPolicy::ReservedPerLevel
+        } else {
+            RoutingPolicy::SlotWeighted
+        };
+    }
+
     #[cfg(all(test, feature = "dli-research"))]
     pub async fn local_dli_named_profile_for_test(&self) -> Option<serde_json::Value> {
         use crate::shards::shard::Shard;

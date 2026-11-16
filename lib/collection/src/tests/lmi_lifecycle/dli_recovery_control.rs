@@ -1627,6 +1627,8 @@ async fn dli_recovery_control_body() {
     }
     dli_cfg.optimizer_config.indexing_threshold = None;
     dli_cfg.dli_experimental = Some(crate::config::DliExperimentalConfig {
+        materialize_topk: true,
+        routing_policy: crate::collection_manager::dli_bucket_plan::RoutingPolicy::ReservedPerLevel,
         maintenance_policy: Default::default(),
         buffer_capacity: 3,
         arity: 2,
