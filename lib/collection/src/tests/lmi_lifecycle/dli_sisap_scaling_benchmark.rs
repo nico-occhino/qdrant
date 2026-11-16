@@ -288,14 +288,22 @@ async fn run_queries(
             )
             .await
             .unwrap();
-        let latency_ms=started.elapsed().as_secs_f64()*1000.0;
+        let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
         timings.push(latency_ms);
-        if let Ok(path)=std::env::var("DLI_QUERY_EVENTS") {
+        if let Ok(path) = std::env::var("DLI_QUERY_EVENTS") {
             use std::io::Write;
-            let after=segment::index::hnsw_index::point_scorer::scoring_work_snapshot();
-            let event=serde_json::json!({"query":query_idx,"latency_ms":latency_ms,
+            let after = segment::index::hnsw_index::point_scorer::scoring_work_snapshot();
+            let event = serde_json::json!({"query":query_idx,"latency_ms":latency_ms,
                 "scored_vectors":after[2]-work_before[2],"scorer_calls":after[0]-work_before[0],"returned":result.len()});
-            writeln!(std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap(),"{event}").unwrap();
+            writeln!(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .unwrap(),
+                "{event}"
+            )
+            .unwrap();
         }
 
         let mut expected = Vec::with_capacity(30);
@@ -520,5 +528,71 @@ async fn sisap23_scaling_static_lmi_vs_temporal_dli() {
     )
     .unwrap();
     println!("SCALING_RESULT {result}");
+    collection.stop_gracefully().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "reopen retained frozen collection and profile two identical query rounds"]
+async fn dli_frozen_scaling_reopen_profile() {
+    let root = PathBuf::from(std::env::var("DLI_REOPEN_COLLECTION_ROOT").unwrap());
+    let inputs = PathBuf::from(std::env::var("DLI_SISAP_INPUTS").unwrap());
+    let output = PathBuf::from(std::env::var("DLI_SISAP_OUTPUT").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    let population: usize = std::env::var("DLI_ORACLE_POPULATION")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let collection = Collection::load(
+        "geometric_profile".into(),
+        1,
+        &root.join("storage"),
+        &root.join("snapshots"),
+        Arc::new(SharedStorageConfig::default()),
+        ChannelService::default(),
+        dummy_on_replica_failure(),
+        dummy_request_shard_transfer(),
+        dummy_abort_shard_transfer(),
+        None,
+        None,
+        ResourceBudget::default(),
+        None,
+    )
+    .await;
+    let info = collection.info(&ShardSelectorInternal::All).await.unwrap();
+    assert_eq!(info.points_count, Some(population));
+    let local = replica(&collection).await;
+    let queries = std::fs::read(inputs.join("queries.f32")).unwrap();
+    let gold = std::fs::read(inputs.join("ground_truth.i32")).unwrap();
+    let query_count = std::env::var("DLI_PROFILE_QUERY_COUNT")
+        .ok()
+        .map(|s| s.parse::<usize>().unwrap())
+        .unwrap_or(QUERY_COUNT);
+    assert!((1..=QUERY_COUNT).contains(&query_count));
+    let mut rounds = Vec::new();
+    for round in 0..2 {
+        let before = local.local_dli_named_profile_for_test().await.unwrap();
+        let counts_before = segment::index::hnsw_index::point_scorer::scoring_work_snapshot();
+        let result = run_queries(&collection, &queries, &gold, query_count, &HashSet::new()).await;
+        let counts_after = segment::index::hnsw_index::point_scorer::scoring_work_snapshot();
+        let after = local.local_dli_named_profile_for_test().await.unwrap();
+        rounds.push(serde_json::json!({"round":round,"population":population,"query_count":query_count,
+            "recall10":result.0,"recall30":result.1,"p50_ms":result.2,"p95_ms":result.3,"mean_ms":result.4,
+            "scored_vectors":counts_after[2]-counts_before[2],"before":before,"after":after}));
+        std::fs::write(
+            output.join("rounds.json"),
+            serde_json::to_vec_pretty(&rounds).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            after["learned_queries"].as_u64().unwrap()
+                - before["learned_queries"].as_u64().unwrap(),
+            query_count as u64
+        );
+        assert_eq!(
+            after["exact_fallbacks"], before["exact_fallbacks"],
+            "frozen physical membership changed or visibility unsupported: {after}"
+        );
+        println!("FROZEN_PROFILE {}", rounds.last().unwrap());
+    }
     collection.stop_gracefully().await;
 }

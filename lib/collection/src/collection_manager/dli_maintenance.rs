@@ -99,6 +99,7 @@ pub struct DliOptimizationStrategy {
     pub segments_path: PathBuf,
     pub segment_config: segment::types::SegmentConfig,
     pub model: LmiConfig,
+    pub destination_on_disk: bool,
     /// Physical generations expected by the already selected job.
     pub expected_sources: std::collections::HashSet<Uuid>,
     pub expected_topology: Option<(HierarchyConfig, HashMap<Uuid, usize>, CompactionPlan)>,
@@ -265,6 +266,11 @@ impl shard::optimize::OptimizationStrategy for DliOptimizationStrategy {
             }
         }
         vector.index = Indexes::LmiTrained(self.model.clone());
+        vector.storage_type = if self.destination_on_disk {
+            segment::types::VectorStorageType::ChunkedMmap
+        } else {
+            segment::types::VectorStorageType::InRamChunkedMmap
+        };
         SegmentBuilder::new(
             &self.staging,
             &config,
@@ -350,6 +356,8 @@ pub struct DliMaintenance {
     /// Native publication is enabled only for collections carrying the
     /// feature-gated experimental DLI configuration.
     pub native_enabled: AtomicBool,
+    /// Collection policy for new learned destinations; COW buffers stay cached.
+    pub destination_on_disk: AtomicBool,
     pub published: AtomicUsize,
     pub published_uuids: Mutex<Vec<Uuid>>,
     pub publication_events: Mutex<Vec<DliPublicationEvent>>,
@@ -529,6 +537,7 @@ impl DliMaintenance {
             worker: Mutex::new(None),
             last: Mutex::new(Vec::new()),
             native_enabled: AtomicBool::new(false),
+            destination_on_disk: AtomicBool::new(true),
             published: AtomicUsize::new(0),
             published_uuids: Mutex::new(Vec::new()),
             publication_events: Mutex::new(Vec::new()),
@@ -681,6 +690,7 @@ impl DliMaintenance {
                         segments_path: segments_path.clone(),
                         segment_config,
                         model: state.model.clone(),
+                        destination_on_disk: state.destination_on_disk.load(Ordering::Acquire),
                         expected_sources,
                         expected_topology: Some((
                             state.hierarchy,
@@ -804,6 +814,7 @@ impl DliMaintenance {
                     segments_path: state.path.clone(),
                     segment_config: source_config,
                     model: state.model.clone(),
+                    destination_on_disk: state.destination_on_disk.load(Ordering::Acquire),
                     expected_sources,
                     expected_topology: Some((
                         state.hierarchy,

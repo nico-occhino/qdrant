@@ -1260,6 +1260,7 @@ async fn dli_recovery_control_body() {
             staging: stale_staging.path().to_owned(),
             segments_path: segments_path.clone(),
             segment_config: source_config,
+            destination_on_disk: true,
             model: maintenance.model,
             expected_sources: HashSet::from([uuids.0, uuids.2]),
             expected_topology: Some((maintenance.hierarchy, initial_roles, stale_plan)),

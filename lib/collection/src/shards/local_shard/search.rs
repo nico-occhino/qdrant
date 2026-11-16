@@ -59,6 +59,18 @@ impl LocalShard {
                 "Experimental DLI currently requires one local shard/replica, one dense Float16 cosine vector and no quantization or sparse vectors".to_owned(),
             ));
         }
+        #[allow(deprecated)] // Match native optimizer precedence for legacy collection files.
+        let destination_on_disk = match &collection.params.vectors {
+            VectorsConfig::Single(vector) => {
+                segment::types::Memory::resolve(
+                    vector.memory,
+                    vector.on_disk.map(segment::types::Memory::from_on_disk),
+                )
+                .unwrap_or(segment::types::Memory::Cached)
+                    == segment::types::Memory::Cold
+            }
+            _ => unreachable!("validated single-vector scope"),
+        };
         drop(collection);
 
         let holder = self.segments.clone();
@@ -87,6 +99,9 @@ impl LocalShard {
             config.model,
             self.path.clone(),
         );
+        maintenance
+            .destination_on_disk
+            .store(destination_on_disk, Ordering::Release);
         maintenance.attach_search(search.clone());
         maintenance.native_enabled.store(true, Ordering::Release);
 

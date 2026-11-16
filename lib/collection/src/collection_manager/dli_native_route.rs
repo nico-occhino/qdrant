@@ -27,6 +27,11 @@ pub struct NativeRouteResult {
     pub plan: SelectedBuckets,
     pub routing_and_planning_time: Duration,
     pub scoring_time: Duration,
+    pub native_scorer_time: Duration,
+    pub hit_materialization_time: Duration,
+    pub router_inference_time: Duration,
+    pub bucket_planning_time: Duration,
+    pub models_evaluated: usize,
     pub posting_candidates: usize,
     pub unique_posting_offsets: usize,
     /// Live point count, which can exceed the number of vectors in the buffer.
@@ -138,6 +143,8 @@ pub fn route_pinned(
     let fail = |message: &str| OperationError::service_error(message.to_owned());
     let start = Instant::now();
     let mut predictions = Vec::new();
+    let mut router_inference_time = Duration::ZERO;
+    let mut models_evaluated = 0usize;
     let mut seen = HashSet::new();
     let mut distance = None;
     for &(level, segment) in members {
@@ -178,7 +185,10 @@ pub fn route_pinned(
                 } else {
                     query.to_vec()
                 };
+                let inference_started = Instant::now();
                 let logits = state.router().forward(&routed)?;
+                router_inference_time += inference_started.elapsed();
+                models_evaluated += 1;
                 if logits.len() != state.postings().len() || logits.is_empty() {
                     return Err(fail("LMI router/postings bucket mismatch"));
                 }
@@ -204,9 +214,13 @@ pub fn route_pinned(
             _ => return Err(fail("DLI member role/index mismatch")),
         }
     }
+    let planning_started = Instant::now();
     let plan = select(predictions, arity, budget)
         .map_err(|e| fail(&format!("invalid DLI candidate plan: {e:?}")))?;
+    let bucket_planning_time = planning_started.elapsed();
     let routing_and_planning_time = start.elapsed();
+    let mut native_scorer_time = Duration::ZERO;
+    let mut hit_materialization_time = Duration::ZERO;
     let started_scoring = Instant::now();
     let mut posting_candidates = 0usize;
     let mut unique_posting_offsets = 0usize;
@@ -230,10 +244,13 @@ pub fn route_pinned(
             // Whole buffer, not a partial top-k: the outer caller owns global top-k.
             let count = segment.id_tracker.borrow().available_point_count();
             buffer_point_estimate += count;
-            index
+            let score_started = Instant::now();
+            let offsets = index
                 .search(&[&query_vector], None, count, None, context)?
                 .pop()
-                .expect("one buffer query")
+                .expect("one buffer query");
+            native_scorer_time += score_started.elapsed();
+            offsets
         } else {
             let VectorIndexEnum::Lmi(lmi) = &*index else {
                 unreachable!()
@@ -249,15 +266,19 @@ pub fn route_pinned(
             unique_posting_offsets += candidates.len();
             let tracker = segment.id_tracker.borrow();
             let storage = data.vector_storage.borrow();
-            score_candidates(
+            let score_started = Instant::now();
+            let offsets = score_candidates(
                 &query_vector,
                 &candidates,
                 candidates.len(),
                 &tracker,
                 &storage,
                 context,
-            )?
+            )?;
+            native_scorer_time += score_started.elapsed();
+            offsets
         };
+        let materialization_started = Instant::now();
         let hits = segment.with_view(|view| {
             view.process_search_result(
                 offsets,
@@ -266,11 +287,17 @@ pub fn route_pinned(
                 &context.is_stopped(),
             )
         })?;
+        hit_materialization_time += materialization_started.elapsed();
         per_segment.push((segment.uuid, hits));
     }
     Ok(NativeRouteResult {
         plan,
         routing_and_planning_time,
+        native_scorer_time,
+        hit_materialization_time,
+        router_inference_time,
+        bucket_planning_time,
+        models_evaluated,
         scoring_time: started_scoring.elapsed(),
         posting_candidates,
         unique_posting_offsets,
@@ -319,6 +346,7 @@ mod tests {
             staging: root.path().to_owned(),
             segments_path: root.path().to_owned(),
             segment_config: config,
+            destination_on_disk: true,
             model: LmiConfig::default(),
             expected_sources: HashSet::from([Uuid::new_v4()]),
             expected_topology: None,
@@ -345,6 +373,112 @@ mod tests {
             shard::optimize::OptimizationStrategy::create_segment_builder(&adapter, &inputs)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn dli_destination_storage_is_independent_of_source_order_and_reopens() {
+        use segment::types::VectorStorageType;
+        use shard::optimize::OptimizationStrategy;
+        let _scope = common::ambient::test_guard();
+        let root = tempfile::tempdir().unwrap();
+        for (cold_a, cold_b) in [(false, false), (true, true), (true, false)] {
+            let mut inputs = Vec::new();
+            for (which, cold) in [(0, cold_a), (1, cold_b)] {
+                let base = build_simple_segment(root.path(), 2, Distance::Cosine).unwrap();
+                let mut config = base.config().clone();
+                config
+                    .vector_data
+                    .get_mut(DEFAULT_VECTOR_NAME)
+                    .unwrap()
+                    .storage_type = if cold {
+                    VectorStorageType::ChunkedMmap
+                } else {
+                    VectorStorageType::InRamChunkedMmap
+                };
+                let (mut segment, _) =
+                    segment::segment_constructor::build_segment(root.path(), &config, None, true)
+                        .unwrap();
+                for i in 0..2 {
+                    segment
+                        .upsert_point(
+                            1,
+                            (1 + which * 2 + i as u64).into(),
+                            only_default_vector(if i == 0 { &[1., 0.] } else { &[0., 1.] }),
+                        )
+                        .unwrap();
+                }
+                inputs.push(shard::locked_segment::LockedSegment::from(segment));
+            }
+            for reversed in [false, true] {
+                if reversed {
+                    inputs.reverse();
+                }
+                for on_disk in [false, true] {
+                    let config = inputs[0].get().read().config().clone();
+                    let adapter =
+                        crate::collection_manager::dli_maintenance::DliOptimizationStrategy {
+                            staging: root.path().to_owned(),
+                            segments_path: root.path().to_owned(),
+                            segment_config: config,
+                            destination_on_disk: on_disk,
+                            model: LmiConfig {
+                                n_buckets: 2,
+                                nprobe: 2,
+                                sample_size: 4,
+                                hidden_dim: 4,
+                                epochs: 1,
+                                batch_size: 2,
+                                kmeans_iterations: 2,
+                                ..Default::default()
+                            },
+                            expected_sources: inputs
+                                .iter()
+                                .map(|s| s.get().read().segment_uuid())
+                                .collect(),
+                            expected_topology: None,
+                            validation_hook: None,
+                        };
+                    let mut builder = adapter.create_segment_builder(&inputs).unwrap();
+                    {
+                        let guards: Vec<_> = inputs
+                            .iter()
+                            .map(|s| match s {
+                                shard::locked_segment::LockedSegment::Original(s) => s.read(),
+                                _ => unreachable!(),
+                            })
+                            .collect();
+                        builder
+                            .update(
+                                &guards.iter().map(|s| &**s).collect::<Vec<_>>(),
+                                &AtomicBool::new(false),
+                            )
+                            .unwrap();
+                    }
+                    let built = builder.build_for_test(root.path());
+                    let expected = if on_disk {
+                        VectorStorageType::ChunkedMmap
+                    } else {
+                        VectorStorageType::InRamChunkedMmap
+                    };
+                    assert_eq!(
+                        built.config().vector_data[DEFAULT_VECTOR_NAME].storage_type,
+                        expected
+                    );
+                    assert_eq!(built.available_point_count(), 4);
+                    built.flush(true).unwrap();
+                    let path = built.segment_path.clone();
+                    let uuid = built.uuid;
+                    drop(built);
+                    let reopened =
+                        load_segment(&path, uuid, None, &AtomicBool::new(false), true).unwrap();
+                    assert_eq!(
+                        reopened.config().vector_data[DEFAULT_VECTOR_NAME].storage_type,
+                        expected
+                    );
+                    assert_eq!(reopened.available_point_count(), 4);
+                }
+            }
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -561,6 +695,7 @@ mod tests {
                     staging: self.path.clone(),
                     segments_path: self.path.clone(),
                     segment_config: config,
+                    destination_on_disk: true,
                     model: LmiConfig {
                         n_buckets: 2,
                         sample_size: 4,

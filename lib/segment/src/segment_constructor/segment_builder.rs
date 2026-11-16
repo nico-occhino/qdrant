@@ -89,6 +89,12 @@ struct VectorData {
 }
 
 impl SegmentBuilder {
+    /// Live resolved records currently copied into the private destination.
+    /// This is after ID/version deduplication; named-vector counts may differ.
+    pub fn copied_live_point_count(&self) -> usize {
+        self.id_tracker.available_point_count()
+    }
+
     pub fn new(
         temp_dir: &Path,
         segment_config: &SegmentConfig,

@@ -505,6 +505,31 @@ impl ShardReplicaSet {
     }
 
     #[cfg(all(test, feature = "dli-research"))]
+    pub async fn local_dli_named_profile_for_test(&self) -> Option<serde_json::Value> {
+        use crate::shards::shard::Shard;
+        use std::sync::atomic::Ordering::Relaxed;
+        let local = self.local.read().await;
+        let Some(Shard::Local(local)) = local.as_ref() else {
+            return None;
+        };
+        let search = local.dli_research.read().clone()?;
+        Some(serde_json::json!({
+            "learned_queries": search.learned_queries.load(Relaxed),
+            "exact_fallbacks": search.exact_fallbacks.load(Relaxed),
+            "routing_and_planning_nanos": search.routing_and_planning_nanos.load(Relaxed),
+            "scoring_nanos": search.scoring_nanos.load(Relaxed),
+            "resolution_nanos": search.resolution_nanos.load(Relaxed),
+            "read_guard_nanos": search.read_guard_nanos.load(Relaxed),
+            "native_scorer_nanos": search.native_scorer_nanos.load(Relaxed),
+            "hit_materialization_nanos": search.hit_materialization_nanos.load(Relaxed),
+            "router_inference_nanos": search.router_inference_nanos.load(Relaxed),
+            "bucket_planning_nanos": search.bucket_planning_nanos.load(Relaxed),
+            "models_evaluated": search.models_evaluated.load(Relaxed),
+            "fallback_reasons": search.fallback_reasons.lock().clone()
+        }))
+    }
+
+    #[cfg(all(test, feature = "dli-research"))]
     pub async fn local_dli_search_metrics_for_test(
         &self,
     ) -> Option<(u64, u64, u64, u64, u64, u64)> {

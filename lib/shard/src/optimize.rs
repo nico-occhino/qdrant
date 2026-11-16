@@ -42,6 +42,17 @@ use crate::segment_holder::locked::LockedSegmentHolder;
 use crate::segment_holder::{SegmentHolder, SegmentId};
 use crate::segment_manifest::NewSegmentToken;
 
+#[derive(Default, serde::Serialize)]
+struct NativeBuildPhases {
+    source_live_records: usize,
+    copied_live_records: usize,
+    source_copy_micros: u128,
+    populate_storage_micros: u128,
+    cpu_permit_wait_micros: u128,
+    segment_build_micros: u128,
+    first_propagation_micros: u128,
+}
+
 /// Opt-in shared accounting at the native optimizer boundary. Both collection
 /// policies execute this path. One JSON line per attempt, including failed ones.
 /// Durations are job wall time, never CPU time or elapsed ingestion time.
@@ -58,6 +69,7 @@ struct OptimizationMeasurement {
     build_and_first_propagation_micros: Option<u128>,
     final_propagation_and_publication_micros: Option<u128>,
     job_wall_micros: u128,
+    native_phases: Option<NativeBuildPhases>,
     outcome: &'static str,
     #[serde(skip)]
     started: std::time::Instant,
@@ -83,6 +95,7 @@ impl OptimizationMeasurement {
             build_and_first_propagation_micros: None,
             final_propagation_and_publication_micros: None,
             job_wall_micros: 0,
+            native_phases: None,
             outcome: "failed_or_unwound",
             started: std::time::Instant::now(),
             path: path.into(),
@@ -291,7 +304,8 @@ fn build_new_segment<F: ?Sized + OptimizationStrategy>(
     stopped: &AtomicBool,
     progress: ProgressTracker,
     segments_path: &Path,
-) -> OperationResult<Segment> {
+) -> OperationResult<(Segment, NativeBuildPhases)> {
+    let mut phases = NativeBuildPhases::default();
     let mut segment_builder = factory.create_segment_builder(input_segments)?;
 
     check_process_stopped(stopped)?;
@@ -339,10 +353,17 @@ fn build_new_segment<F: ?Sized + OptimizationStrategy>(
     {
         progress_copy_data.start();
         let segment_guards = segments.iter().map(|segment| segment.read()).collect_vec();
+        phases.source_live_records = segment_guards
+            .iter()
+            .map(|s| s.available_point_count())
+            .sum();
+        let copy_started = std::time::Instant::now();
         segment_builder.update(
             &segment_guards.iter().map(Deref::deref).collect_vec(),
             stopped,
         )?;
+        phases.source_copy_micros = copy_started.elapsed().as_micros();
+        phases.copied_live_records = segment_builder.copied_live_point_count();
         drop(progress_copy_data);
     }
 
@@ -367,7 +388,9 @@ fn build_new_segment<F: ?Sized + OptimizationStrategy>(
     // Before switching from IO to CPU, make sure that vectors cache is heated up,
     // so indexing process won't need to wait for IO.
     progress_populate_storages.start();
+    let populate_started = std::time::Instant::now();
     segment_builder.populate_vector_storages()?;
+    phases.populate_storage_micros = populate_started.elapsed().as_micros();
     drop(progress_populate_storages);
 
     // 000 - acquired
@@ -410,6 +433,7 @@ fn build_new_segment<F: ?Sized + OptimizationStrategy>(
     // This ensures that IO is equally distributed between optimization jobs.
     progress_wait_permit.start();
     let desired_cpus = permit.num_io as usize;
+    let permit_started = std::time::Instant::now();
     let indexing_permit = resource_budget
         .replace_with(permit, desired_cpus, 0, stopped)
         .map_err(|_| {
@@ -417,10 +441,12 @@ fn build_new_segment<F: ?Sized + OptimizationStrategy>(
                 "optimization cancelled while waiting for budget",
             )
         })?;
+    phases.cpu_permit_wait_micros = permit_started.elapsed().as_micros();
     drop(progress_wait_permit);
 
     let mut rng = rand::rng();
-    segment_builder.build(
+    let build_started = std::time::Instant::now();
+    let segment = segment_builder.build(
         segments_path,
         output_segment_uuid,
         deferred_internal_id,
@@ -431,7 +457,9 @@ fn build_new_segment<F: ?Sized + OptimizationStrategy>(
         stopped,
         &mut rng,
         progress,
-    )
+    )?;
+    phases.segment_build_micros = build_started.elapsed().as_micros();
+    Ok((segment, phases))
 }
 
 /// Create a single optimized segment from the given segments.
@@ -456,10 +484,10 @@ fn optimize_segment_propagate_changes<F: ?Sized + OptimizationStrategy>(
     stopped: &AtomicBool,
     progress: ProgressTracker,
     segments_path: &Path,
-) -> OperationResult<(Segment, ProxyChanges)> {
+) -> OperationResult<(Segment, ProxyChanges, NativeBuildPhases)> {
     check_process_stopped(stopped)?;
 
-    let mut optimized_segment = build_new_segment(
+    let (mut optimized_segment, mut phases) = build_new_segment(
         factory,
         &optimizing_segments,
         output_segment_uuid,
@@ -479,11 +507,13 @@ fn optimize_segment_propagate_changes<F: ?Sized + OptimizationStrategy>(
     // `finish_optimization` for it to exclude: only what arrives after it is left for the
     // critical section.
     let applied_changes = proxy_changes(proxies);
+    let propagation_started = std::time::Instant::now();
     applied_changes.propagate(&mut optimized_segment, stopped)?;
+    phases.first_propagation_micros = propagation_started.elapsed().as_micros();
 
     check_process_stopped(stopped)?;
 
-    Ok((optimized_segment, applied_changes))
+    Ok((optimized_segment, applied_changes, phases))
 }
 
 /// Finish optimization: propagate remaining changes and swap segments
@@ -908,7 +938,7 @@ pub fn execute_optimization<F: ?Sized + OptimizationStrategy>(
     if let Some(event) = &mut measurement {
         event.build_and_first_propagation_micros = Some(measured_build_start.elapsed().as_micros());
     }
-    let (optimized_segment, applied_changes) = match build_result {
+    let (optimized_segment, applied_changes, phases) = match build_result {
         Ok(result) => result,
         Err(err) => {
             // A graceful cancellation always happens before the optimized segment is swapped into
@@ -926,6 +956,9 @@ pub fn execute_optimization<F: ?Sized + OptimizationStrategy>(
         }
     };
 
+    if let Some(event) = &mut measurement {
+        event.native_phases = Some(phases);
+    }
     // Fast part: blocks updates, propagates rest of the changes, swaps optimized segment
     let measured_publication_start = std::time::Instant::now();
     let points_count = match finish_optimization(

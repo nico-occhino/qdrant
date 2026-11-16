@@ -72,6 +72,12 @@ pub struct DliResearchConfig {
     pub routing_and_planning_nanos: std::sync::atomic::AtomicU64,
     pub scoring_nanos: std::sync::atomic::AtomicU64,
     pub resolution_nanos: std::sync::atomic::AtomicU64,
+    pub native_scorer_nanos: std::sync::atomic::AtomicU64,
+    pub hit_materialization_nanos: std::sync::atomic::AtomicU64,
+    pub router_inference_nanos: std::sync::atomic::AtomicU64,
+    pub bucket_planning_nanos: std::sync::atomic::AtomicU64,
+    pub models_evaluated: std::sync::atomic::AtomicU64,
+
     pub read_guard_nanos: std::sync::atomic::AtomicU64,
     pub fallback_reasons: parking_lot::Mutex<std::collections::HashMap<&'static str, u64>>,
     #[cfg(test)]
@@ -103,6 +109,12 @@ impl DliResearchConfig {
             routing_and_planning_nanos: Default::default(),
             scoring_nanos: Default::default(),
             resolution_nanos: Default::default(),
+            native_scorer_nanos: Default::default(),
+            hit_materialization_nanos: Default::default(),
+            router_inference_nanos: Default::default(),
+            bucket_planning_nanos: Default::default(),
+            models_evaluated: Default::default(),
+
             read_guard_nanos: Default::default(),
             fallback_reasons: Default::default(),
             #[cfg(test)]
@@ -588,6 +600,25 @@ impl SegmentsSearcher {
                     u64::try_from(routed.scoring_time.as_nanos()).unwrap_or(u64::MAX),
                     Ordering::Relaxed,
                 );
+                attempt_config.native_scorer_nanos.fetch_add(
+                    u64::try_from(routed.native_scorer_time.as_nanos()).unwrap_or(u64::MAX),
+                    Ordering::Relaxed,
+                );
+                attempt_config.hit_materialization_nanos.fetch_add(
+                    u64::try_from(routed.hit_materialization_time.as_nanos()).unwrap_or(u64::MAX),
+                    Ordering::Relaxed,
+                );
+                attempt_config.router_inference_nanos.fetch_add(
+                    u64::try_from(routed.router_inference_time.as_nanos()).unwrap_or(u64::MAX),
+                    Ordering::Relaxed,
+                );
+                attempt_config.bucket_planning_nanos.fetch_add(
+                    u64::try_from(routed.bucket_planning_time.as_nanos()).unwrap_or(u64::MAX),
+                    Ordering::Relaxed,
+                );
+                attempt_config
+                    .models_evaluated
+                    .fetch_add(routed.models_evaluated as u64, Ordering::Relaxed);
                 let resolution_start = Instant::now();
                 let resolution = resolve_pinned_candidates(&members, routed, limit);
                 attempt_config.resolution_nanos.fetch_add(
