@@ -42,6 +42,76 @@ use crate::segment_holder::locked::LockedSegmentHolder;
 use crate::segment_holder::{SegmentHolder, SegmentId};
 use crate::segment_manifest::NewSegmentToken;
 
+/// Opt-in shared accounting at the native optimizer boundary. Both collection
+/// policies execute this path. One JSON line per attempt, including failed ones.
+/// Durations are job wall time, never CPU time or elapsed ingestion time.
+#[derive(serde::Serialize)]
+struct OptimizationMeasurement {
+    schema_version: u32,
+    optimizer: &'static str,
+    destination: Uuid,
+    sources: Vec<Uuid>,
+    source_live_points: usize,
+    destination_points: usize,
+    started_unix_micros: u128,
+    protected_micros: Option<u128>,
+    build_and_first_propagation_micros: Option<u128>,
+    final_propagation_and_publication_micros: Option<u128>,
+    job_wall_micros: u128,
+    outcome: &'static str,
+    #[serde(skip)]
+    started: std::time::Instant,
+    #[serde(skip)]
+    path: PathBuf,
+}
+
+impl OptimizationMeasurement {
+    fn start(optimizer: &'static str, destination: Uuid) -> Option<Self> {
+        let path = std::env::var_os("QDRANT_OPTIMIZATION_EVENTS")?;
+        Some(Self {
+            schema_version: 1,
+            optimizer,
+            destination,
+            sources: Vec::new(),
+            source_live_points: 0,
+            destination_points: 0,
+            started_unix_micros: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_micros(),
+            protected_micros: None,
+            build_and_first_propagation_micros: None,
+            final_propagation_and_publication_micros: None,
+            job_wall_micros: 0,
+            outcome: "failed_or_unwound",
+            started: std::time::Instant::now(),
+            path: path.into(),
+        })
+    }
+}
+
+impl Drop for OptimizationMeasurement {
+    fn drop(&mut self) {
+        use std::io::Write;
+        static WRITER: Mutex<()> = Mutex::new(());
+        self.job_wall_micros = self.started.elapsed().as_micros();
+        let _writer = WRITER.lock();
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let mut bytes = serde_json::to_vec(self)?;
+            bytes.push(b'\n');
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)?
+                .write_all(&bytes)?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            log::warn!("Cannot record native optimizer measurement: {error}");
+        }
+    }
+}
+
 /// Result of optimization execution
 #[derive(Debug)]
 pub struct OptimizationResult {
@@ -676,6 +746,7 @@ pub fn execute_optimization<F: ?Sized + OptimizationStrategy>(
     factory: &F,
     on_successful_start: Box<dyn FnOnce()>,
 ) -> OperationResult<OptimizationResult> {
+    let mut measurement = OptimizationMeasurement::start(optimizer_name, output_segment_uuid);
     check_process_stopped(stopped)?;
 
     let mut timer = ScopeDurationMeasurer::new(telemetry_counter);
@@ -706,6 +777,16 @@ pub fn execute_optimization<F: ?Sized + OptimizationStrategy>(
         return Ok(OptimizationResult { points_count: 0 });
     }
 
+    if let Some(event) = &mut measurement {
+        for source in &input_segments {
+            let LockedSegment::Original(source) = source else {
+                unreachable!()
+            };
+            let source = source.read();
+            event.sources.push(source.uuid);
+            event.source_live_points += source.available_point_count();
+        }
+    }
     factory.validate_topology(&segment_holder_read)?;
     factory.validate_sources(&input_segments)?;
     factory.after_source_validation()?;
@@ -806,6 +887,10 @@ pub fn execute_optimization<F: ?Sized + OptimizationStrategy>(
         (proxy_ids, cow_segment_id_opt, counter_handler)
     };
 
+    if let Some(event) = &mut measurement {
+        event.protected_micros = Some(event.started.elapsed().as_micros());
+    }
+    let measured_build_start = std::time::Instant::now();
     // SLOW PART: create single optimized segment and propagate all new changes to it
     let build_result = optimize_segment_propagate_changes(
         factory,
@@ -820,6 +905,9 @@ pub fn execute_optimization<F: ?Sized + OptimizationStrategy>(
         &paths.segments_path,
     );
 
+    if let Some(event) = &mut measurement {
+        event.build_and_first_propagation_micros = Some(measured_build_start.elapsed().as_micros());
+    }
     let (optimized_segment, applied_changes) = match build_result {
         Ok(result) => result,
         Err(err) => {
@@ -839,6 +927,7 @@ pub fn execute_optimization<F: ?Sized + OptimizationStrategy>(
     };
 
     // Fast part: blocks updates, propagates rest of the changes, swaps optimized segment
+    let measured_publication_start = std::time::Instant::now();
     let points_count = match finish_optimization(
         &segment_holder,
         locked_proxies,
@@ -868,6 +957,12 @@ pub fn execute_optimization<F: ?Sized + OptimizationStrategy>(
     drop(counter_handler);
 
     timer.set_success(true);
+    if let Some(event) = &mut measurement {
+        event.destination_points = points_count;
+        event.final_propagation_and_publication_micros =
+            Some(measured_publication_start.elapsed().as_micros());
+        event.outcome = "published";
+    }
 
     Ok(OptimizationResult { points_count })
 }

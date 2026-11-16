@@ -400,6 +400,8 @@ pub struct CollectionConfigInternal {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DliExperimentalConfig {
+    #[serde(default)]
+    pub maintenance_policy: crate::collection_manager::dli_schedule::MaintenancePolicy,
     pub buffer_capacity: usize,
     pub arity: usize,
     pub candidate_budget: usize,

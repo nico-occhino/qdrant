@@ -1072,6 +1072,7 @@ async fn dli_recovery_control_body() {
         let initial_roles = HashMap::from([(uuids.0, 1), (uuids.1, 3), (uuids.2, 0)]);
         let maintenance = DliMaintenance::new(
             crate::collection_manager::dli_schedule::HierarchyConfig {
+                policy: Default::default(),
                 buffer_capacity: 3,
                 arity: 2,
             },
@@ -1248,6 +1249,7 @@ async fn dli_recovery_control_body() {
         };
         let stale_staging = tempfile::tempdir_in(private_root.path()).unwrap();
         let stale_plan = crate::collection_manager::dli_schedule::HierarchyConfig {
+            policy: Default::default(),
             buffer_capacity: 3,
             arity: 2,
         }
@@ -1624,6 +1626,7 @@ async fn dli_recovery_control_body() {
     }
     dli_cfg.optimizer_config.indexing_threshold = None;
     dli_cfg.dli_experimental = Some(crate::config::DliExperimentalConfig {
+        maintenance_policy: Default::default(),
         buffer_capacity: 3,
         arity: 2,
         candidate_budget: 64,

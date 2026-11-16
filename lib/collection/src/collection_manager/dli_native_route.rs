@@ -867,6 +867,7 @@ mod tests {
 
     #[test]
     fn dli_learned_resolution_survives_delete_and_reinsert() {
+        let scorer_start = segment::index::hnsw_index::point_scorer::scoring_work_snapshot();
         let _scope =
             common::ambient::unmeasured_guard(common::reason::reason("DLI delete resolution"));
         use segment::entry::{NonAppendableSegmentEntry, SegmentEntry};
@@ -919,6 +920,11 @@ mod tests {
         let reinserted = hits.iter().find(|h| h.id == 41_u64.into()).unwrap();
         assert_eq!(reinserted.version, 3000);
         assert!(reinserted.score.abs() < 1e-5);
+        if std::env::var_os("DLI_ASSERT_SCORING_FIXTURE").is_some() {
+            let after = segment::index::hnsw_index::point_scorer::scoring_work_snapshot();
+            assert_eq!(after[1] - scorer_start[1], 8);
+            assert_eq!(after[2] - scorer_start[2], 8);
+        }
     }
 
     #[tokio::test]
@@ -1223,6 +1229,7 @@ mod tests {
         // but leave the separate level 3 untouched. This remains a private
         // build and does not model concurrent updates or publication.
         let plan = crate::collection_manager::dli_schedule::HierarchyConfig {
+            policy: Default::default(),
             buffer_capacity: 2,
             arity: 2,
         }

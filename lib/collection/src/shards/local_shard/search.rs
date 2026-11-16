@@ -79,6 +79,7 @@ impl LocalShard {
         let search = Arc::new(search);
         let maintenance = DliMaintenance::new(
             HierarchyConfig {
+                policy: config.maintenance_policy,
                 buffer_capacity: config.buffer_capacity,
                 arity: config.arity,
             },

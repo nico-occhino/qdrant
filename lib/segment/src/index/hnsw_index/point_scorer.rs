@@ -1,3 +1,22 @@
+/// Opt-in process counters at the shared batch scorer boundary. Counts repeated
+/// evaluations as work; failed calls contribute attempts but not successes.
+static MEASURE_SCORING: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var_os("QDRANT_MEASURE_SCORING").is_some());
+static SCORING_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SCORING_ATTEMPTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SCORING_SUCCESSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Process-wide counters for sequential isolated research workloads. Concurrent
+/// queries must use an external request attribution mechanism.
+pub fn scoring_work_snapshot() -> [u64; 3] {
+    use std::sync::atomic::Ordering::Relaxed;
+    [
+        SCORING_CALLS.load(Relaxed),
+        SCORING_ATTEMPTS.load(Relaxed),
+        SCORING_SUCCESSES.load(Relaxed),
+    ]
+}
+
 use std::sync::atomic::AtomicBool;
 
 use common::bitmap_scan::BatchedBitmapScan;
@@ -570,7 +589,16 @@ impl<'a> BatchFilteredSearcher<'a> {
 
             // Switching the loops improves batching performance, but slightly degrades single-query performance.
             for BatchSearch { raw_scorer, top_k } in &mut self.scorer_batch {
+                if *MEASURE_SCORING {
+                    SCORING_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    SCORING_ATTEMPTS
+                        .fetch_add(chunk_size as u64, std::sync::atomic::Ordering::Relaxed);
+                }
                 raw_scorer.score_points(&chunk[..chunk_size], &mut scores_buffer[..chunk_size])?;
+                if *MEASURE_SCORING {
+                    SCORING_SUCCESSES
+                        .fetch_add(chunk_size as u64, std::sync::atomic::Ordering::Relaxed);
+                }
 
                 for i in 0..chunk_size {
                     top_k.push(ScoredPointOffset {
@@ -624,7 +652,16 @@ impl<'a> BatchFilteredSearcher<'a> {
             }
             for BatchSearch { raw_scorer, top_k } in &mut self.scorer_batch {
                 let tick = Instant::now();
+                if *MEASURE_SCORING {
+                    SCORING_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    SCORING_ATTEMPTS
+                        .fetch_add(chunk_size as u64, std::sync::atomic::Ordering::Relaxed);
+                }
                 raw_scorer.score_points(&chunk[..chunk_size], &mut scores_buffer[..chunk_size])?;
+                if *MEASURE_SCORING {
+                    SCORING_SUCCESSES
+                        .fetch_add(chunk_size as u64, std::sync::atomic::Ordering::Relaxed);
+                }
                 score_ns = score_ns.saturating_add(tick.elapsed().as_nanos() as u64);
                 scored = scored.saturating_add(chunk_size);
                 let tick = Instant::now();
@@ -669,7 +706,14 @@ fn score_chunk(
         return Ok(());
     }
     for BatchSearch { raw_scorer, top_k } in scorer_batch {
+        if *MEASURE_SCORING {
+            SCORING_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            SCORING_ATTEMPTS.fetch_add(chunk.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        }
         raw_scorer.score_points(chunk, &mut scores_buffer[..chunk.len()])?;
+        if *MEASURE_SCORING {
+            SCORING_SUCCESSES.fetch_add(chunk.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        }
         for i in 0..chunk.len() {
             top_k.push(ScoredPointOffset {
                 idx: chunk[i],

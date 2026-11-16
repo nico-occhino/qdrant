@@ -29,6 +29,8 @@ pub struct DliHierarchyDescriptor {
     pub generation: usize,
     buffer_capacity: usize,
     arity: usize,
+    #[serde(default)]
+    policy: super::dli_schedule::MaintenancePolicy,
     members: Vec<(Uuid, usize)>,
 }
 
@@ -42,6 +44,7 @@ impl DliHierarchyDescriptor {
             || self.generation == 0
             || self.buffer_capacity != hierarchy.buffer_capacity
             || self.arity != hierarchy.arity
+            || self.policy != hierarchy.policy
         {
             return Err("incompatible DLI descriptor version or policy".into());
         }
@@ -502,6 +505,7 @@ impl DliMaintenance {
             generation,
             buffer_capacity: self.hierarchy.buffer_capacity,
             arity: self.hierarchy.arity,
+            policy: self.hierarchy.policy,
             members: sorted,
         };
         common::fs::atomic_save_json(&self.path.join(DLI_DESCRIPTOR), &descriptor)
@@ -872,6 +876,7 @@ mod worker_lifecycle_tests {
         let directory = tempfile::tempdir().unwrap();
         let state = DliMaintenance::new(
             HierarchyConfig {
+                policy: Default::default(),
                 buffer_capacity: 1,
                 arity: 2,
             },

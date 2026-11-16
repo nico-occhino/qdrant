@@ -76,6 +76,9 @@ fn collection_config(dli: bool) -> CollectionConfigInternal {
         metadata: None,
         created_at: None,
         dli_experimental: dli.then_some(DliExperimentalConfig {
+            maintenance_policy: if std::env::var("DLI_BENCH_POLICY").as_deref() == Ok("size-tiered") {
+                crate::collection_manager::dli_schedule::MaintenancePolicy::SizeTiered
+            } else { Default::default() },
             buffer_capacity: DLI_BUFFER_CAPACITY,
             arity: 2,
             candidate_budget: 2_000,
@@ -425,10 +428,14 @@ async fn sisap23_300k_static_lmi_vs_temporal_dli() {
     let mut dli_write_ms = Vec::new();
     let mut dli_publication_targets = Vec::new();
     let mut dli_inserted = 0usize;
-    let total_batches = FULL_COUNT.div_ceil(BATCH_SIZE);
+    let population = std::env::var("DLI_BENCH_POINTS").ok()
+        .map(|s| s.parse::<usize>().expect("positive checkpoint size"))
+        .unwrap_or(FULL_COUNT);
+    assert!(population >= 100_000 && population <= FULL_COUNT && population % BATCH_SIZE == 0);
+    let total_batches = population.div_ceil(BATCH_SIZE);
     for batch in 0..total_batches {
         let first = batch * BATCH_SIZE;
-        let end = (first + BATCH_SIZE).min(FULL_COUNT);
+        let end = (first + BATCH_SIZE).min(population);
         let points: Vec<_> = (first..end)
             .map(|row| point_from_row(row, (row + 1) as u64, &vectors))
             .collect();
@@ -485,6 +492,8 @@ async fn sisap23_300k_static_lmi_vs_temporal_dli() {
     );
 
     let empty_deleted = HashSet::new();
+    let scorer_snapshot = segment::index::hnsw_index::point_scorer::scoring_work_snapshot;
+    let static_score_start = scorer_snapshot();
     let static_before = run_queries(
         &static_collection,
         &queries,
@@ -493,6 +502,8 @@ async fn sisap23_300k_static_lmi_vs_temporal_dli() {
         &empty_deleted,
     )
     .await;
+    let static_scored = std::array::from_fn::<_, 3, _>(|i| scorer_snapshot()[i] - static_score_start[i]);
+    let dli_score_start = scorer_snapshot();
     let dli_before = run_queries(
         &dli_collection,
         &queries,
@@ -501,6 +512,7 @@ async fn sisap23_300k_static_lmi_vs_temporal_dli() {
         &empty_deleted,
     )
     .await;
+    let dli_scored = std::array::from_fn::<_, 3, _>(|i| scorer_snapshot()[i] - dli_score_start[i]);
     let static_after_query_stats = active_static_lmi_stats(&static_collection).await;
     let dli_before_counts = dli_replica
         .local_dli_search_metrics_for_test()
@@ -576,12 +588,13 @@ async fn sisap23_300k_static_lmi_vs_temporal_dli() {
     let result = serde_json::json!({
         "source_head": std::env::var("DLI_BENCH_HEAD").unwrap_or_else(|_| "unset".into()),
         "optimized_build": !cfg!(debug_assertions),
-        "vectors": FULL_COUNT,
+        "vectors": population,
         "dimensions": DIMENSIONS,
         "batch_size": BATCH_SIZE,
         "queries_before": QUERY_COUNT,
         "queries_after_mixed_updates": DYNAMIC_QUERY_COUNT,
         "static_lmi": {
+            "batch_scorer_work_calls_attempted_successful": static_scored,
             "active_lmi_segments": static_lmi_segments,
             "indexed_points": static_indexed_points,
             "learned_queries": static_after_query_stats.2,
@@ -602,6 +615,7 @@ async fn sisap23_300k_static_lmi_vs_temporal_dli() {
             "auxiliary_index_bytes": static_auxiliary,
         },
         "temporal_dli": {
+            "batch_scorer_work_calls_attempted_successful": dli_scored,
             "publications": dli_events.iter().map(|event| serde_json::json!({
                 "target_level": event.target_level,
                 "source_uuids": event.source_uuids,

@@ -4,10 +4,20 @@
 //! has capacity `buffer_capacity * arity^i` (Sommerová, §3.1–3.3).
 //! This module does not read vectors, mutate native segments, train or publish.
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MaintenancePolicy {
+    #[default]
+    Geometric,
+    /// Flush independent runs until `arity` runs exist, then merge the buffer
+    /// with the smallest run. Logical slots retain physical capacity checks.
+    SizeTiered,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HierarchyConfig {
     pub buffer_capacity: usize,
     pub arity: usize,
+    pub policy: MaintenancePolicy,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,6 +92,44 @@ impl HierarchyConfig {
         if buffer_points < self.buffer_capacity {
             return Ok(None);
         }
+        if self.policy == MaintenancePolicy::SizeTiered {
+            let occupied: Vec<_> = levels.iter().enumerate().filter(|(_, n)| **n > 0).collect();
+            let selected = if occupied.len() >= self.arity {
+                occupied
+                    .into_iter()
+                    .min_by_key(|(i, n)| (**n, *i))
+                    .map(|(i, n)| (i + 1, *n))
+            } else {
+                None
+            };
+            let output = buffer_points
+                .checked_add(selected.map_or(0, |(_, n)| n))
+                .ok_or(ScheduleError::OccupancyOverflow)?;
+            let mut target = 1usize;
+            loop {
+                let capacity = self.level_capacity(target)?;
+                let existing = levels.get(target - 1).copied().unwrap_or(0);
+                if (existing == 0 || selected.is_some_and(|(level, _)| level == target))
+                    && output <= capacity
+                {
+                    return Ok(Some(CompactionPlan {
+                        target_level: target,
+                        source_levels: selected
+                            .into_iter()
+                            .map(|(level, _)| level)
+                            .filter(|level| *level != target)
+                            .collect(),
+                        buffer_points,
+                        target_existing_points: existing,
+                        output_points: output,
+                        target_capacity: capacity,
+                    }));
+                }
+                target = target
+                    .checked_add(1)
+                    .ok_or(ScheduleError::CapacityOverflow)?;
+            }
+        }
         let mut incoming = buffer_points;
         let mut target = 1usize;
         loop {
@@ -116,6 +164,7 @@ mod tests {
 
     fn config() -> HierarchyConfig {
         HierarchyConfig {
+            policy: Default::default(),
             buffer_capacity: 2,
             arity: 2,
         }
@@ -129,6 +178,38 @@ mod tests {
             levels[level - 1] = 0;
         }
         levels[p.target_level - 1] = p.output_points;
+    }
+
+    #[test]
+    fn size_tiered_preserves_population_and_selects_smallest_run() {
+        let c = HierarchyConfig {
+            buffer_capacity: 2,
+            arity: 2,
+            policy: MaintenancePolicy::SizeTiered,
+        };
+        let mut levels = Vec::new();
+        for batch in 1..=12 {
+            let p = c.plan(2, &levels).unwrap().unwrap();
+            let sources: Vec<_> = p
+                .source_levels
+                .iter()
+                .copied()
+                .chain((p.target_existing_points > 0).then_some(p.target_level))
+                .collect();
+            assert!(sources.len() <= 1);
+            if levels.iter().filter(|n| **n > 0).count() >= 2 {
+                assert_eq!(sources.len(), 1);
+                assert_eq!(
+                    levels[sources[0] - 1],
+                    *levels.iter().filter(|n| **n > 0).min().unwrap()
+                );
+            }
+            apply(&mut levels, &p);
+            assert_eq!(levels.iter().sum::<usize>(), batch * 2);
+            for (i, n) in levels.iter().enumerate() {
+                assert!(*n <= c.level_capacity(i + 1).unwrap());
+            }
+        }
     }
 
     #[test]
@@ -181,6 +262,7 @@ mod tests {
     fn invalid_configuration_occupancy_and_overflow_are_rejected() {
         assert_eq!(
             HierarchyConfig {
+                policy: Default::default(),
                 buffer_capacity: 0,
                 arity: 2
             }
@@ -189,6 +271,7 @@ mod tests {
         );
         assert_eq!(
             HierarchyConfig {
+                policy: Default::default(),
                 buffer_capacity: 2,
                 arity: 1
             }
@@ -201,6 +284,7 @@ mod tests {
         ));
         assert_eq!(
             HierarchyConfig {
+                policy: Default::default(),
                 buffer_capacity: usize::MAX,
                 arity: 2
             }
