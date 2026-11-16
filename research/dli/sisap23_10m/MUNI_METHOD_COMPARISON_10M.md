@@ -1,0 +1,15 @@
+# Verified MUNI methodology comparison — scaling preparation
+
+This is a partial source-based comparison, not a numerical reproduction. Local complete extracted thesis text and hashes are documented in LITERATURE_AND_REFERENCE.md. Figure images have not been re-inspected in this continuation.
+
+| Primary reference | Verified mechanism / evidence | Consequence for comparison |
+|---|---|---|
+| [Sommerová thesis](https://is.muni.cz/th/swimz/), §§3.1–3.5, printed pp33–40; extracted PDF pp45–52 | Separate insertion buffer, independently rebuilt geometric levels and whole-bucket global allocation. Paper uses one-based a^i priority. | Closest temporal algorithm. Qdrant adds authoritative storage, visibility checks, proxy propagation and WAL/recovery constraints. |
+| [Plhák Rust source](https://github.com/simonplhak/DynamicLearnedIndex/tree/4e756476ae9352fcef7896cf5ef551282751c32b), index.rs / level_index.rs | Pinned source compacts owned level data, predicts bucket postings and scans whole selected buckets. Cached source has root LGPL versus crate MIT discrepancy. | No source copied. Zero-based routing exponent differs from thesis buffer-relative weighting; cannot assume identical budgets. |
+| Plhák thesis §5.2.2, printed pp51–52 (PDF63–64); §5.1.4 printed46–47 | Dynamic study uses20 batches, budget50K,k30; §5.1.4's Rust/Python dynamic comparison is100M, not10M. Reported mean QPS265.77 Rust vs57.48 Python belongs to that100M experiment. | Must not relabel these numbers as10M evidence or compare them directly with our budget2000. |
+| Plhák thesis Appendix A.2, printed71 (PDF82–83) | Large experiments use dual EPYC7532,128 logical CPUs,~2TB RAM, NVMe. §5.3.1 printed59 reports cold-storage sensitivity. | Local23GiB/16-core results use a substantially different memory/storage regime. An inferred integration overhead ratio would be invalid. |
+| [Slanináková et al., v2](https://arxiv.org/html/2507.05865v2), §§3.1–3.3 | Node deepening/broadening rather than independently rebuilt temporal levels; amortized model combines build and query costs. | Transfer cost-accounting methodology, not algorithm equivalence. No numerical standalone reproduction yet. |
+
+The Python [Coda repository](https://github.com/Coda-Research-Group/dynamic-learned-index) could not be fetched through the available web tool in this continuation (cache miss); its exact revision, temporal-vs-node algorithm, settings and license remain unverified. Do not attribute a specific algorithm based on its name. Plhák's thesis describes Python temporal comparisons but that alone does not identify this repository's revision.
+
+Remaining verification: complete model/training settings for each published experiment, exact query-year manifests, query splits and gold, figure/table extraction, standalone build feasibility and reproducibility assets. The local Rust reference cache is selected files only, not a runnable checkout. No original MUNI executable was built/run here. SISAP2024 queries must remain separate from the verified2023 track.

@@ -15,6 +15,36 @@ use crate::segment_constructor::{VectorIndexBuildArgs, VectorIndexOpenArgs};
 use crate::types::{Distance, VectorDataConfig, VectorStorageDatatype};
 use crate::vector_storage::VectorStorageRead;
 
+/// Shared opt-in build events; append failures never change index semantics.
+pub(super) fn record_profile(mut value: serde_json::Value) {
+    use std::io::Write;
+    let Some(path) = std::env::var_os("QDRANT_LMI_BUILD_EVENTS") else {
+        return;
+    };
+    static WRITER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let Ok(_writer) = WRITER.lock() else { return };
+    value["thread"] = serde_json::json!(format!("{:?}", std::thread::current().id()));
+    value["unix_micros"] = serde_json::json!(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros()
+    );
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        let mut line = serde_json::to_vec(&value)?;
+        line.push(b'\n');
+        std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(path)?
+            .write_all(&line)?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        log::warn!("LMI profile write failed: {error}");
+    }
+}
+
 fn eligible_offsets<'a>(
     tracker: &'a impl IdTrackerRead,
     storage: &'a impl VectorStorageRead,
@@ -187,6 +217,7 @@ impl LmiIndex {
             check_process_stopped(args.stopped)?;
             data.extend_from_slice(&read_dense(&*storage, id, dim)?);
         }
+        let sample_read_seconds = sample_started.elapsed().as_secs_f64();
         let training_started = Instant::now();
         let trained = super::training::train_with_tch(
             &data,
@@ -199,6 +230,7 @@ impl LmiIndex {
             "LMI teacher_and_mlp seconds={:.6}",
             training_started.elapsed().as_secs_f64()
         );
+        let teacher_mlp_seconds = training_started.elapsed().as_secs_f64();
         let router = &trained.native;
         drop(data);
         let mut native = super::routing::BuildRouter::new(router, args.stopped)?;
@@ -259,6 +291,7 @@ impl LmiIndex {
             "LMI corpus routing: eligible={eligible_count} physical={physical_count} tie_fallbacks={tie_fallbacks} total_seconds={:.6} count_route_alloc_fill_seconds={times:?}",
             routing_started.elapsed().as_secs_f64()
         );
+        let routing_postings_seconds = routing_started.elapsed().as_secs_f64();
         let coverage_started = Instant::now();
         validate_coverage(
             &postings,
@@ -270,6 +303,7 @@ impl LmiIndex {
             "LMI exact_coverage seconds={:.6}",
             coverage_started.elapsed().as_secs_f64()
         );
+        let coverage_seconds = coverage_started.elapsed().as_secs_f64();
         let routing = LmiRoutingState::from_compact(trained.native, postings, config.nprobe)?;
         let mut metadata =
             state::LmiStateMetadata::new(config, vector_config, datatype, physical_count);
@@ -290,6 +324,13 @@ impl LmiIndex {
         log::info!(
             "LMI persistence seconds={:.6}",
             persistence_started.elapsed().as_secs_f64()
+        );
+        record_profile(
+            serde_json::json!({"stage":"build_completed", "path":open.path,
+            "physical_count":physical_count,"eligible_count":eligible_count,"sample_count":sample.len(),
+            "sample_read_seconds":sample_read_seconds,"teacher_mlp_seconds":teacher_mlp_seconds,
+            "routing_postings_seconds":routing_postings_seconds,"posting_pass_seconds":times,
+            "coverage_seconds":coverage_seconds,"serialization_seconds":persistence_started.elapsed().as_secs_f64()}),
         );
         progress.store(physical_count as u64, Ordering::Relaxed);
         Self::open_trained(

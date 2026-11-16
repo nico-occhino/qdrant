@@ -512,3 +512,6 @@ mod dli_recovery_control;
 
 #[cfg(all(feature = "testing", feature = "dli-research"))]
 mod dli_sisap300k_benchmark;
+
+#[cfg(feature = "dli-research")]
+mod dli_sisap_scaling_benchmark;

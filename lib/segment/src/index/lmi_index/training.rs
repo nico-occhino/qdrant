@@ -362,6 +362,11 @@ pub(super) fn train_with_tch(
         config.n_buckets,
         config.epochs,
     );
+    super::build::record_profile(
+        serde_json::json!({"stage":"teacher_and_mlp", "sample":labels.len(),
+        "dimensions":dim,"buckets":config.n_buckets,"epochs":config.epochs,
+        "cluster_seconds":cluster_seconds,"mlp_export_seconds":mlp_seconds}),
+    );
     #[cfg(test)]
     {
         *STAGE_SECONDS.lock().unwrap() = [cluster_seconds, mlp_seconds];
@@ -398,6 +403,7 @@ fn train_labeled_with_tch(
     static INIT: Once = Once::new();
     INIT.call_once(|| tch::set_num_interop_threads(1));
     tch::set_num_threads(1);
+    let initialization_started = std::time::Instant::now();
     let store = nn::VarStore::new(Device::Cpu);
     let options = nn::LinearConfig {
         ws_init: nn::Init::Const(0.0),
@@ -449,6 +455,8 @@ fn train_labeled_with_tch(
     let mut optimizer = nn::Adam::default()
         .build(&store, 1e-3)
         .map_err(torch_error)?;
+    let initialization_seconds = initialization_started.elapsed().as_secs_f64();
+    let epochs_started = std::time::Instant::now();
     let mut order: Vec<i64> = (0..labels.len() as i64).collect();
     for epoch in 0..config.epochs {
         let epoch_started = observer.as_ref().map(|_| std::time::Instant::now());
@@ -486,6 +494,8 @@ fn train_labeled_with_tch(
         }
         log::debug!("LMI training epoch {}/{}", epoch + 1, config.epochs);
     }
+    let epochs_seconds = epochs_started.elapsed().as_secs_f64();
+    let export_started = std::time::Instant::now();
     let export = |layer: &nn::Linear, input, output| -> OperationResult<RouterLayer> {
         Ok(RouterLayer::Linear(LinearLayer {
             in_features: input,
@@ -521,6 +531,11 @@ fn train_labeled_with_tch(
         }
     }
     check_process_stopped(stopped)?;
+    super::build::record_profile(
+        serde_json::json!({"stage":"mlp", "initialization_seconds":initialization_seconds,
+        "epochs_seconds":epochs_seconds,"export_validation_seconds":export_started.elapsed().as_secs_f64(),
+        "training_steps": config.epochs * labels.len().div_ceil(config.batch_size)}),
+    );
     Ok(TrainedRouter {
         native: router,
         first,
