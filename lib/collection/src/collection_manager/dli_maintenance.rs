@@ -332,6 +332,7 @@ pub struct DliMaintenance {
     pub path: PathBuf,
     running: AtomicBool,
     stopped: AtomicBool,
+    worker: Mutex<Option<tokio::task::JoinHandle<()>>>,
     last: Mutex<Vec<(Uuid, u64, usize)>>,
     /// Experimental native publication is explicitly enabled by a test only.
     pub native_enabled: AtomicBool,
@@ -413,6 +414,7 @@ impl DliMaintenance {
             path,
             running: AtomicBool::new(false),
             stopped: AtomicBool::new(false),
+            worker: Mutex::new(None),
             last: Mutex::new(Vec::new()),
             native_enabled: AtomicBool::new(false),
             published: AtomicUsize::new(0),
@@ -433,6 +435,13 @@ impl DliMaintenance {
     /// Cancel native optimization and wait for its rollback/terminal state.
     pub async fn cancel_and_wait(&self) {
         self.request_cancel();
+        let worker = self.worker.lock().take();
+        if let Some(worker) = worker {
+            if worker.await.is_err() {
+                self.running.store(false, Ordering::Release);
+                self.completed.notify_waiters();
+            }
+        }
         while self.running.load(Ordering::Acquire) {
             let notified = self.completed.notified();
             if !self.running.load(Ordering::Acquire) {
@@ -523,7 +532,11 @@ impl DliMaintenance {
         self.scheduled.fetch_add(1, Ordering::Relaxed);
         let state = self.clone();
         let job_holder = holder.clone();
-        tokio::task::spawn_blocking(move || {
+        let (worker_start, worker_ready) = std::sync::mpsc::channel();
+        let worker = tokio::task::spawn_blocking(move || {
+            if worker_ready.recv().is_err() {
+                return;
+            }
             let _scope = common::ambient::unmeasured_guard(common::reason::reason(
                 "DLI private maintenance",
             ));
@@ -706,5 +719,7 @@ impl DliMaintenance {
             });
             state.completed.notify_one();
         });
+        *self.worker.lock() = Some(worker);
+        let _ = worker_start.send(());
     }
 }
