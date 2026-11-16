@@ -301,6 +301,11 @@ pub struct PrivateBuild {
     pub sources: Vec<Uuid>,
     pub output: Result<Segment, String>,
 }
+#[cfg(test)]
+pub struct DliBeforeNativeHook {
+    pub entered: std::sync::mpsc::Sender<()>,
+    pub resume: Mutex<std::sync::mpsc::Receiver<()>>,
+}
 pub struct DliMaintenance {
     pub hierarchy: HierarchyConfig,
     pub members: RwLock<HashMap<Uuid, usize>>,
@@ -309,6 +314,7 @@ pub struct DliMaintenance {
     pub model: LmiConfig,
     pub path: PathBuf,
     running: AtomicBool,
+    stopped: AtomicBool,
     last: Mutex<Vec<(Uuid, u64, usize)>>,
     /// Experimental native publication is explicitly enabled by a test only.
     pub native_enabled: AtomicBool,
@@ -318,6 +324,8 @@ pub struct DliMaintenance {
     pub scheduled: AtomicUsize,
     pub builds: Mutex<Vec<PrivateBuild>>,
     pub completed: tokio::sync::Notify,
+    #[cfg(test)]
+    pub before_native: Mutex<Option<Arc<DliBeforeNativeHook>>>,
 }
 impl std::fmt::Debug for DliMaintenance {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -385,6 +393,7 @@ impl DliMaintenance {
             model,
             path,
             running: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
             last: Mutex::new(Vec::new()),
             native_enabled: AtomicBool::new(false),
             published: AtomicUsize::new(0),
@@ -393,14 +402,37 @@ impl DliMaintenance {
             scheduled: AtomicUsize::new(0),
             builds: Mutex::new(Vec::new()),
             completed: Default::default(),
+            #[cfg(test)]
+            before_native: Mutex::new(None),
         })
     }
     pub fn attach_search(&self, search: Arc<super::segments_searcher::DliResearchConfig>) {
         *self.search.lock() = Some(search);
     }
+    /// Cancel native optimization and wait for its rollback/terminal state.
+    pub async fn cancel_and_wait(&self) {
+        self.request_cancel();
+        while self.running.load(Ordering::Acquire) {
+            let notified = self.completed.notified();
+            if !self.running.load(Ordering::Acquire) {
+                break;
+            }
+            notified.await;
+        }
+    }
+    pub fn request_cancel(&self) {
+        self.stopped.store(true, Ordering::Release);
+    }
+    pub fn resume_after_cancel(&self) {
+        assert!(!self.running.load(Ordering::Acquire));
+        self.stopped.store(false, Ordering::Release);
+    }
     /// Called after native update locks have been released. One private job per
     /// observed source version set; no authoritative point state is stored here.
     pub fn observe(self: &Arc<Self>, holder: &LockedSegmentHolder) {
+        if self.stopped.load(Ordering::Acquire) {
+            return;
+        }
         if self
             .running
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
@@ -509,10 +541,18 @@ impl DliMaintenance {
                         )),
                     };
                     let output = Uuid::new_v4();
+                    #[cfg(test)]
+                    if let Some(hook) = state.before_native.lock().as_ref() {
+                        hook.entered.send(()).map_err(|e| e.to_string())?;
+                        hook.resume
+                            .lock()
+                            .recv_timeout(std::time::Duration::from_secs(10))
+                            .map_err(|e| e.to_string())?;
+                    }
                     let budget = common::budget::ResourceBudget::new(1, 1);
                     let result = shard::optimize::execute_optimization("dli_research", job_holder.clone(), ids, output,
                         None, &shard::optimize::OptimizationPaths { segments_path, temp_path: staging.path().to_owned() },
-                        budget.try_acquire(0,1).ok_or("resource unavailable")?, budget, &AtomicBool::new(false),
+                        budget.try_acquire(0,1).ok_or("resource unavailable")?, budget, &state.stopped,
                         common::progress_tracker::ProgressTracker::new_for_test(),
                         &segment::common::operation_time_statistics::OperationDurationsAggregator::new(), &adapter, Box::new(|| {}));
                     result.map_err(|e| e.to_string())?;
@@ -619,7 +659,7 @@ impl DliMaintenance {
                 }
                 let refs: Vec<_> = guards.iter().map(|g| &**g).collect();
                 builder
-                    .update(&refs, &AtomicBool::new(false))
+                    .update(&refs, &state.stopped)
                     .map_err(|e| e.to_string())?;
                 drop(refs);
                 drop(guards);

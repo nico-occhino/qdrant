@@ -1311,6 +1311,104 @@ async fn dli_recovery_control_body() {
         let learned_before = active_config.learned_queries.load(Ordering::Relaxed);
         assert_eq!(fixture_search().await.len(), 14);
         assert!(active_config.learned_queries.load(Ordering::Relaxed) > learned_before);
+        // Cancel a third job after an ordinary insert batch has scheduled it,
+        // but before the native optimizer protects its sources. The buffer
+        // remains authoritative, and a later ordinary insert may retry.
+        use crate::collection_manager::dli_maintenance::DliBeforeNativeHook;
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        *maintenance.before_native.lock() = Some(Arc::new(DliBeforeNativeHook {
+            entered: entered_tx,
+            resume: parking_lot::Mutex::new(resume_rx),
+        }));
+        put(&c, vec![point(306, 1), point(307, 2), point(308, 3)]).await;
+        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        maintenance.request_cancel();
+        resume_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(30), maintenance.cancel_and_wait())
+            .await
+            .unwrap();
+        assert_eq!(maintenance.published.load(Ordering::Relaxed), 2);
+        let cancellation_errors = maintenance.optimizer_errors.lock().clone();
+        assert!(
+            cancellation_errors
+                .iter()
+                .any(|error| error.to_ascii_lowercase().contains("cancel")),
+            "{cancellation_errors:?}"
+        );
+        assert_eq!(fixture_search().await.len(), 17);
+        *maintenance.before_native.lock() = None;
+        maintenance.optimizer_errors.lock().clear();
+        maintenance.resume_after_cancel();
+        put(&c, vec![point(309, 0)]).await;
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let notified = maintenance.completed.notified();
+                if maintenance.published.load(Ordering::Acquire) >= 3
+                    || !maintenance.optimizer_errors.lock().is_empty()
+                {
+                    break;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .unwrap();
+        let retry_errors = maintenance.optimizer_errors.lock().clone();
+        assert!(retry_errors.is_empty(), "{retry_errors:?}");
+        assert_eq!(maintenance.published.load(Ordering::Relaxed), 3);
+        let learned_before_retry = active_config.learned_queries.load(Ordering::Relaxed);
+        let retried = fixture_search().await;
+        assert_eq!(retried.len(), 18);
+        assert_eq!(
+            retried
+                .iter()
+                .map(|hit| hit.id)
+                .collect::<HashSet<_>>()
+                .len(),
+            18
+        );
+        for hit in &retried {
+            let segment::types::PointIdType::NumId(id) = hit.id else {
+                panic!("numeric fixture")
+            };
+            assert_eq!(
+                hit.score,
+                if id == 201 || id == 309 { 1.0 } else { 0.0 },
+                "id={id}"
+            );
+        }
+        assert!(
+            active_config.learned_queries.load(Ordering::Relaxed) > learned_before_retry,
+            "{:?}",
+            active_config.fallback_reasons.lock()
+        );
+        // Reopen the active physical generations into an independent holder.
+        // This checks derived metadata against loaded segments, without
+        // claiming a full Collection::load or WAL recovery.
+        let reloaded_holder = shard::segment_holder::locked::LockedSegmentHolder::new(
+            shard::segment_holder::SegmentHolder::default(),
+        );
+        for (_, locked) in h.read().iter_original() {
+            let segment = locked.read();
+            segment.flush(true).unwrap();
+            let reopened = segment::segment_constructor::load_segment(
+                &segment.segment_path,
+                segment.uuid,
+                None,
+                &AtomicBool::new(false),
+                true,
+            )
+            .unwrap();
+            reloaded_holder.write().add_new(reopened);
+        }
+        assert_eq!(
+            maintenance
+                .load_validated_descriptor(&reloaded_holder)
+                .unwrap()
+                .generation,
+            3
+        );
         assert!(local.configure_local_dli_for_test(None).await);
         assert!(local.configure_local_dli_maintenance_for_test(None).await);
         drop(buffer_handle);

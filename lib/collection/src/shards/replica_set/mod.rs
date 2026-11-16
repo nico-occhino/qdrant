@@ -428,13 +428,16 @@ impl ShardReplicaSet {
         state: Option<Arc<crate::collection_manager::dli_maintenance::DliMaintenance>>,
     ) -> bool {
         use crate::shards::shard::Shard;
-        match &*self.local.read().await {
+        let previous = match &*self.local.read().await {
             Some(Shard::Local(local)) => {
-                *local.update_tracker.dli_maintenance.write() = state;
-                true
+                std::mem::replace(&mut *local.update_tracker.dli_maintenance.write(), state)
             }
-            _ => false,
+            _ => return false,
+        };
+        if let Some(previous) = previous {
+            previous.cancel_and_wait().await;
         }
+        true
     }
 
     /// Config cached by each optimizer on the local shard.
