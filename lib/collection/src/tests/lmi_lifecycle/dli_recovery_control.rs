@@ -961,7 +961,7 @@ async fn dli_recovery_control_body() {
                     query: QueryEnum::Nearest(NamedQuery::default_dense(axis_query.clone())),
                     filter: None,
                     params: None,
-                    limit: 20,
+                    limit: 40,
                     offset: 0,
                     with_payload: None,
                     with_vector: None,
@@ -1019,12 +1019,13 @@ async fn dli_recovery_control_body() {
         assert!(local.configure_local_dli_for_test(None).await);
         use crate::collection_manager::dli_maintenance::DliMaintenance;
         let private_root = tempfile::tempdir().unwrap();
+        let initial_roles = HashMap::from([(uuids.0, 1), (uuids.1, 3), (uuids.2, 0)]);
         let maintenance = DliMaintenance::new(
             crate::collection_manager::dli_schedule::HierarchyConfig {
                 buffer_capacity: 3,
                 arity: 2,
             },
-            HashMap::from([(uuids.0, 1), (uuids.1, 3), (uuids.2, 0)]),
+            initial_roles.clone(),
             LmiConfig {
                 n_buckets: 2,
                 sample_size: 16,
@@ -1182,6 +1183,67 @@ async fn dli_recovery_control_body() {
         assert!(!after_native.contains(&uuids.2));
         assert!(after_native.contains(&uuids.1));
         assert!(after_native.contains(&destination));
+        // Submit the old scheduler generation to the real optimizer after its
+        // selected physical sources were already replaced. The topology hook
+        // must reject before temporary COW creation or proxy installation.
+        let (stale_ids, source_config, segments_path) = {
+            let guard = h.read();
+            let ids = guard.iter().map(|(id, _)| id).collect::<Vec<_>>();
+            let source = guard.iter_original().next().unwrap().1.read();
+            (
+                ids,
+                source.config().clone(),
+                source.data_path().parent().unwrap().to_owned(),
+            )
+        };
+        let stale_staging = tempfile::tempdir_in(private_root.path()).unwrap();
+        let stale_plan = crate::collection_manager::dli_schedule::HierarchyConfig {
+            buffer_capacity: 3,
+            arity: 2,
+        }
+        .plan(3, &[4, 0, 4])
+        .unwrap()
+        .unwrap();
+        let stale_strategy = crate::collection_manager::dli_maintenance::DliOptimizationStrategy {
+            staging: stale_staging.path().to_owned(),
+            segments_path: segments_path.clone(),
+            segment_config: source_config,
+            model: maintenance.model,
+            expected_sources: HashSet::from([uuids.0, uuids.2]),
+            expected_topology: Some((maintenance.hierarchy, initial_roles, stale_plan)),
+            validation_hook: None,
+        };
+        let budget = common::budget::ResourceBudget::new(1, 1);
+        let stale_result = shard::optimize::execute_optimization(
+            "dli_stale_generation",
+            h.clone(),
+            stale_ids,
+            uuid::Uuid::new_v4(),
+            None,
+            &shard::optimize::OptimizationPaths {
+                segments_path,
+                temp_path: stale_staging.path().to_owned(),
+            },
+            budget.try_acquire(0, 1).unwrap(),
+            budget,
+            &AtomicBool::new(false),
+            common::progress_tracker::ProgressTracker::new_for_test(),
+            &segment::common::operation_time_statistics::OperationDurationsAggregator::new(),
+            &stale_strategy,
+            Box::new(|| {}),
+        );
+        assert!(stale_result.is_err());
+        let after_stale = h
+            .read()
+            .iter_original()
+            .map(|(_, segment)| segment.read().uuid)
+            .collect::<HashSet<_>>();
+        assert_eq!(after_stale, after_native);
+        assert_eq!(h.read().iter().count(), after_native.len());
+        println!(
+            "DLI_STALE_SCHEDULED_GENERATION_REJECTED active={:?}",
+            after_native
+        );
         {
             let guard = h.read();
             let (_, output) = guard
@@ -1409,6 +1471,71 @@ async fn dli_recovery_control_body() {
                 .generation,
             3
         );
+        // Hold the real optimizer after it validated the scheduler plan but
+        // before it creates proxies. A native upsert must finish in this gap;
+        // after resuming, proxy/COW propagation and the final holder must keep
+        // the newer vector visible.
+        let (validated_tx, validated_rx) = std::sync::mpsc::channel();
+        let (continue_tx, continue_rx) = std::sync::mpsc::channel();
+        *maintenance.after_validation.lock() = Some(Arc::new(DliBeforeNativeHook {
+            entered: validated_tx,
+            resume: parking_lot::Mutex::new(continue_rx),
+        }));
+        put(&c, vec![point(310, 0), point(311, 2), point(312, 3)]).await;
+        validated_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let before_write = fixture_search().await;
+        assert_eq!(
+            before_write
+                .iter()
+                .find(|hit| hit.id == 310_u64.into())
+                .unwrap()
+                .score,
+            1.0
+        );
+        tokio::time::timeout(Duration::from_secs(10), put(&c, vec![point(310, 2)]))
+            .await
+            .expect("update after plan validation must complete before proxy installation");
+        let after_write = fixture_search().await;
+        assert_eq!(
+            after_write
+                .iter()
+                .find(|hit| hit.id == 310_u64.into())
+                .unwrap()
+                .score,
+            0.0
+        );
+        continue_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let notified = maintenance.completed.notified();
+                if maintenance.published.load(Ordering::Acquire) >= 4
+                    || !maintenance.optimizer_errors.lock().is_empty()
+                {
+                    break;
+                }
+                notified.await;
+            }
+        })
+        .await
+        .unwrap();
+        let interval_errors = maintenance.optimizer_errors.lock().clone();
+        assert!(interval_errors.is_empty(), "{interval_errors:?}");
+        *maintenance.after_validation.lock() = None;
+        let interval_results = fixture_search().await;
+        assert_eq!(interval_results.len(), 21);
+        assert_eq!(
+            interval_results
+                .iter()
+                .map(|hit| hit.id)
+                .collect::<HashSet<_>>()
+                .len(),
+            21
+        );
+        let updated = interval_results
+            .iter()
+            .find(|hit| hit.id == 310_u64.into())
+            .unwrap();
+        assert_eq!(updated.score, 0.0);
         assert!(local.configure_local_dli_for_test(None).await);
         assert!(local.configure_local_dli_maintenance_for_test(None).await);
         drop(buffer_handle);

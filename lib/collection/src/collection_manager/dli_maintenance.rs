@@ -99,9 +99,26 @@ pub struct DliOptimizationStrategy {
     /// Physical generations expected by the already selected job.
     pub expected_sources: std::collections::HashSet<Uuid>,
     pub expected_topology: Option<(HierarchyConfig, HashMap<Uuid, usize>, CompactionPlan)>,
+    #[cfg(test)]
+    pub validation_hook: Option<Arc<DliBeforeNativeHook>>,
 }
 
 impl shard::optimize::OptimizationStrategy for DliOptimizationStrategy {
+    fn after_source_validation(&self) -> segment::common::operation_error::OperationResult<()> {
+        #[cfg(test)]
+        if let Some(hook) = &self.validation_hook {
+            hook.entered.send(()).map_err(|e| {
+                segment::common::operation_error::OperationError::service_error(e.to_string())
+            })?;
+            hook.resume
+                .lock()
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .map_err(|e| {
+                    segment::common::operation_error::OperationError::service_error(e.to_string())
+                })?;
+        }
+        Ok(())
+    }
     fn validate_topology(
         &self,
         holder: &shard::segment_holder::SegmentHolder,
@@ -326,6 +343,8 @@ pub struct DliMaintenance {
     pub completed: tokio::sync::Notify,
     #[cfg(test)]
     pub before_native: Mutex<Option<Arc<DliBeforeNativeHook>>>,
+    #[cfg(test)]
+    pub after_validation: Mutex<Option<Arc<DliBeforeNativeHook>>>,
 }
 impl std::fmt::Debug for DliMaintenance {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -404,6 +423,8 @@ impl DliMaintenance {
             completed: Default::default(),
             #[cfg(test)]
             before_native: Mutex::new(None),
+            #[cfg(test)]
+            after_validation: Mutex::new(None),
         })
     }
     pub fn attach_search(&self, search: Arc<super::segments_searcher::DliResearchConfig>) {
@@ -539,6 +560,8 @@ impl DliMaintenance {
                             roles_snapshot.clone(),
                             plan.clone(),
                         )),
+                        #[cfg(test)]
+                        validation_hook: state.after_validation.lock().clone(),
                     };
                     let output = Uuid::new_v4();
                     #[cfg(test)]
@@ -642,6 +665,8 @@ impl DliMaintenance {
                         roles_snapshot.clone(),
                         plan.clone(),
                     )),
+                    #[cfg(test)]
+                    validation_hook: None,
                 };
                 let mut builder = shard::optimize::OptimizationStrategy::create_segment_builder(
                     &adapter, &sources,

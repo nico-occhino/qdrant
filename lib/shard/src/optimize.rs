@@ -73,6 +73,12 @@ pub trait OptimizationStrategy: Send {
     fn validate_sources(&self, _input_segments: &[LockedSegment]) -> OperationResult<()> {
         Ok(())
     }
+    /// Optional policy hook after expectations are validated and before the
+    /// optimizer starts protecting sources. Implementations must not acquire
+    /// the holder lock or retain this boundary for production work.
+    fn after_source_validation(&self) -> OperationResult<()> {
+        Ok(())
+    }
     /// Create a segment builder for the given input segments.
     fn create_segment_builder(
         &self,
@@ -702,6 +708,7 @@ pub fn execute_optimization<F: ?Sized + OptimizationStrategy>(
 
     factory.validate_topology(&segment_holder_read)?;
     factory.validate_sources(&input_segments)?;
+    factory.after_source_validation()?;
 
     check_segments_size(optimizer_name, &input_segments, &paths.temp_path)?;
 

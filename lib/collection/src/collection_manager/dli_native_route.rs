@@ -323,6 +323,8 @@ mod tests {
             model: LmiConfig::default(),
             expected_sources: HashSet::from([Uuid::new_v4()]),
             expected_topology: None,
+            #[cfg(test)]
+            validation_hook: None,
         };
         let inputs = vec![shard::locked_segment::LockedSegment::from(source)];
         let (cow, _token) =
@@ -576,6 +578,8 @@ mod tests {
                         .map(|input| input.get().read().segment_uuid())
                         .collect(),
                     expected_topology: None,
+                    #[cfg(test)]
+                    validation_hook: None,
                 };
                 shard::optimize::OptimizationStrategy::create_segment_builder(&adapter, inputs)
             }
