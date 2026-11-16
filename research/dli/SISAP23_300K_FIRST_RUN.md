@@ -40,3 +40,5 @@ There is one run/seed, no p99, no recall-matched operating point, no interleaved
 ## Reproduction and logs
 
 The exact release test command and environment are recorded in `research/dli/TEST_MATRIX.md`; the run log is `logs/run-no-generic-dli-optimizer.log`, raw summary `raw_results/summary.json`, publication events `maintenance_events/publications.json`, and generated comparison `results.csv`. Two earlier runs failed after 150K; `logs/run.log`, `logs/run-diagnostics.log`, and `logs/run-corrected.log` preserve the attempts. Diagnosis: generic Qdrant optimizer workers contended for DLI-owned member topology and produced `new DLI member is not appendable`. The DLI benchmark now sets generic optimization threads to zero while static retains normal optimizer threads. No host security settings or remote HPC resources were changed.
+
+Follow-up: the original observations above are preserved. The revised deletion resolver and separate rerun are documented in [DLI_POST_UPDATE_STUDY.md](DLI_POST_UPDATE_STUDY.md); post-update learned routing increased to 100/100 queries with zero fallbacks.
