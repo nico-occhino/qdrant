@@ -347,6 +347,19 @@ pub struct DliMaintenance {
     #[cfg(test)]
     pub after_validation: Mutex<Option<Arc<DliBeforeNativeHook>>>,
 }
+
+/// Releases a maintenance claim on every worker exit, including unwinding from
+/// native optimizer or model-training code. Otherwise a panicked blocking task
+/// can leave `running` set forever and suppress every later threshold crossing.
+struct MaintenanceRunGuard(Arc<DliMaintenance>);
+
+impl Drop for MaintenanceRunGuard {
+    fn drop(&mut self) {
+        self.0.running.store(false, Ordering::Release);
+        self.0.completed.notify_waiters();
+    }
+}
+
 impl std::fmt::Debug for DliMaintenance {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DliMaintenance")
@@ -534,6 +547,7 @@ impl DliMaintenance {
         let job_holder = holder.clone();
         let (worker_start, worker_ready) = std::sync::mpsc::channel();
         let worker = tokio::task::spawn_blocking(move || {
+            let _run_guard = MaintenanceRunGuard(state.clone());
             if worker_ready.recv().is_err() {
                 return;
             }
@@ -652,8 +666,6 @@ impl DliMaintenance {
                     state.optimizer_errors.lock().push(error);
                     state.last.lock().clear();
                 }
-                state.running.store(false, Ordering::Release);
-                state.completed.notify_one();
                 return;
             }
             let mut physical = vec![];
@@ -711,15 +723,42 @@ impl DliMaintenance {
             if result.is_err() {
                 state.last.lock().clear();
             }
-            state.running.store(false, Ordering::Release);
             state.builds.lock().push(PrivateBuild {
                 plan,
                 sources: physical,
                 output: result,
             });
-            state.completed.notify_one();
         });
         *self.worker.lock() = Some(worker);
         let _ = worker_start.send(());
+    }
+}
+
+#[cfg(test)]
+mod worker_lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn worker_claim_is_released_when_native_job_panics() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = DliMaintenance::new(
+            HierarchyConfig {
+                buffer_capacity: 1,
+                arity: 2,
+            },
+            HashMap::new(),
+            LmiConfig::default(),
+            directory.path().to_owned(),
+        );
+        state.running.store(true, Ordering::Release);
+
+        let worker_state = state.clone();
+        let worker = std::thread::spawn(move || {
+            let _claim = MaintenanceRunGuard(worker_state);
+            panic!("injected native DLI worker panic");
+        });
+
+        assert!(worker.join().is_err());
+        assert!(!state.running.load(Ordering::Acquire));
     }
 }
