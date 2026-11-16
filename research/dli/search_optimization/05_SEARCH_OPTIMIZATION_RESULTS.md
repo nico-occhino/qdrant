@@ -15,3 +15,14 @@ Bounded native execution now PASS:12 learned searches,0 fallback, identical58,61
 Native reserved/top-k bounded run PASS1/1 (161.71s including reopening): official query rows0–11, two identical rounds,24 learned/0 fallback,362,047 successful vector evaluations per round (30,171/query), Recall10=.633333/Recall30=.572222 in both. First/repeated p50=7331.69/213.38ms in debug. This validates execution of the reserved policy on the retained four-model topology; it is not the100-query offline estimate or release-mode latency. Raw continuation26/frozen-reserved-debug/{rounds.json}, frozen-reserved-debug.log, reserved-native-deltas.json.
 
 CPU/fault control now supplies direct outlier evidence: on query rows20–22, initial native access18.924s wall/2.44s CPU and75,702 major faults, repeated full access.306s wall/.30s CPU andzero major faults. All runs score61,565 vectors, regardless of whether90 or61,565 offsets are materialized. This strongly distinguishes physical-access behavior from multi-router inference. It does not establish release-mode steady-state latency or a universal Cold/Cached ratio. Optional detailed traces and raw deltas are described in04.
+
+## Same-row native routing control
+
+Both variants use top-k materialization, identical retained physical generations and official rows0–11. Each executes two12-query rounds,24 learned/zero fallback. Only the routing policy changes; the original nominal minimum2000 remains equal, actual work differs.
+
+|Policy|Recall10|Recall30|Vectors scored/query|Repeated-pass p50 ms (debug)|
+|---|---:|---:|---:|---:|
+|Slot|.383333|.352778|19,010.9|115.43|
+|Reserved|.633333|.572222|30,170.6|213.38|
+
+Reserved improves recall while scoring58.7% more vectors. This is **not** a matched-work speed or Pareto win in native execution. The same-row quality comparison is directly executed; the offline roughly-matched-work coverage comparison remains a separate result. Across-process ordering/cache effects and the small debug sample preclude a causal latency ratio. Both also show much slower first passes. Slot run PASS1/1,134.30s including reopen. Raw `continuation-26/frozen-slot12-debug/rounds.json`, `frozen-slot12-debug.log`, `native-routing-comparison.json`.
