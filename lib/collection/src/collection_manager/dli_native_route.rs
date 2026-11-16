@@ -23,6 +23,16 @@ use super::dli_bucket_plan::{
     BucketPrediction, RoutingPolicy, SelectedBuckets, select, select_reserved,
 };
 
+/// Linux task-local counters. CPU is in clock ticks (getconf CLK_TCK), not ns.
+/// Faults are task faults, not bytes read or a cache-residency measurement.
+fn task_access_counters() -> Option<(u64, u64, u64)> {
+    let stat = std::fs::read_to_string("/proc/thread-self/stat").ok()?;
+    let (_, fields) = stat.rsplit_once(')')?;
+    let fields: Vec<_> = fields.split_whitespace().collect();
+    let value = |i: usize| fields.get(i)?.parse::<u64>().ok();
+    Some((value(7)?, value(9)?, value(11)?.checked_add(value(12)?)?))
+}
+
 /// Output is partitioned by physical segment. It must not be returned to clients
 /// until complete native point-version/visibility resolution has been applied.
 pub struct NativeRouteResult {
@@ -252,6 +262,7 @@ pub fn route_pinned_with_policy(
     let mut buffer_point_estimate = 0usize;
     let mut per_segment = Vec::new();
     let query_vector: QueryVector = query.to_vec().into();
+    let access_trace = std::env::var_os("DLI_NATIVE_ACCESS_EVENTS");
     let mut grouped: HashMap<Uuid, Vec<usize>> = HashMap::new();
     for bucket in &plan.buckets {
         grouped
@@ -265,6 +276,8 @@ pub fn route_pinned_with_policy(
         };
         let data = &segment.vector_data[DEFAULT_VECTOR_NAME];
         let index = data.vector_index.borrow();
+        let access_before = access_trace.as_ref().and_then(|_| task_access_counters());
+        let access_started = Instant::now();
         let offsets = if level == 0 {
             // Every selected vector is scored, but only potential global winners need materialization.
             let count = segment.id_tracker.borrow().available_point_count();
@@ -309,6 +322,31 @@ pub fn route_pinned_with_policy(
             native_scorer_time += score_started.elapsed();
             offsets
         };
+        if let Some(path) = &access_trace {
+            let wall_nanos = access_started.elapsed().as_nanos();
+            let delta = access_before
+                .zip(task_access_counters())
+                .and_then(|(a, b)| {
+                    Some((
+                        b.0.checked_sub(a.0)?,
+                        b.1.checked_sub(a.1)?,
+                        b.2.checked_sub(a.2)?,
+                    ))
+                });
+            let event = serde_json::json!({"physical":segment.uuid,"level":level,
+                "storage":segment.config().vector_data[DEFAULT_VECTOR_NAME].storage_type,
+                "phase":"candidate_prepare_and_score", "wall_nanos":wall_nanos,
+                "minor_faults":delta.map(|d|d.0),"major_faults":delta.map(|d|d.1),
+                "thread_cpu_ticks":delta.map(|d|d.2),"returned_offsets":offsets.len()});
+            use std::io::Write;
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = writeln!(file, "{event}");
+            }
+        }
         let materialization_started = Instant::now();
         let hits = segment.with_view(|view| {
             view.process_search_result(

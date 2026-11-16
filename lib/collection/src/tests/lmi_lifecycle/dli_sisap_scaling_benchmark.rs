@@ -576,6 +576,17 @@ async fn dli_frozen_scaling_reopen_profile() {
         .map(|s| s.parse::<usize>().unwrap())
         .unwrap_or(QUERY_COUNT);
     assert!((1..=QUERY_COUNT).contains(&query_count));
+    let query_start = std::env::var("DLI_PROFILE_QUERY_START")
+        .ok()
+        .map(|s| s.parse::<usize>().unwrap())
+        .unwrap_or(0);
+    assert!(
+        query_start
+            .checked_add(query_count)
+            .is_some_and(|n| n <= 10000)
+    );
+    let queries = &queries[query_start * DIMENSIONS * 4..];
+    let gold = &gold[query_start * 1000 * 4..];
     let mut rounds = Vec::new();
     let compare_topk = std::env::var("DLI_PROFILE_COMPARE_TOPK").as_deref() == Ok("1");
     for round in 0..if compare_topk { 4 } else { 2 } {
@@ -588,7 +599,7 @@ async fn dli_frozen_scaling_reopen_profile() {
         let result = run_queries(&collection, &queries, &gold, query_count, &HashSet::new()).await;
         let counts_after = segment::index::hnsw_index::point_scorer::scoring_work_snapshot();
         let after = local.local_dli_named_profile_for_test().await.unwrap();
-        rounds.push(serde_json::json!({"round":round,"materialize_topk":topk,"reserved":reserved,"population":population,"query_count":query_count,
+        rounds.push(serde_json::json!({"round":round,"materialize_topk":topk,"reserved":reserved,"population":population,"query_count":query_count,"query_start":query_start,
             "recall10":result.0,"recall30":result.1,"p50_ms":result.2,"p95_ms":result.3,"mean_ms":result.4,
             "scored_vectors":counts_after[2]-counts_before[2],"before":before,"after":after}));
         std::fs::write(

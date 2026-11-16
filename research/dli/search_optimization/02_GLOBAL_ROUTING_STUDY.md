@@ -34,3 +34,5 @@ Reproduction (read-only, no Qdrant process or training):
 ```
 
 Experimental internal collection settings: `routing_policy: "ReservedPerLevel"`, `materialize_topk: true`; omit both for the preserved baseline. Neither changes compaction ownership or learned metadata generations. The collection remains restricted to its established supported single-shard dense Float16 cosine mode.
+
+Native reserved/top-k bounded run PASS1/1 (161.71s including reopening): official query rows0–11, two identical rounds,24 learned/0 fallback,362,047 successful vector evaluations per round (30,171/query), Recall10=.633333/Recall30=.572222 in both. First/repeated p50=7331.69/213.38ms in debug. This validates execution of the reserved policy on the retained four-model topology; it is not the100-query offline estimate or release-mode latency. Raw continuation26/frozen-reserved-debug/{rounds.json}, frozen-reserved-debug.log, reserved-native-deltas.json.
