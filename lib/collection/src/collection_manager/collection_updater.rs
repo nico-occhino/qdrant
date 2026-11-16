@@ -104,7 +104,7 @@ impl CollectionUpdater {
 
         let operation_result = operation_result.map_err(CollectionError::from);
         CollectionUpdater::handle_update_result(segments, op_num, &operation_result);
-        #[cfg(all(feature = "dli-research", feature = "testing"))]
+        #[cfg(feature = "dli-research")]
         if operation_result.is_ok() {
             let maintenance = update_tracker.dli_maintenance.read().clone();
             if let Some(maintenance) = maintenance {

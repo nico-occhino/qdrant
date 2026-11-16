@@ -80,3 +80,13 @@ Continuation 20 additional focused controls in `stale-and-race.log`: the real op
 Continuation 20 final verification: `complete-dli-final.log` PASS 15/15; `shard-optimizer-regression.log` PASS 5/5 for native optimizer propagation, cancellation cleanup and post-swap recovery tests. The new deterministic selected-source validation/proxy-gap and stale UUID/role tests pass in the DLI collection fixture.
 The worker lifecycle control now registers its task handle before execution, propagates a stop flag, and allows cancellation/detach to await completion. `worker-barrier-final.log` confirms DLI suite PASS 15/15 after this change. Graceful native LocalShard shutdown integration is not demonstrated.
 Continuation 21: production-feature `cargo check --locked --offline -p collection --features 'lmi-training,dli-research'` PASS. Injected worker-panic claim-release test PASS 1/1 (`continuation-21/panic-guard-test.log`); complete DLI-filtered collection suite PASS 16/16 (`continuation-21/dli-suite.log`). This verifies maintenance claim cleanup on panic, not production startup activation or graceful LocalShard lifecycle integration.
+
+Continuation 22:
+
+- Production feature check `cargo check --locked --offline -p collection --features 'dli-research'`: PASS; this feature now implies `lmi-training`.
+- Configured LocalShard ordinary update lifecycle: PASS. Four automatic native publications build target levels 1, 1, 2, 1; descriptor contains levels 0, 1, 2; normal collection queries use DLI learned dispatch and match all 12 current IDs/scores.
+- Full collection graceful close/reopen: PASS. Descriptor validation against recovered native UUID membership succeeds and a normal query executes learned routing with all 12 expected IDs/scores.
+- Corrupt descriptor recovery: PASS. Malformed JSON disables learned membership; query automatically executes exact native fallback and matches the 12-point oracle. A later normal upsert triggers full native reconstruction, writes a new descriptor, reactivates learned routing and returns all 13 IDs/scores.
+- Publication event instrumentation records selected source UUIDs, target level, destination UUID, planned and active output point counts, and optimizer wall time. Tiny-fixture times are not performance claims.
+- Complete DLI-filtered suite `cargo test --locked --offline -p collection --lib --features 'testing,dli-research' dli_ -- --nocapture`: PASS 16, FAIL 0, 1 ignored 300K harness (`continuation-22/dli-suite-final.log`).
+- Optimized benchmark binary is being built. The canonical 300K input files were hash-verified; no 300K performance result is claimed until the ignored benchmark run completes.

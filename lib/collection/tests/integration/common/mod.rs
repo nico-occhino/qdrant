@@ -80,6 +80,8 @@ pub async fn collection_fixture(
         uuid: None,
         metadata: None,
         created_at: None,
+        #[cfg(feature = "dli-research")]
+        dli_experimental: None,
     };
 
     let snapshot_path = collection_path.join("snapshots");

@@ -388,6 +388,36 @@ pub struct CollectionConfigInternal {
     /// Absent for collections created before this field was introduced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<DateTime<Utc>>,
+    /// Local-only temporal learned-index experiment. This is intentionally
+    /// feature-gated and is not part of the stable REST/gRPC collection API.
+    #[cfg(feature = "dli-research")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dli_experimental: Option<DliExperimentalConfig>,
+}
+
+/// Restricted per-collection temporal DLI parameters for research builds.
+#[cfg(feature = "dli-research")]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DliExperimentalConfig {
+    pub buffer_capacity: usize,
+    pub arity: usize,
+    pub candidate_budget: usize,
+    pub model: segment::index::lmi_index::LmiConfig,
+}
+
+#[cfg(feature = "dli-research")]
+impl DliExperimentalConfig {
+    pub fn validate(&self) -> CollectionResult<()> {
+        if self.buffer_capacity == 0 || self.arity < 2 || self.candidate_budget == 0 {
+            return Err(CollectionError::bad_input(
+                "Invalid DLI configuration: buffer_capacity and candidate_budget must be positive, and arity must be at least 2".to_owned(),
+            ));
+        }
+        self.model
+            .check()
+            .map_err(|err| CollectionError::bad_input(err.to_string()))
+    }
 }
 
 impl CollectionConfigInternal {
@@ -410,12 +440,24 @@ impl CollectionConfigInternal {
             uuid: _,
             metadata: _,
             created_at: _,
+            #[cfg(feature = "dli-research")]
+                dli_experimental: _,
         } = self;
 
         params != &other.params
             || hnsw_config != &other.hnsw_config
             || optimizer_config != &other.optimizer_config
             || quantization_config != &other.quantization_config
+            || {
+                #[cfg(feature = "dli-research")]
+                {
+                    self.dli_experimental != other.dli_experimental
+                }
+                #[cfg(not(feature = "dli-research"))]
+                {
+                    false
+                }
+            }
     }
 
     /// Returns `true` if any named dense vector uses a TurboQuant (`Turbo4`)

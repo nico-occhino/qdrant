@@ -829,6 +829,8 @@ mod test {
             uuid: None,
             metadata: None,
             created_at: None,
+        #[cfg(feature = "dli-research")]
+        dli_experimental: None,
         };
 
         let collection_dir = Builder::new().prefix("test_collection").tempdir().unwrap();

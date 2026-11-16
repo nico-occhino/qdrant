@@ -224,6 +224,8 @@ pub(super) async fn fixture(
         uuid: None,
         metadata: None,
         created_at: None,
+        #[cfg(feature = "dli-research")]
+        dli_experimental: None,
     };
 
     let shards: AHashMap<ShardId, HashSet<PeerId>> = (0..shard_count)

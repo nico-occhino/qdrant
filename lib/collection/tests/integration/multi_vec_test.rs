@@ -68,6 +68,8 @@ pub async fn multi_vec_collection_fixture(collection_path: &Path, shard_number: 
         uuid: None,
         metadata: None,
         created_at: None,
+        #[cfg(feature = "dli-research")]
+        dli_experimental: None,
     };
 
     let snapshot_path = collection_path.join("snapshots");

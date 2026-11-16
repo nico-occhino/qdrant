@@ -318,6 +318,16 @@ pub struct PrivateBuild {
     pub sources: Vec<Uuid>,
     pub output: Result<Segment, String>,
 }
+
+#[derive(Clone, Debug)]
+pub struct DliPublicationEvent {
+    pub target_level: usize,
+    pub source_uuids: Vec<Uuid>,
+    pub destination_uuid: Uuid,
+    pub expected_output_points: usize,
+    pub published_output_points: usize,
+    pub optimizer_micros: u128,
+}
 #[cfg(test)]
 pub struct DliBeforeNativeHook {
     pub entered: std::sync::mpsc::Sender<()>,
@@ -334,10 +344,12 @@ pub struct DliMaintenance {
     stopped: AtomicBool,
     worker: Mutex<Option<tokio::task::JoinHandle<()>>>,
     last: Mutex<Vec<(Uuid, u64, usize)>>,
-    /// Experimental native publication is explicitly enabled by a test only.
+    /// Native publication is enabled only for collections carrying the
+    /// feature-gated experimental DLI configuration.
     pub native_enabled: AtomicBool,
     pub published: AtomicUsize,
     pub published_uuids: Mutex<Vec<Uuid>>,
+    pub publication_events: Mutex<Vec<DliPublicationEvent>>,
     pub optimizer_errors: Mutex<Vec<String>>,
     pub scheduled: AtomicUsize,
     pub builds: Mutex<Vec<PrivateBuild>>,
@@ -379,6 +391,7 @@ impl DliMaintenance {
         if let Some(search) = self.search.lock().as_ref() {
             search.members.write().clear();
         }
+        self.members.write().clear();
         let path = self.path.join(DLI_DESCRIPTOR);
         let descriptor: DliHierarchyDescriptor =
             common::fs::read_json(&path).map_err(|e| e.to_string())?;
@@ -390,6 +403,77 @@ impl DliMaintenance {
             *search.members.write() = roles;
         }
         Ok(descriptor)
+    }
+
+    /// Seed a new experimental hierarchy from a holder consisting only of
+    /// appendable Plain members. This is the initial state before any learned
+    /// generation has been published.
+    pub fn initialize_plain_buffer(&self, holder: &LockedSegmentHolder) -> Result<(), String> {
+        let guard = holder.read();
+        let mut roles = HashMap::new();
+        for (_, member) in guard.iter() {
+            let LockedSegment::Original(segment) = member else {
+                return Err("cannot initialize DLI while native proxies are active".into());
+            };
+            let segment = segment.read();
+            if !segment.is_appendable()
+                || segment.has_deferred_points()
+                || !matches!(
+                    &*segment.vector_data[segment::data_types::vectors::DEFAULT_VECTOR_NAME]
+                        .vector_index
+                        .borrow(),
+                    VectorIndexEnum::Plain(_)
+                )
+            {
+                return Err("initial DLI topology must contain appendable Plain members".into());
+            }
+            roles.insert(segment.uuid, 0);
+        }
+        if roles.is_empty() {
+            return Err("cannot initialize DLI over an empty native holder".into());
+        }
+        let generation = 1;
+        self.save_descriptor(&roles, generation)?;
+        *self.members.write() = roles.clone();
+        self.generation.store(generation, Ordering::Release);
+        if let Some(search) = self.search.lock().as_ref() {
+            *search.members.write() = roles;
+        }
+        Ok(())
+    }
+
+    /// Preserve exact-search availability after a bad/missing derived descriptor
+    /// while making the recovered active topology eligible for a full temporal
+    /// rebuild on the next ordinary update. These role-zero entries are private
+    /// maintenance inputs only: learned search membership stays empty until a
+    /// native optimizer publication and a new validated descriptor exist.
+    pub fn initialize_native_fallback(&self, holder: &LockedSegmentHolder) -> Result<(), String> {
+        if let Some(search) = self.search.lock().as_ref() {
+            search.members.write().clear();
+        }
+        let guard = holder.read();
+        let mut roles = HashMap::new();
+        for (_, member) in guard.iter() {
+            let LockedSegment::Original(segment) = member else {
+                return Err("cannot reconstruct DLI while native proxies are active".into());
+            };
+            let segment = segment.read();
+            if segment.has_deferred_points() {
+                return Err("cannot reconstruct DLI with deferred points".into());
+            }
+            if roles.insert(segment.uuid, 0).is_some() {
+                return Err("duplicate active physical identity during DLI reconstruction".into());
+            }
+        }
+        if roles.is_empty() {
+            return Err("cannot reconstruct DLI over an empty native holder".into());
+        }
+        *self.members.write() = roles;
+        // A corrupt descriptor is never blessed as the starting generation.
+        // The successful full rebuild will publish generation one.
+        self.generation.store(0, Ordering::Release);
+        self.last.lock().clear();
+        Ok(())
     }
 
     fn save_descriptor(
@@ -432,6 +516,7 @@ impl DliMaintenance {
             native_enabled: AtomicBool::new(false),
             published: AtomicUsize::new(0),
             published_uuids: Mutex::new(Vec::new()),
+            publication_events: Mutex::new(Vec::new()),
             optimizer_errors: Mutex::new(Vec::new()),
             scheduled: AtomicUsize::new(0),
             builds: Mutex::new(Vec::new()),
@@ -600,10 +685,11 @@ impl DliMaintenance {
                             .map_err(|e| e.to_string())?;
                     }
                     let budget = common::budget::ResourceBudget::new(1, 1);
+                    let optimizer_started = std::time::Instant::now();
                     let result = shard::optimize::execute_optimization("dli_research", job_holder.clone(), ids, output,
                         None, &shard::optimize::OptimizationPaths { segments_path, temp_path: staging.path().to_owned() },
                         budget.try_acquire(0,1).ok_or("resource unavailable")?, budget, &state.stopped,
-                        common::progress_tracker::ProgressTracker::new_for_test(),
+                        common::progress_tracker::new_progress_tracker().1,
                         &segment::common::operation_time_statistics::OperationDurationsAggregator::new(), &adapter, Box::new(|| {}));
                     result.map_err(|e| e.to_string())?;
                     if !job_holder
@@ -616,7 +702,7 @@ impl DliMaintenance {
                     // Native publication precedes derived hierarchy activation.
                     // While this map is stale, the searcher's complete-membership
                     // check forces exact fallback on its captured handles.
-                    let new_roles = {
+                    let (new_roles, published_output_points) = {
                         let guard = job_holder.read();
                         let mut next = roles_snapshot.clone();
                         for source in &adapter.expected_sources {
@@ -642,7 +728,15 @@ impl DliMaintenance {
                         {
                             return Err("published DLI membership is incomplete".into());
                         }
-                        next
+                        let output_points = guard
+                            .iter_original()
+                            .find_map(|(_, segment)| {
+                                let segment = segment.read();
+                                (segment.uuid == output)
+                                    .then(|| segment.available_point_count_without_deferred())
+                            })
+                            .ok_or("published DLI output is absent")?;
+                        (next, output_points)
                     };
                     let generation = state.generation.load(Ordering::Acquire) + 1;
                     // A failed metadata write cannot undo native publication.
@@ -658,6 +752,17 @@ impl DliMaintenance {
                     if let Some(search) = state.search.lock().as_ref() {
                         *search.members.write() = new_roles;
                     }
+                    let mut source_uuids: Vec<_> =
+                        adapter.expected_sources.iter().copied().collect();
+                    source_uuids.sort_unstable();
+                    state.publication_events.lock().push(DliPublicationEvent {
+                        target_level: plan.target_level,
+                        source_uuids,
+                        destination_uuid: output,
+                        expected_output_points: plan.output_points,
+                        published_output_points,
+                        optimizer_micros: optimizer_started.elapsed().as_micros(),
+                    });
                     state.published_uuids.lock().push(output);
                     state.published.fetch_add(1, Ordering::Relaxed);
                     Ok(())
@@ -715,10 +820,23 @@ impl DliMaintenance {
                 drop(guards);
                 // Training occurs after releasing source read guards. Research
                 // private output is outside the shard; it is never searchable.
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    builder.build_for_test(&state.path)
-                }))
-                .map_err(|_| "private native builder panicked".to_owned())
+                let thread_count = segment::index::hnsw_index::get_num_indexing_threads(0);
+                let budget = common::budget::ResourceBudget::new(thread_count, thread_count);
+                let permit = budget
+                    .try_acquire(thread_count, thread_count)
+                    .ok_or("private builder resource permit unavailable")?;
+                builder
+                    .build(
+                        &state.path,
+                        Uuid::new_v4(),
+                        None,
+                        true,
+                        permit,
+                        &state.stopped,
+                        &mut rand::rng(),
+                        common::progress_tracker::new_progress_tracker().1,
+                    )
+                    .map_err(|e| e.to_string())
             })();
             if result.is_err() {
                 state.last.lock().clear();

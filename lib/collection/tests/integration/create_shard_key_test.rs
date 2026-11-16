@@ -60,6 +60,8 @@ fn custom_sharding_config() -> CollectionConfigInternal {
         uuid: None,
         metadata: None,
         created_at: None,
+        #[cfg(feature = "dli-research")]
+        dli_experimental: None,
     }
 }
 

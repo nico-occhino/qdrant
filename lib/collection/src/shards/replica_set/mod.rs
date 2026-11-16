@@ -440,6 +440,107 @@ impl ShardReplicaSet {
         true
     }
 
+    #[cfg(all(test, feature = "dli-research"))]
+    pub async fn local_dli_runtime_ready_for_test(&self) -> bool {
+        use crate::shards::shard::Shard;
+        match &*self.local.read().await {
+            Some(Shard::Local(local)) => {
+                local
+                    .dli_research
+                    .read()
+                    .as_ref()
+                    .is_some_and(|search| !search.members.read().is_empty())
+                    && local.update_tracker.dli_maintenance.read().is_some()
+            }
+            _ => false,
+        }
+    }
+
+    #[cfg(all(test, feature = "dli-research"))]
+    pub async fn local_dli_counts_for_test(&self) -> Option<(usize, u64, u64)> {
+        use crate::shards::shard::Shard;
+        let local = self.local.read().await;
+        let Some(Shard::Local(local)) = local.as_ref() else {
+            return None;
+        };
+        let maintenance = local.update_tracker.dli_maintenance.read().clone()?;
+        let search = local.dli_research.read().clone()?;
+        Some((
+            maintenance
+                .published
+                .load(std::sync::atomic::Ordering::Acquire),
+            search
+                .learned_queries
+                .load(std::sync::atomic::Ordering::Relaxed),
+            search
+                .exact_fallbacks
+                .load(std::sync::atomic::Ordering::Relaxed),
+        ))
+    }
+
+    #[cfg(all(test, feature = "dli-research"))]
+    pub async fn local_dli_publication_events_for_test(
+        &self,
+    ) -> Option<Vec<crate::collection_manager::dli_maintenance::DliPublicationEvent>> {
+        use crate::shards::shard::Shard;
+        let local = self.local.read().await;
+        let Some(Shard::Local(local)) = local.as_ref() else {
+            return None;
+        };
+        let maintenance = local.update_tracker.dli_maintenance.read().clone()?;
+        Some(maintenance.publication_events.lock().clone())
+    }
+
+    #[cfg(all(test, feature = "dli-research"))]
+    pub async fn local_dli_search_metrics_for_test(
+        &self,
+    ) -> Option<(u64, u64, u64, u64, u64, u64)> {
+        use crate::shards::shard::Shard;
+        let local = self.local.read().await;
+        let Some(Shard::Local(local)) = local.as_ref() else {
+            return None;
+        };
+        let search = local.dli_research.read().clone()?;
+        Some((
+            search
+                .learned_queries
+                .load(std::sync::atomic::Ordering::Relaxed),
+            search
+                .exact_fallbacks
+                .load(std::sync::atomic::Ordering::Relaxed),
+            search
+                .selected_postings
+                .load(std::sync::atomic::Ordering::Relaxed),
+            search
+                .unique_posting_offsets
+                .load(std::sync::atomic::Ordering::Relaxed),
+            search
+                .scoring_nanos
+                .load(std::sync::atomic::Ordering::Relaxed),
+            search
+                .resolution_nanos
+                .load(std::sync::atomic::Ordering::Relaxed),
+        ))
+    }
+
+    #[cfg(all(test, feature = "dli-research"))]
+    pub async fn local_dli_search_counts_for_test(&self) -> Option<(u64, u64)> {
+        use crate::shards::shard::Shard;
+        let local = self.local.read().await;
+        let Some(Shard::Local(local)) = local.as_ref() else {
+            return None;
+        };
+        let search = local.dli_research.read().clone()?;
+        Some((
+            search
+                .learned_queries
+                .load(std::sync::atomic::Ordering::Relaxed),
+            search
+                .exact_fallbacks
+                .load(std::sync::atomic::Ordering::Relaxed),
+        ))
+    }
+
     /// Config cached by each optimizer on the local shard.
     #[cfg(feature = "testing")]
     pub async fn local_optimizer_configs_for_test(

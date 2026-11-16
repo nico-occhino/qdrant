@@ -338,6 +338,8 @@ async fn new_shard_replica_set(collection_dir: &TempDir, shard_id: ShardId) -> S
         uuid: None,
         metadata: None,
         created_at: None,
+        #[cfg(feature = "dli-research")]
+        dli_experimental: None,
     };
 
     let payload_index_schema_file = collection_dir.path().join("payload-schema.json");

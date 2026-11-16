@@ -184,12 +184,24 @@ impl Collection {
                 uuid: _,
                 metadata,
                 created_at: _,
+                #[cfg(feature = "dli-research")]
+                dli_experimental,
             } = &new_config;
 
             let is_core_config_updated = params != &config.params
                 || hnsw_config != &config.hnsw_config
                 || optimizer_config != &config.optimizer_config
-                || quantization_config != &config.quantization_config;
+                || quantization_config != &config.quantization_config
+                || {
+                    #[cfg(feature = "dli-research")]
+                    {
+                        dli_experimental != &config.dli_experimental
+                    }
+                    #[cfg(not(feature = "dli-research"))]
+                    {
+                        false
+                    }
+                };
 
             let is_metadata_updated = metadata != &config.metadata;
 

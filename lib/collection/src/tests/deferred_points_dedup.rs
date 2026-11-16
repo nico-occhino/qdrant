@@ -90,6 +90,8 @@ async fn build_shard() -> (LocalShard, TempDir) {
         uuid: None,
         metadata: None,
         created_at: None,
+        #[cfg(feature = "dli-research")]
+        dli_experimental: None,
     };
 
     let payload_index_schema_file = collection_dir.path().join("payload.json");

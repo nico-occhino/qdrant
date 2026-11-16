@@ -1025,6 +1025,8 @@ mod tests {
             uuid: None,
             metadata: None,
             created_at: None,
+            #[cfg(feature = "dli-research")]
+            dli_experimental: None,
         };
 
         let payload_index_schema_dir = Builder::new().prefix("qdrant-test").tempdir().unwrap();

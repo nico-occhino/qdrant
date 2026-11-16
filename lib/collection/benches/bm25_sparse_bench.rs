@@ -227,6 +227,8 @@ fn shard_with(
         uuid: None,
         metadata: None,
         created_at: None,
+        #[cfg(feature = "dli-research")]
+        dli_experimental: None,
     };
 
     let payload_index_schema = Arc::new(

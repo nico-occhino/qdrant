@@ -70,6 +70,8 @@ fn setup() -> (TempDir, LocalShard, Runtime) {
         uuid: None,
         metadata: None,
         created_at: None,
+        #[cfg(feature = "dli-research")]
+        dli_experimental: None,
     };
 
     let optimizers_config = collection_config.optimizer_config.clone();

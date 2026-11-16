@@ -54,6 +54,8 @@ pub fn create_collection_config_with_dim(dim: usize) -> CollectionConfigInternal
         uuid: None,
         metadata: None,
         created_at: None,
+        #[cfg(feature = "dli-research")]
+        dli_experimental: None,
     }
 }
 

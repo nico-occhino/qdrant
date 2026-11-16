@@ -193,6 +193,8 @@ fn shard_with(
         uuid: None,
         metadata: None,
         created_at: None,
+        #[cfg(feature = "dli-research")]
+        dli_experimental: None,
     };
 
     // The schema is what the optimizer builds the index from in the segments

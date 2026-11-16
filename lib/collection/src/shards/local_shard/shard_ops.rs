@@ -552,6 +552,16 @@ impl ShardOperation for LocalShard {
 
     /// Finishes ongoing update tasks
     async fn stop_gracefully(mut self) {
+        #[cfg(feature = "dli-research")]
+        let dli_maintenance = { self.update_tracker.dli_maintenance.read().clone() };
+        #[cfg(feature = "dli-research")]
+        if let Some(maintenance) = dli_maintenance {
+            // DLI compactions execute the native optimizer from a tracked
+            // blocking task. Cancel and join it before stopping the native
+            // update workers that own WAL/proxy propagation.
+            maintenance.cancel_and_wait().await;
+        }
+
         {
             // Send stop signals to workers
             let mut update_handler = self.update_handler.lock().await;

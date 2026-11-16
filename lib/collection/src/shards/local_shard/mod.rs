@@ -588,6 +588,9 @@ impl LocalShard {
         // Apply outstanding operations from WAL
         local_shard.load_from_wal(collection_id).await?;
 
+        #[cfg(feature = "dli-research")]
+        local_shard.activate_configured_dli().await?;
+
         log_load_timing(shard_path, "total", total_started);
 
         Ok(local_shard)
@@ -755,7 +758,35 @@ impl LocalShard {
 
         local_shard.insert_fake_operation().await?;
 
+        #[cfg(feature = "dli-research")]
+        local_shard.activate_configured_dli().await?;
+
         Ok(local_shard)
+    }
+
+    #[cfg(feature = "dli-research")]
+    async fn activate_configured_dli(&self) -> CollectionResult<()> {
+        let collection = self.collection_config.read().await;
+        let Some(dli_config) = collection.dli_experimental.clone() else {
+            return Ok(());
+        };
+        let needs_wal_barrier = collection
+            .optimizer_config
+            .prevent_unoptimized
+            .unwrap_or_default();
+        drop(collection);
+
+        // With `prevent_unoptimized`, load_from_wal can enqueue an unapplied
+        // tail. The update worker's plunger is ordered after that tail, so wait
+        // for it before validating derived membership. Deferred visibility may
+        // still require native optimization; validation then stays fail-closed.
+        if needs_wal_barrier {
+            self.plunge_async().await?.await.map_err(|error| {
+                CollectionError::service_error(format!("DLI recovery WAL barrier failed: {error}"))
+            })?;
+        }
+        self.configure_dli_experimental(dli_config).await?;
+        Ok(())
     }
 
     /// This operation inserts an empty operation into WAL.

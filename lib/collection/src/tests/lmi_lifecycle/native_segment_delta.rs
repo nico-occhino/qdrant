@@ -345,6 +345,8 @@ async fn native_lmi_mixed_segments_mutation_restart_and_optimizer_body() {
         uuid: None,
         metadata: None,
         created_at: None,
+        #[cfg(feature = "dli-research")]
+        dli_experimental: None,
     };
     let c = Collection::new(
         "native_segment_delta".into(),

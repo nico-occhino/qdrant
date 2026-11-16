@@ -200,6 +200,8 @@ impl From<CollectionConfigInternal> for CollectionConfig {
             // Reported on `CollectionInfo`
             created_at: _,
             metadata,
+            #[cfg(feature = "dli-research")]
+                dli_experimental: _,
         } = config;
 
         CollectionConfig {

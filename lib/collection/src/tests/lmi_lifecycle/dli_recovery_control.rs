@@ -24,6 +24,26 @@ async fn shard(c: &Collection) -> Arc<crate::shards::replica_set::ShardReplicaSe
     c.shards_holder().read().await.get_shard(0).unwrap().clone()
 }
 
+async fn wait_dli_publications(
+    replica: &crate::shards::replica_set::ShardReplicaSet,
+    target: usize,
+) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if replica
+                .local_dli_counts_for_test()
+                .await
+                .is_some_and(|(published, _, _)| published >= target)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("automatic DLI publication did not complete");
+}
+
 async fn mutate(c: &Collection, op: PointOperations) {
     let result = shard(c)
         .await
@@ -153,6 +173,29 @@ async fn query(c: &Collection, axes: &[usize], limit: usize) -> Vec<(u64, f32)> 
     let h = holder(c).await;
     let before = counters(&h);
     assert!(!before.is_empty(), "fixture must retain learned index");
+    let found = raw_query(c, axes, limit).await;
+    let after = counters(&h);
+    for (uuid, counts) in &before {
+        let now = after.get(uuid).expect("query changed topology");
+        assert!(
+            now.0 > counts.0,
+            "normal collection search did not execute learned routing"
+        );
+        assert_eq!(now.1, counts.1, "eligible query fell back to Plain");
+        assert!(
+            now.2 > counts.2,
+            "learned route selected no posting candidates"
+        );
+        println!(
+            "NATIVE_LMI_ROUTE segment={uuid} learned_delta={} fallback_delta=0 selected_offsets_delta={}",
+            now.0 - counts.0,
+            now.2 - counts.2
+        );
+    }
+    found
+}
+
+async fn raw_query(c: &Collection, axes: &[usize], limit: usize) -> Vec<(u64, f32)> {
     let mut q = vec![0.0; DIM];
     for &a in axes {
         q[a] = 1.0;
@@ -176,24 +219,6 @@ async fn query(c: &Collection, axes: &[usize], limit: usize) -> Vec<(u64, f32)> 
         )
         .await
         .unwrap();
-    let after = counters(&h);
-    for (uuid, counts) in &before {
-        let now = after.get(uuid).expect("query changed topology");
-        assert!(
-            now.0 > counts.0,
-            "normal collection search did not execute learned routing"
-        );
-        assert_eq!(now.1, counts.1, "eligible query fell back to Plain");
-        assert!(
-            now.2 > counts.2,
-            "learned route selected no posting candidates"
-        );
-        println!(
-            "NATIVE_LMI_ROUTE segment={uuid} learned_delta={} fallback_delta=0 selected_offsets_delta={}",
-            now.0 - counts.0,
-            now.2 - counts.2
-        );
-    }
     let hits: Vec<_> = found
         .into_iter()
         .map(|p| {
@@ -290,6 +315,30 @@ async fn open(path: &Path, snapshots: &Path, optimize: bool) -> Collection {
     c
 }
 
+async fn open_configured_dli(path: &Path, snapshots: &Path) -> Collection {
+    let collection = Collection::load(
+        "configured_dli_collection".into(),
+        1,
+        path,
+        snapshots,
+        Arc::new(SharedStorageConfig::default()),
+        ChannelService::default(),
+        dummy_on_replica_failure(),
+        dummy_request_shard_transfer(),
+        dummy_abort_shard_transfer(),
+        None,
+        None,
+        ResourceBudget::default(),
+        None,
+    )
+    .await;
+    collection
+        .set_shard_replica_state(0, 1, ReplicaState::Active, None)
+        .await
+        .unwrap();
+    collection
+}
+
 async fn wait_indexed(c: &Collection, expected: usize) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
     loop {
@@ -371,6 +420,8 @@ async fn dli_recovery_control_body() {
         uuid: None,
         metadata: None,
         created_at: None,
+        #[cfg(feature = "dli-research")]
+        dli_experimental: None,
     };
     let c = Collection::new(
         "native_segment_delta".into(),
@@ -1560,6 +1611,268 @@ async fn dli_recovery_control_body() {
         "NATIVE_LMI_STAGE optimizer passed points={}",
         expected.len()
     );
+
+    // A separate opt-in collection proves startup activation from persisted
+    // experimental collection config; no research helper installs the search
+    // dispatcher or maintenance observer.
+    let dli_path = root.path().join("configured_dli_collection");
+    let dli_snapshots = root.path().join("configured_dli_snapshots");
+    std::fs::create_dir(&dli_path).unwrap();
+    std::fs::create_dir(&dli_snapshots).unwrap();
+    let mut dli_cfg = cfg.clone();
+    if let crate::operations::types::VectorsConfig::Single(params) = &mut dli_cfg.params.vectors {
+        params.lmi_config = None;
+    }
+    dli_cfg.optimizer_config.indexing_threshold = None;
+    dli_cfg.dli_experimental = Some(crate::config::DliExperimentalConfig {
+        buffer_capacity: 3,
+        arity: 2,
+        candidate_budget: 64,
+        model: LmiConfig {
+            n_buckets: 2,
+            sample_size: 16,
+            hidden_dim: 8,
+            epochs: 1,
+            batch_size: 8,
+            routing_batch_size: 8,
+            kmeans_iterations: 2,
+            nprobe: 2,
+            seed: 73,
+        },
+    });
+    let configured_dli = Collection::new(
+        "configured_dli_collection".into(),
+        1,
+        &dli_path,
+        &dli_snapshots,
+        &dli_cfg,
+        Arc::new(SharedStorageConfig::default()),
+        CollectionShardDistribution {
+            shards: AHashMap::from([(0, HashSet::from([1]))]),
+        },
+        None,
+        ChannelService::default(),
+        dummy_on_replica_failure(),
+        dummy_request_shard_transfer(),
+        dummy_abort_shard_transfer(),
+        None,
+        None,
+        ResourceBudget::default(),
+        None,
+    )
+    .await
+    .unwrap();
+    configured_dli
+        .set_shard_replica_state(0, 1, ReplicaState::Active, None)
+        .await
+        .unwrap();
+    assert!(
+        shard(&configured_dli)
+            .await
+            .local_dli_runtime_ready_for_test()
+            .await,
+        "configured LocalShard must install learned search and maintenance automatically"
+    );
+    assert!(dli_path.join("0").join("dli_hierarchy.json").exists());
+    let dli_replica = shard(&configured_dli).await;
+    let mut dli_expected = BTreeMap::new();
+    for batch in 0..4 {
+        let first_id = 90_000 + batch * 3;
+        let new_points = (0..3)
+            .map(|offset| point(first_id + offset, (batch * 3 + offset) as usize))
+            .collect::<Vec<_>>();
+        for offset in 0..3 {
+            dli_expected.insert(first_id + offset, ((batch * 3 + offset) as usize) % DIM);
+        }
+        put(&configured_dli, new_points).await;
+        wait_dli_publications(&dli_replica, (batch + 1) as usize).await;
+
+        let mut query_vector = vec![0.0; DIM];
+        query_vector[0] = 1.0;
+        let hits = configured_dli
+            .search(
+                CoreSearchRequest {
+                    query: QueryEnum::Nearest(NamedQuery::default_dense(query_vector)),
+                    filter: None,
+                    params: None,
+                    limit: 16,
+                    offset: 0,
+                    with_payload: None,
+                    with_vector: None,
+                    score_threshold: None,
+                },
+                None,
+                None,
+                &ShardSelectorInternal::All,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), dli_expected.len());
+        let ids: HashSet<_> = hits.iter().map(|hit| hit.id).collect();
+        assert_eq!(ids.len(), dli_expected.len());
+        for hit in hits {
+            let segment::types::PointIdType::NumId(id) = hit.id else {
+                panic!("numeric DLI fixture")
+            };
+            assert_eq!(hit.score, if dli_expected[&id] == 0 { 1.0 } else { 0.0 });
+        }
+        let (_, learned, fallbacks) = dli_replica.local_dli_counts_for_test().await.unwrap();
+        assert!(
+            learned > 0,
+            "normal search should use newly trained DLI levels"
+        );
+        println!(
+            "DLI_CONFIGURED_RUNTIME transition={} learned_queries={learned} exact_fallbacks={fallbacks} live={}",
+            batch + 1,
+            dli_expected.len()
+        );
+    }
+    let published_descriptor: serde_json::Value =
+        common::fs::read_json(&dli_path.join("0").join("dli_hierarchy.json")).unwrap();
+    let published_levels: HashSet<usize> = published_descriptor["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|member| member[1].as_u64().unwrap() as usize)
+        .collect();
+    assert!(
+        published_levels.contains(&0),
+        "active Plain buffer must be covered"
+    );
+    assert!(published_levels.contains(&1), "level 1 must be active");
+    assert!(published_levels.contains(&2), "level 2 must be active");
+    println!("DLI_CONFIGURED_ACTIVE_LEVELS {published_levels:?}");
+    let publication_events = dli_replica
+        .local_dli_publication_events_for_test()
+        .await
+        .unwrap();
+    assert_eq!(publication_events.len(), 4);
+    assert_eq!(
+        publication_events
+            .iter()
+            .map(|event| event.published_output_points)
+            .collect::<Vec<_>>(),
+        vec![3, 6, 9, 3]
+    );
+    println!("DLI_CONFIGURED_PUBLICATION_EVENTS {publication_events:?}");
+    shard(&configured_dli)
+        .await
+        .force_flush_local_for_test()
+        .await;
+    configured_dli.stop_gracefully().await;
+    drop(configured_dli);
+
+    // Full collection restart: native segment recovery runs first, then the
+    // configured DLI descriptor is validated against the recovered holder.
+    let reopened_dli = open_configured_dli(&dli_path, &dli_snapshots).await;
+    let reopened_replica = shard(&reopened_dli).await;
+    assert!(reopened_replica.local_dli_runtime_ready_for_test().await);
+    let recovered_hits = raw_query(&reopened_dli, &[0], 16).await;
+    assert_eq!(recovered_hits.len(), dli_expected.len());
+    assert_eq!(
+        recovered_hits
+            .iter()
+            .map(|hit| hit.0)
+            .collect::<HashSet<_>>(),
+        dli_expected.keys().copied().collect()
+    );
+    for (id, score) in &recovered_hits {
+        assert_eq!(*score, if dli_expected[id] == 0 { 1.0 } else { 0.0 });
+    }
+    let (_, recovered_learned, recovered_fallbacks) =
+        reopened_replica.local_dli_counts_for_test().await.unwrap();
+    assert!(
+        recovered_learned > 0,
+        "reopened descriptor must route learned queries"
+    );
+    println!(
+        "DLI_CONFIGURED_CLEAN_REOPEN learned_queries={recovered_learned} exact_fallbacks={recovered_fallbacks} hits={}",
+        recovered_hits.len(),
+    );
+    shard(&reopened_dli)
+        .await
+        .force_flush_local_for_test()
+        .await;
+    reopened_dli.stop_gracefully().await;
+    drop(reopened_dli);
+
+    // Invalid derived state must fail closed while native recovered vectors
+    // remain searchable, and must not prevent a later safe reconstruction.
+    std::fs::write(dli_path.join("0").join("dli_hierarchy.json"), b"{").unwrap();
+    let invalid_dli = open_configured_dli(&dli_path, &dli_snapshots).await;
+    let invalid_replica = shard(&invalid_dli).await;
+    assert!(!invalid_replica.local_dli_runtime_ready_for_test().await);
+    let before_fallback = invalid_replica
+        .local_dli_search_counts_for_test()
+        .await
+        .unwrap();
+    let mut query_vector = vec![0.0; DIM];
+    query_vector[0] = 1.0;
+    let fallback_hits = invalid_dli
+        .search(
+            CoreSearchRequest {
+                query: QueryEnum::Nearest(NamedQuery::default_dense(query_vector)),
+                filter: None,
+                params: None,
+                limit: 16,
+                offset: 0,
+                with_payload: None,
+                with_vector: None,
+                score_threshold: None,
+            },
+            None,
+            None,
+            &ShardSelectorInternal::All,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(fallback_hits.len(), dli_expected.len());
+    let fallback_ids: HashSet<_> = fallback_hits.iter().map(|hit| hit.id).collect();
+    assert_eq!(fallback_ids.len(), dli_expected.len());
+    for hit in fallback_hits {
+        let segment::types::PointIdType::NumId(id) = hit.id else {
+            panic!("numeric DLI fallback fixture")
+        };
+        assert_eq!(hit.score, if dli_expected[&id] == 0 { 1.0 } else { 0.0 });
+    }
+    let after_fallback = invalid_replica
+        .local_dli_search_counts_for_test()
+        .await
+        .unwrap();
+    assert!(after_fallback.1 > before_fallback.1);
+    println!(
+        "DLI_CONFIGURED_CORRUPT_DESCRIPTOR_EXACT_FALLBACK ids={}",
+        dli_expected.len()
+    );
+
+    // A later ordinary update triggers a full native rebuild from the
+    // authoritative recovered holder. Search remains exact until publication;
+    // the successful optimizer transition writes a fresh descriptor and
+    // reactivates learned routing.
+    let rebuild_point = point(91_000, 9);
+    dli_expected.insert(91_000, 9);
+    put(&invalid_dli, vec![rebuild_point]).await;
+    wait_dli_publications(&invalid_replica, 1).await;
+    assert!(invalid_replica.local_dli_runtime_ready_for_test().await);
+    let rebuilt_hits = raw_query(&invalid_dli, &[0], 16).await;
+    assert_eq!(rebuilt_hits.len(), dli_expected.len());
+    assert_eq!(
+        rebuilt_hits.iter().map(|hit| hit.0).collect::<HashSet<_>>(),
+        dli_expected.keys().copied().collect()
+    );
+    for (id, score) in &rebuilt_hits {
+        assert_eq!(*score, if dli_expected[id] == 0 { 1.0 } else { 0.0 });
+    }
+    let (_, rebuilt_learned, rebuilt_fallbacks) =
+        invalid_replica.local_dli_counts_for_test().await.unwrap();
+    assert!(rebuilt_learned > 0);
+    println!(
+        "DLI_CONFIGURED_RECONSTRUCTED learned_queries={rebuilt_learned} exact_fallbacks={rebuilt_fallbacks} hits={}",
+        rebuilt_hits.len()
+    );
+    invalid_dli.stop_gracefully().await;
     c.stop_gracefully().await;
 }
 

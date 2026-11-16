@@ -127,6 +127,8 @@ async fn delete_named_vector_then_reload_loses_points() {
         uuid: None,
         metadata: None,
         created_at: None,
+        #[cfg(feature = "dli-research")]
+        dli_experimental: None,
     };
 
     let shards: AHashMap<ShardId, HashSet<PeerId>> =
@@ -342,6 +344,8 @@ async fn delete_named_vector_after_flush_survives_reload() {
         uuid: None,
         metadata: None,
         created_at: None,
+        #[cfg(feature = "dli-research")]
+        dli_experimental: None,
     };
     let shards: AHashMap<ShardId, HashSet<PeerId>> =
         AHashMap::from_iter([(0, HashSet::from([PEER_ID]))]);
@@ -507,6 +511,8 @@ async fn repeated_create_then_delete_vector_name_with_flush_survives_reload() {
         uuid: None,
         metadata: None,
         created_at: None,
+        #[cfg(feature = "dli-research")]
+        dli_experimental: None,
     };
     let shards: AHashMap<ShardId, HashSet<PeerId>> =
         AHashMap::from_iter([(0, HashSet::from([PEER_ID]))]);

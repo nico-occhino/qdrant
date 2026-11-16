@@ -85,6 +85,8 @@ async fn sparse_idf_collection_fixture(path: &std::path::Path) -> Collection {
         uuid: None,
         metadata: None,
         created_at: None,
+        #[cfg(feature = "dli-research")]
+        dli_experimental: None,
     };
 
     let snapshot_path = path.join("snapshots");

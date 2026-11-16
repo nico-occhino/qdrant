@@ -116,6 +116,8 @@ async fn test_wal_less_snapshot_clocks_not_ahead_of_data() {
         uuid: None,
         metadata: None,
         created_at: None,
+        #[cfg(feature = "dli-research")]
+        dli_experimental: None,
     };
 
     let collection_dir = Builder::new().prefix("test_collection").tempdir().unwrap();

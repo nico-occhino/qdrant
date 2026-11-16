@@ -209,6 +209,8 @@ impl From<CollectionConfigInternal> for CollectionConfigTelemetry {
             uuid,
             metadata,
             created_at: _,
+            #[cfg(feature = "dli-research")]
+                dli_experimental: _,
         } = config;
         CollectionConfigTelemetry {
             params,

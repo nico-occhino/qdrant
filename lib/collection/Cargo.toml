@@ -12,7 +12,7 @@ edition = "2024"
 workspace = true
 
 [features]
-dli-research = []
+dli-research = ["lmi-training"]
 lmi-training = ["segment/lmi-training"]
 testing = ["common/testing", "segment/testing", "shard/testing"]
 tracing = ["dep:tracing", "api/tracing", "segment/tracing"]

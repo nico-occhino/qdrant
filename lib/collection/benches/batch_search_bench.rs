@@ -88,6 +88,8 @@ fn batch_search_bench(c: &mut Criterion) {
         uuid: None,
         metadata: None,
         created_at: None,
+        #[cfg(feature = "dli-research")]
+        dli_experimental: None,
     };
 
     let optimizers_config = collection_config.optimizer_config.clone();

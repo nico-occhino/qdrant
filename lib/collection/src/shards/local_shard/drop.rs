@@ -13,6 +13,14 @@ impl Drop for LocalShard {
             self.shard_path().display()
         );
 
+        #[cfg(feature = "dli-research")]
+        if let Some(maintenance) = self.update_tracker.dli_maintenance.read().as_ref() {
+            // Drop cannot await the optimizer task, but it can ensure the
+            // native optimizer observes cancellation before asynchronous
+            // worker cleanup proceeds.
+            maintenance.request_cancel();
+        }
+
         // Uncomment to investigate shard drop without graceful shutdown
         // #[cfg(feature = "staging")]
         // {

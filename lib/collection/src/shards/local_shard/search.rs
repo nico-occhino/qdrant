@@ -26,6 +26,106 @@ use crate::operations::types::{CollectionError, CollectionResult};
 const CHUNK_SIZE: usize = 16;
 
 impl LocalShard {
+    /// Activate the feature-gated local temporal DLI after native recovery has
+    /// reached its WAL visibility boundary. The derived descriptor is validated
+    /// against the current holder; invalid metadata leaves an empty learned
+    /// membership so collection search takes native exact fallback.
+    #[cfg(feature = "dli-research")]
+    pub async fn configure_dli_experimental(
+        &self,
+        config: crate::config::DliExperimentalConfig,
+    ) -> CollectionResult<bool> {
+        use crate::collection_manager::dli_maintenance::DliMaintenance;
+        use crate::collection_manager::dli_schedule::HierarchyConfig;
+        use crate::collection_manager::segments_searcher::DliResearchConfig;
+        use crate::operations::types::{Datatype, VectorsConfig};
+        use segment::types::Distance;
+        use std::sync::atomic::Ordering;
+
+        config.validate()?;
+        let collection = self.collection_config.read().await;
+        let supported = collection.params.shard_number.get() == 1
+            && collection.params.replication_factor.get() == 1
+            && collection.quantization_config.is_none()
+            && collection.params.sparse_vectors.is_none()
+            && matches!(
+                &collection.params.vectors,
+                VectorsConfig::Single(vector)
+                    if vector.distance == Distance::Cosine
+                        && vector.datatype == Some(Datatype::Float16)
+            );
+        if !supported {
+            return Err(CollectionError::bad_input(
+                "Experimental DLI currently requires one local shard/replica, one dense Float16 cosine vector and no quantization or sparse vectors".to_owned(),
+            ));
+        }
+        drop(collection);
+
+        let holder = self.segments.clone();
+        let initial_roles: Vec<_> = {
+            let guard = holder.read();
+            guard
+                .iter()
+                .map(|(_, segment)| (segment.get().read().segment_uuid(), 0usize))
+                .collect()
+        };
+        let Some(search) =
+            DliResearchConfig::new(initial_roles.clone(), config.arity, config.candidate_budget)
+        else {
+            return Err(CollectionError::bad_input(
+                "Experimental DLI requires at least one unique active native segment".to_owned(),
+            ));
+        };
+        let search = Arc::new(search);
+        let maintenance = DliMaintenance::new(
+            HierarchyConfig {
+                buffer_capacity: config.buffer_capacity,
+                arity: config.arity,
+            },
+            initial_roles.into_iter().collect(),
+            config.model,
+            self.path.clone(),
+        );
+        maintenance.attach_search(search.clone());
+        maintenance.native_enabled.store(true, Ordering::Release);
+
+        let descriptor_path = self.path.join("dli_hierarchy.json");
+        let activation = if descriptor_path.exists() {
+            maintenance.load_validated_descriptor(&holder).map(|_| ())
+        } else {
+            maintenance.initialize_plain_buffer(&holder)
+        };
+        let (hierarchy_valid, maintenance_available) = match activation {
+            Ok(()) => (true, true),
+            Err(error) => {
+                log::warn!(
+                    "Experimental DLI descriptor is unavailable or invalid; using native exact fallback: {error}"
+                );
+                search.members.write().clear();
+                let available = match maintenance.initialize_native_fallback(&holder) {
+                    Ok(()) => true,
+                    Err(rebuild_error) => {
+                        log::warn!(
+                            "Experimental DLI maintenance reconstruction is unavailable: {rebuild_error}"
+                        );
+                        false
+                    }
+                };
+                (false, available)
+            }
+        };
+
+        let previous = std::mem::replace(
+            &mut *self.update_tracker.dli_maintenance.write(),
+            maintenance_available.then_some(maintenance),
+        );
+        *self.dli_research.write() = Some(search);
+        if let Some(previous) = previous {
+            previous.cancel_and_wait().await;
+        }
+        Ok(hierarchy_valid)
+    }
+
     /// Enable or disable the non-persistent internal DLI research path.
     #[cfg(all(feature = "dli-research", feature = "testing"))]
     pub fn configure_dli_research(

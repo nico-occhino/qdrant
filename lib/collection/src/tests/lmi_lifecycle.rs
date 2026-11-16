@@ -152,6 +152,8 @@ async fn lmi_collection_builds_and_searches_with_fresh_plain_writes_body() {
         uuid: None,
         metadata: None,
         created_at: None,
+        #[cfg(feature = "dli-research")]
+        dli_experimental: None,
     };
     let collection = Collection::new(
         "lmi_lifecycle".to_string(),
@@ -507,3 +509,6 @@ async fn lmi_collection_builds_and_searches_with_fresh_plain_writes() {
 
 #[cfg(feature = "lmi-training")]
 mod dli_recovery_control;
+
+#[cfg(all(feature = "testing", feature = "dli-research"))]
+mod dli_sisap300k_benchmark;
