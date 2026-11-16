@@ -38,3 +38,6 @@ The `dli-research` collection feature now enables ordinary LocalShard update not
 If a persisted descriptor is invalid, active native segments remain exact-search inputs and become role-zero reconstruction sources, but learned search membership stays empty. The next ordinary update drives a full native reconstruction; learning reactivates only after physical optimizer publication and descriptor update. Graceful shard shutdown now cancels and joins the tracked DLI optimizer job.
 
 No full SISAP23 benchmark result is yet recorded. Canonical data hashes and prepared binary extracts are under `continuation-22/benchmark-300k/`.
+# Continuation 22 measurement addendum
+
+The optimized 300K run produced six native DLI optimizer publications with output populations 50K, 100K, 150K, 50K, 100K and 300K: 750K output vectors total. This includes a full 300K output and does not demonstrate uniformly sublinear rebuild work. Summed DLI optimizer-job wall time was 300.906 s; static insert-to-indexed wall waiting was 561.999 s and has a different measurement boundary. Do not describe this difference as a directly comparable maintenance saving. See [SISAP23_300K_FIRST_RUN.md](SISAP23_300K_FIRST_RUN.md) and raw per-publication records under continuation-22.

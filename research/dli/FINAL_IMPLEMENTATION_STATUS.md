@@ -49,3 +49,18 @@ Continuation 21 follow-up: `dli-research` production-feature compilation passes.
 Continuation 22 changes the classification: **FUNCTIONAL EXPERIMENTAL DLI**. A feature-enabled internal collection config automatically activates DLI maintenance/search on LocalShard build/load. Normal inserts drive four physical optimizer publications in the configured collection test; levels 1 and 2 and the Plain buffer are active together, and normal searches execute learned routing. Clean full Collection close/reopen validates and restores the hierarchy. Corrupt metadata falls back to exact native search; a subsequent ordinary update reconstructs the hierarchy and resumes learned queries. DLI suite passes 16/16, one long benchmark ignored; non-test `dli-research` feature check passes.
 
 Not `RECOVERABLE SINGLE-SHARD DLI`: the experimental config is internal and not in REST/gRPC; power-loss/abrupt termination and every cross-file publication failure ordering are not validated; broader update-concurrency controls remain limited. Canonical 300K SISAP23 source/query/gold files are now found and hash-verified; optimized benchmark harness is being built, so no benchmark numbers are yet claimed.
+# Current status — continuation 22 completion
+
+**Overall: FUNCTIONAL EXPERIMENTAL DLI.** The `dli-research`-gated internal configuration activates LocalShard maintenance/search in the restricted collection fixture. Ordinary insert batches have driven four tested lifecycle publications there; the separate 300K optimized benchmark drove six native DLI publications. Search executed real learned routing before updates. Graceful Collection close/reopen restored learned routing from validated derived metadata. A deliberately malformed descriptor caused exact fallback; a later ordinary write reconstructed the hierarchy and resumed learned routing.
+
+The single-run 300K benchmark completed and is documented in [SISAP23_300K_FIRST_RUN.md](SISAP23_300K_FIRST_RUN.md), with raw evidence under `/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-22/benchmark-300k/`. At fixed parameters DLI had lower Recall@10/30 (0.7625/0.7253 vs 0.7962/0.7628), higher sequential query p50/p95 (6.900/12.483 ms vs 4.358/6.179 ms), 750K rebuilt output vectors, and 100/100 exact post-update fallbacks. It used 10.31 MB auxiliary LMI files vs 3.90 MB static. DLI's 300.906 s optimizer-job sum and static's 561.999 s insert-to-indexed wait are differently scoped and cannot support an equivalent maintenance-cost claim.
+
+| Milestone | Status | Remaining limit |
+|---|---|---|
+| Internal configured collection + automatic maintenance/search | PASS, restricted experimental scope | No REST/gRPC collection option; one supported local-shard dense-vector configuration. |
+| Multiple native DLI publications + learned routing | PASS in tests and 300K run | Six benchmark publications; this is not evidence of broad concurrent lifecycle correctness. |
+| Clean close/reopen + stale/corrupt fallback/reconstruction | PASS in restricted test | No abrupt-process or power-loss guarantee; not every metadata/physical publication ordering injected. |
+| 300K matched run | PASS, single run | Not replicated, recall-matched, interleaved; actual scored candidates and split RSS are unavailable. |
+| Performance superiority | NOT ESTABLISHED | Current fixed-parameter results are negative for recall/query latency/memory; maintenance timing is not comparable. |
+
+Do not classify as `RECOVERABLE SINGLE-SHARD DLI` or as a demonstrated DLI performance win. The DLI's post-update fallback frequency was 100% on 100 measured queries. Full metrics, provenance, command and exact caveats are in the linked evaluation report.

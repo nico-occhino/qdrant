@@ -1,5 +1,33 @@
 # Test matrix — initial research
 
+## Current integrated evidence (continuation 22)
+
+| Gate | Status | Evidence and limitation |
+|---|---|---|
+| DLI production-feature build | PASS | `cargo check --locked --offline -p collection --features dli-research`; log `continuation-22/dli-check.log`. Configuration is internal and not REST/gRPC exposed. |
+| Configured LocalShard lifecycle | PASS (restricted fixture) | DLI-filtered collection tests: 16 passed, 1 ignored benchmark; log `continuation-22/dli-suite-after-bench-fix.log`. Four ordinary-write-triggered publications, learned search, clean close/reopen, corrupt descriptor fallback and update-triggered reconstruction. No abrupt/power-loss recovery. |
+| Matched 300K SISAP23 optimized run | PASS (single run) | Six matched 50K batches for static LMI and DLI, six DLI publications, recall, updates and query metrics. Not replicated, recall-matched or fully instrumented. |
+
+Exact benchmark command (repository root; toolchain environment and configuration are recorded in `continuation-22/benchmark-300k/config/benchmark_config.json`):
+
+```bash
+DLI_BENCH_HEAD="$(git rev-parse HEAD)" \
+DLI_SISAP_INPUTS=/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-22/benchmark-300k \
+DLI_SISAP_OUTPUT=/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-22/benchmark-300k/raw_results \
+CARGO_BUILD_JOBS=2 \
+CARGO_TARGET_DIR=/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/cargo-target \
+LIBTORCH_USE_PYTORCH=1 \
+PATH=/home/nicoo/miniconda3/envs/lmi-rust-inspect/bin:$PATH \
+LD_LIBRARY_PATH=/home/nicoo/miniconda3/envs/lmi-rust-inspect/lib/python3.11/site-packages/torch/lib \
+cargo test --release --locked --offline -p collection --lib \
+  --features 'testing,dli-research' -- --ignored --exact \
+  tests::lmi_lifecycle::dli_sisap300k_benchmark::sisap23_300k_static_lmi_vs_temporal_dli --nocapture
+```
+
+Exit 0; test elapsed 888.94 s. Log: `/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-22/benchmark-300k/logs/run-no-generic-dli-optimizer.log`; summary: `.../raw_results/summary.json`. Dataset manifest and extracted-file hashes are in `.../manifest.json`. Static vs DLI Recall@10/30: `.7962/.7628` vs `.7625/.7253`; p50/p95 ms: `4.358/6.179` vs `6.900/12.483`; DLI publications: 6, cumulative output 750K vectors; selected posting entries: 2,489,314 for 1,000 queries, while actual native scorer count is not instrumented; post-update exact fallback: `100/100`. Static wait-to-indexed 561.999 s and DLI optimizer-job wall sum 300.906 s have different measurement boundaries. One run only; see the experiment analysis for limitations.
+
+Earlier continuation entries below retain their historical status at the time written.
+
 | Evidence | Status | Scope and limitation |
 |---|---|---|
 | Global budget control (`prototypes/budget_control.rs`) | PASS | Mock-only, one deterministic test; whole-bucket budget 5 selects counts 4+3 and differs from fixed per-level probing. No Qdrant data, router or scoring. |
