@@ -64,3 +64,9 @@ The single-run 300K benchmark completed and is documented in [SISAP23_300K_FIRST
 | Performance superiority | NOT ESTABLISHED | Current fixed-parameter results are negative for recall/query latency/memory; maintenance timing is not comparable. |
 
 Do not classify as `RECOVERABLE SINGLE-SHARD DLI` or as a demonstrated DLI performance win. The DLI's post-update fallback frequency was 100% on 100 measured queries. Full metrics, provenance, command and exact caveats are in the linked evaluation report.
+
+## Continuation 23 — candidate visibility after deletion
+
+Removed whole-query rejection solely for nonzero deleted-point count. Native scoring already filters deleted offsets and native deletion removes external-ID mappings. Selected live identities still undergo complete captured-member lookup; deferred state, duplicate visible copies, and physical identity mismatches retain exact fallback. No tombstone authority or maximum-version winner was invented. Added learned-segment delete/reinsert score/version assertions; query/upsert and query/delete controls now require learned execution after completed native updates. The retained-old-copy counterexample still requires fallback when the newer copy is not selected.
+
+DLI-filtered suite: **17 passed, 0 failed, 1 ignored**, `continuation-23/deletion-resolution-retry.log`. Initial failures were stale fallback-path assertions and a missing ambient metrics scope in the new test (`deletion-resolution.log`). The recovered 193-point fixture now learns after legitimate deletion; topology mismatch still falls back. Configured clean reopen/corrupt fallback/reconstruction and native optimizer publication/cancellation controls passed in this run. Benchmark post-update counters now report deltas and explicitly count learned queries; the revised full 300K run and fair-instrumentation/ablation phases are not yet results.

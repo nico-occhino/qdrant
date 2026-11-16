@@ -809,9 +809,8 @@ async fn dli_recovery_control_body() {
             .unwrap()
         };
         let learned = search().await;
-        assert_eq!(config.learned_queries.load(Ordering::Relaxed), 0);
-        assert_eq!(config.exact_fallbacks.load(Ordering::Relaxed), 1);
-        assert_eq!(config.fallback_reasons.lock().get("deleted"), Some(&1));
+        assert_eq!(config.learned_queries.load(Ordering::Relaxed), 1);
+        assert_eq!(config.exact_fallbacks.load(Ordering::Relaxed), 0);
         assert_eq!(learned.len(), expected.len());
         for hit in &learned {
             let segment::types::PointIdType::NumId(id) = hit.id else {
@@ -840,7 +839,7 @@ async fn dli_recovery_control_body() {
             .unwrap();
         let new_id = h.write().add_new(new_buffer);
         let fallback = search().await;
-        assert_eq!(config.exact_fallbacks.load(Ordering::Relaxed), 2);
+        assert_eq!(config.exact_fallbacks.load(Ordering::Relaxed), 1);
         assert_eq!(config.fallback_reasons.lock().get("topology"), Some(&1));
         assert_eq!(fallback.len(), expected.len());
         assert_eq!(

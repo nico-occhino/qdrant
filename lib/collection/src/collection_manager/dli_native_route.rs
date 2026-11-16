@@ -53,9 +53,11 @@ pub enum CandidateResolution {
 /// Conservative version check on caller-pinned original segments. The caller
 /// must independently establish complete holder coverage and keep all segment
 /// read locks for routing and resolution; proxies and filters are unsupported.
-/// Soft-deleted heads are not exposed by `point_versions`, so *any* deleted or
-/// deferred state requires fallback. This is intentionally availability- and
-/// performance-limiting until native tombstone/proxy semantics are established.
+/// Native deletion removes the external-ID mapping and native scoring excludes
+/// deleted offsets. Unrelated deleted slots therefore do not invalidate a live
+/// candidate. Complete captured membership is still checked for every selected
+/// identity; duplicate visible occurrences and deferred state remain fail closed.
+/// This follows native search visibility, not a separate tombstone authority.
 pub fn resolve_pinned_candidates(
     members: &[(usize, &Segment)],
     routed: NativeRouteResult,
@@ -69,9 +71,6 @@ pub fn resolve_pinned_candidates(
         }
         if segment.has_deferred_points() {
             return fallback(ResolutionFallback::DeferredState);
-        }
-        if segment.deleted_point_count() != 0 {
-            return fallback(ResolutionFallback::DeletedState);
         }
     }
     let mut selected = HashMap::new();
@@ -511,7 +510,7 @@ mod tests {
             config
                 .exact_fallbacks
                 .load(std::sync::atomic::Ordering::Relaxed),
-            1
+            0
         );
     }
 
@@ -862,8 +861,64 @@ mod tests {
         let selected = route_pinned(&members, &[1., 0.], 100, 1, &context).unwrap();
         assert!(matches!(
             resolve_pinned_candidates(&members, selected, 10).unwrap(),
-            CandidateResolution::ExactFallback(ResolutionFallback::DeletedState)
+            CandidateResolution::ExactFallback(ResolutionFallback::AmbiguousOccurrence)
         ));
+    }
+
+    #[test]
+    fn dli_learned_resolution_survives_delete_and_reinsert() {
+        let _scope =
+            common::ambient::unmeasured_guard(common::reason::reason("DLI delete resolution"));
+        use segment::entry::{NonAppendableSegmentEntry, SegmentEntry};
+        let root = tempfile::tempdir().unwrap();
+        let rows = [
+            (41, [1., 0.]),
+            (42, [0.8, 0.6]),
+            (43, [0., 1.]),
+            (44, [-0.6, 0.8]),
+        ];
+        let mut learned = trained(root.path(), &rows, 17);
+        let mut buffer = build_simple_segment(root.path(), 2, Distance::Cosine).unwrap();
+        let context = VectorQueryContext::default();
+        for deleted in [41_u64, 44] {
+            learned
+                .delete_point(2000 + deleted, deleted.into())
+                .unwrap();
+            let members = [(1, &learned), (0, &buffer)];
+            let routed = route_pinned(&members, &[1., 0.], 2, 1000, &context).unwrap();
+            let CandidateResolution::Resolved(hits) =
+                resolve_pinned_candidates(&members, routed, 10).unwrap()
+            else {
+                panic!("unrelated deleted slots forced exact fallback")
+            };
+            for hit in &hits {
+                assert!(hit.id != 41_u64.into());
+                if deleted == 44 {
+                    assert!(hit.id != 44_u64.into());
+                }
+                let expected = rows
+                    .iter()
+                    .find(|(id, _)| PointIdType::from(*id) == hit.id)
+                    .unwrap()
+                    .1[0];
+                assert!((hit.score - expected).abs() < 1e-3);
+            }
+            assert_eq!(hits.len(), if deleted == 41 { 3 } else { 2 });
+        }
+        buffer
+            .upsert_point(3000, 41_u64.into(), only_default_vector(&[0., 1.]))
+            .unwrap();
+        let members = [(1, &learned), (0, &buffer)];
+        let routed = route_pinned(&members, &[1., 0.], 2, 1000, &context).unwrap();
+        let CandidateResolution::Resolved(hits) =
+            resolve_pinned_candidates(&members, routed, 10).unwrap()
+        else {
+            panic!("reinsert fallback")
+        };
+        assert_eq!(hits.len(), 3);
+        let reinserted = hits.iter().find(|h| h.id == 41_u64.into()).unwrap();
+        assert_eq!(reinserted.version, 3000);
+        assert!(reinserted.score.abs() < 1e-5);
     }
 
     #[tokio::test]

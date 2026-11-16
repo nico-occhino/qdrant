@@ -558,8 +558,8 @@ async fn sisap23_300k_static_lmi_vs_temporal_dli() {
         .await
         .unwrap();
     assert!(
-        dli_after_counts.1 > dli_before_counts.1,
-        "deleted-state DLI must attribute exact fallback"
+        dli_after_counts.0 > dli_before_counts.0,
+        "supported post-update DLI must execute learned routing"
     );
 
     let dli_events = dli_replica
@@ -614,7 +614,8 @@ async fn sisap23_300k_static_lmi_vs_temporal_dli() {
             "vectors_rebuilt": dli_rebuilt,
             "cumulative_optimizer_micros": dli_optimizer_micros,
             "learned_queries": dli_before_counts.0,
-            "exact_fallback_queries_after_updates": dli_after_counts.1,
+            "exact_fallback_queries_after_updates": dli_after_counts.1 - dli_before_counts.1,
+            "learned_queries_after_updates": dli_after_counts.0 - dli_before_counts.0,
             "posting_candidates": dli_before_counts.2,
             "unique_candidates": dli_before_counts.3,
             "recall10": dli_before.0,
