@@ -26,3 +26,5 @@ Both variants use top-k materialization, identical retained physical generations
 |Reserved|.633333|.572222|30,170.6|213.38|
 
 Reserved improves recall while scoring58.7% more vectors. This is **not** a matched-work speed or Pareto win in native execution. The same-row quality comparison is directly executed; the offline roughly-matched-work coverage comparison remains a separate result. Across-process ordering/cache effects and the small debug sample preclude a causal latency ratio. Both also show much slower first passes. Slot run PASS1/1,134.30s including reopen. Raw `continuation-26/frozen-slot12-debug/rounds.json`, `frozen-slot12-debug.log`, `native-routing-comparison.json`.
+
+Continuation27 supersedes the debug-only measurement limitation for the bounded controls: the [release study](07_RELEASE_RESULTS.md) completes480 learned queries/0 fallback with independent score/version checks. Same-work top-k materialization improves release latency; new routing does not demonstrate a Pareto win or equal-quality comparison. Original continuation26 results above remain historical evidence, not the latest measurement.

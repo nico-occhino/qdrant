@@ -78,6 +78,7 @@ for external in wanted - owner.keys():
 rows, summaries = [], []
 access_cursor = 0
 max_error, version_checks = 0., 0
+batch_version_checks=0
 score_cache = {}
 for case_id, case in enumerate(cases):
     begin = case['ordinal_begin']
@@ -100,6 +101,9 @@ for case_id, case in enumerate(cases):
         assert len(actual) == len(set(actual)) == 30
         for h in q['hits']:
             external = int(h['id'])
+            # Recorded insertion-only stream:41 sequential upserts of <=250K rows.
+            assert h['version'] == (external-1)//250000+1
+            batch_version_checks+=1
             if external in versions:
                 assert h['version'] == versions[external]
                 version_checks += 1
@@ -156,6 +160,19 @@ for name in ['per-query.csv', 'cases.csv']:
     path = run / name
     path.write_text(path.read_text().replace('_nanos', '_ms'))
 
+# Native ordering compares scores only; equal-score order need not be stable.
+controls=[c for c in cases if c['pass']=='materialization_control']
+ordered_pairs=tie_pairs=0
+if controls:
+    reference=controls[0]
+    for c in controls[1:]:
+        for i in range(c['query_count']):
+            aa=queries[c['ordinal_begin']+i]['hits']
+            bb=queries[reference['ordinal_begin']+i]['hits']
+            assert {h['id']:(h['score'],h['version']) for h in aa} == {h['id']:(h['score'],h['version']) for h in bb}
+            assert [h['score'] for h in aa]==[h['score'] for h in bb]
+            if aa==bb:ordered_pairs+=1
+            else:tie_pairs+=1
 # Evaluate match quality instead of assuming validation targets transfer perfectly.
 validation = [s for s in summaries if s['pass_name'] == 'validation']
 test = [s for s in summaries if s['pass_name'] == 'test_warm']
@@ -177,7 +194,9 @@ for objective in ['work30000', 'recall060']:
 (run/'checks.json').write_text(json.dumps(dict(population=10120191, query_rows=used_rows,
     processed_queries=len(rows), max_independent_cosine_error=max_error,
     checked_persisted_learned_versions=version_checks,
-    plain_versions='Native fields retained; no independent mutable-tracker version decoder used',
+    checked_insertion_stream_versions=batch_version_checks,
+    plain_versions='Checked against recorded41-batch insertion stream; mutable-tracker file not independently decoded',
+    identical_hit_set_score_version_pairs=ordered_pairs+tie_pairs, exact_ordered_pairs=ordered_pairs, equal_score_permutation_pairs=tie_pairs,
     match_checks=comparisons, cpu_units='process ticks; use recorded CLK_TCK; not per-query high-resolution CPU',
     timing='release; detailed tracing enabled; cold-member clearing is an attempt, not full-dataset cache isolation'), indent=2))
 print(json.dumps(comparisons, indent=2))
