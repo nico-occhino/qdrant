@@ -900,6 +900,21 @@ mod tests {
                 temp_path: staging.path().to_owned(),
             };
             let stop = Arc::new(AtomicBool::new(false));
+            let mut pinned_query = None;
+            if !cancel {
+                use crate::collection_manager::segments_searcher::DliGuardHook;
+                let (capture_tx,capture_rx) = mpsc::channel();
+                let (release_tx,release_rx) = mpsc::channel();
+                *config.test_guard_hook.lock() = Some(DliGuardHook { entered: capture_tx, resume: parking_lot::Mutex::new(release_rx) });
+                let qholder = holder.clone(); let qconfig = config.clone();
+                let query = tokio::spawn(async move {
+                    SegmentsSearcher::search_dli_research(qholder, Arc::new(CoreSearchRequestBatch {
+                        searches: vec![CoreSearchRequest { query: vec![1.,0.].into(), filter: None, params: None, limit:4,offset:0,with_payload:None,with_vector:None,score_threshold:None }]
+                    }), &AdaptiveSearchHandle::current_for_tests(), QueryContext::new(DEFAULT_INDEXING_THRESHOLD_KB,Handoff::Measured(AmbientContext::new())), Duration::from_secs(10), qconfig).await.unwrap()
+                });
+                capture_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                pinned_query = Some((release_tx,query));
+            }
             let worker_holder = holder.clone();
             let worker_stop = stop.clone();
             let (done_tx, done_rx) = mpsc::channel();
@@ -963,7 +978,7 @@ mod tests {
             let before = run().await;
             assert_eq!(before[0].len(), 4);
             assert_eq!(config.fallback_reasons.lock().get("proxy"), Some(&1));
-            {
+            let mutate = || {
                 let _updates = holder.acquire_updates_lock();
                 let guard = holder.read();
                 let points = [
@@ -980,7 +995,8 @@ mod tests {
                 ];
                 upsert_points(&guard, 100, &points, None).unwrap();
                 delete_points(&guard, 101, &[12_u64.into()]).unwrap();
-            }
+            };
+            if cancel { mutate(); }
             if cancel {
                 stop.store(true, std::sync::atomic::Ordering::Relaxed);
             }
@@ -992,6 +1008,17 @@ mod tests {
                 completed.unwrap();
             }
             worker.join().unwrap();
+            if let Some((release,query)) = pinned_query {
+                // Optimizer has completed its real holder swap while old handles stay pinned.
+                release.send(()).unwrap();
+                let old = query.await.unwrap();
+                assert_eq!(old[0].len(),4);
+                let winner = old[0].iter().find(|p|p.id==11_u64.into()).unwrap();
+                assert_eq!(winner.score,1.0); assert_eq!(winner.version,11);
+                *config.test_guard_hook.lock() = None;
+                assert_eq!(config.learned_queries.load(std::sync::atomic::Ordering::Relaxed),1);
+                mutate();
+            }
             let after = run().await;
             if cancel {
                 assert_eq!(config.learned_queries.load(std::sync::atomic::Ordering::Relaxed), 1, "cancelled optimizer must restore a usable quantized generation");

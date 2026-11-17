@@ -77,6 +77,7 @@ fn collection_config(dli: bool) -> CollectionConfigInternal {
         created_at: None,
         dli_experimental: dli.then_some(DliExperimentalConfig {
             materialize_topk: false,
+            quantized_shortlist: None,
             routing_policy: Default::default(),
             maintenance_policy: if std::env::var("DLI_BENCH_POLICY").as_deref() == Ok("size-tiered")
             {

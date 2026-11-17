@@ -89,6 +89,7 @@ impl LocalShard {
             ));
         };
         *search.routing_policy.write() = config.routing_policy;
+        search.quantized_shortlist.store(config.quantized_shortlist.unwrap_or(0), Ordering::Relaxed);
         search
             .materialize_topk
             .store(config.materialize_topk, Ordering::Relaxed);

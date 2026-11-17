@@ -294,13 +294,15 @@ impl shard::optimize::OptimizationStrategy for DliOptimizationStrategy {
             );
         }
         for vector in config.vector_data.values_mut() {
-            if vector.multivector_config.is_some() || vector.quantization_config.is_some() {
+            if vector.multivector_config.is_some() {
                 return Err(
                     segment::common::operation_error::OperationError::service_error(
                         "unsupported DLI COW vector options",
                     ),
                 );
             }
+            // The insertion/COW destination stays native appendable original storage.
+            vector.quantization_config = None;
             vector.index = Indexes::Plain {};
             vector.storage_type = segment::types::VectorStorageType::InRamChunkedMmap;
         }
@@ -665,8 +667,16 @@ impl DliMaintenance {
             ));
             if state.native_enabled.load(Ordering::Acquire) {
                 let run = || -> Result<(), String> {
+                    let quantized = state.search.lock().as_ref().is_some_and(|search| search.quantized_shortlist.load(Ordering::Relaxed) > 0);
                     let source = sources.first().ok_or("no sources")?.get().read();
-                    let segment_config = source.config().clone();
+                    let mut segment_config = source.config().clone();
+                    if quantized {
+                        for vector in segment_config.vector_data.values_mut() {
+                            vector.quantization_config = Some(segment::types::ScalarQuantizationConfig {
+                                memory: None, r#type: Default::default(), quantile: None, always_ram: None,
+                            }.into());
+                        }
+                    }
                     let segments_path = source
                         .data_path()
                         .parent()

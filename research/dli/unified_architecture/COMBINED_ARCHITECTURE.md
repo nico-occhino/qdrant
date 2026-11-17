@@ -5,3 +5,5 @@ A0 original scoring remains the safe default. A1 T2 is retained as an allocation
 The strongest bounded execution candidate is548 plus scalar128 reranking; the best supported deployed research default remains548 plus original scoring, because quantized concurrent-publication/recovery, cold-I/O/resource and untouched validation/test gates remain open. No matched staticLMI/HNSW superiority is claimed.
 
 Bounded quantized-native proxy/cancel/publication and segment reopen/missing/corrupt metadata controls now pass. They justify further65K integration, not default promotion or a combined T2/multi-level performance claim. Native final scores and visible populations remain authoritative.
+
+Continuation37: explicit collection quantized-shortlist configuration and native construction/reopen are now implemented and exercised through normal updates. Native generation pinning through a barrier-forced final holder swap, mixed-member missing/corrupt/incompatible scalar recovery and exact-fallback attribution pass. Tiny multi-level lifecycle evidence does not supply an A0–A3 performance ranking. Keep original default and defer300K until full65K query/resource measurements.

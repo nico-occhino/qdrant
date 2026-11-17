@@ -211,12 +211,27 @@ fn open_dense_vector_data(
     let quantized_vectors = sp(
         if let Some(quantization_config) = config.quantization_config(vector_name) {
             let quantized_data_path = vector_storage_path;
-            QuantizedVectors::load(
+            let loaded = QuantizedVectors::load(
                 quantization_config,
                 &vector_storage.borrow(),
                 &quantized_data_path,
                 stopped,
-            )?
+            );
+            // Learned routing remains usable without its derived compressed scorer.
+            // Preserve native cancellation and all other index types' failure semantics.
+            match loaded {
+                Ok(Some(quantized)) if matches!(vector_config.index, crate::types::Indexes::LmiTrained(_))
+                    && quantized.config().vector_parameters.dim != vector_config.size => {
+                    log::warn!("Ignoring incompatible learned quantization at {}", quantized_data_path.display());
+                    None
+                }
+                Err(error @ crate::common::operation_error::OperationError::Cancelled { .. }) => return Err(error),
+                Err(error) if matches!(vector_config.index, crate::types::Indexes::LmiTrained(_)) => {
+                    log::warn!("Ignoring invalid learned quantization at {}: {error}", quantized_data_path.display());
+                    None
+                }
+                result => result?,
+            }
         } else {
             None
         },

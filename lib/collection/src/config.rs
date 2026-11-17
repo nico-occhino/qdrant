@@ -403,6 +403,9 @@ pub struct DliExperimentalConfig {
     /// Limit materialized hits per physical member; full selected vectors are still scored.
     #[serde(default)]
     pub materialize_topk: bool,
+    /// Default-off native scalar shortlist for learned members; Plain stays original.
+    #[serde(default)]
+    pub quantized_shortlist: Option<usize>,
     #[serde(default)]
     pub routing_policy: crate::collection_manager::dli_bucket_plan::RoutingPolicy,
     #[serde(default)]
@@ -420,6 +423,9 @@ impl DliExperimentalConfig {
             return Err(CollectionError::bad_input(
                 "Invalid DLI configuration: buffer_capacity and candidate_budget must be positive, and arity must be at least 2".to_owned(),
             ));
+        }
+        if self.quantized_shortlist.is_some_and(|n| n == 0) || (self.quantized_shortlist.is_some() && !self.materialize_topk) {
+            return Err(CollectionError::bad_input("Quantized DLI requires nonzero shortlist and bounded materialization".to_owned()));
         }
         if let crate::collection_manager::dli_bucket_plan::RoutingPolicy::TemperatureDensity {
             temperature_milli,

@@ -1628,6 +1628,7 @@ async fn dli_recovery_control_body() {
     dli_cfg.optimizer_config.indexing_threshold = None;
     dli_cfg.dli_experimental = Some(crate::config::DliExperimentalConfig {
         materialize_topk: true,
+        quantized_shortlist: Some(64),
         routing_policy: crate::collection_manager::dli_bucket_plan::RoutingPolicy::ReservedPerLevel,
         maintenance_policy: Default::default(),
         buffer_capacity: 3,
@@ -1761,6 +1762,26 @@ async fn dli_recovery_control_body() {
         vec![3, 6, 9, 3]
     );
     println!("DLI_CONFIGURED_PUBLICATION_EVENTS {publication_events:?}");
+    let quantized_metadata = {
+        let active = holder(&configured_dli).await;
+        let guard = active.read();
+        let mut metadata = Vec::new();
+        for (_, locked) in guard.iter() {
+            let shard::locked_segment::LockedSegment::Original(segment) = locked else { panic!("quiescent originals") };
+            let segment = segment.read();
+            let data = &segment.vector_data[segment::data_types::vectors::DEFAULT_VECTOR_NAME];
+            let q = data.quantized_vectors.borrow();
+            if matches!(&*data.vector_index.borrow(), VectorIndexEnum::Lmi(_)) {
+                let q = q.as_ref().expect("configured publication must build quantization");
+                let bytes: u64 = q.files().iter().map(|path| std::fs::metadata(path).unwrap().len()).sum();
+                println!("DLI_COLLECTION_QUANTIZED_BYTES uuid={} bytes={bytes}",segment.uuid);
+                metadata.push(q.storage_path().join("quantized.config.json"));
+            } else { assert!(q.is_none(), "Plain remains original storage"); }
+        }
+        assert_eq!(metadata.len(),2);
+        metadata
+    };
+
     shard(&configured_dli)
         .await
         .force_flush_local_for_test()
@@ -1801,6 +1822,39 @@ async fn dli_recovery_control_body() {
         .await;
     reopened_dli.stop_gracefully().await;
     drop(reopened_dli);
+
+    // Native recovery with one absent quantized member must preserve all native
+    // vectors and route through exact fallback, never count it as learned.
+    let missing = &quantized_metadata[0];
+    let saved = missing.with_extension("saved");
+    std::fs::rename(missing,&saved).unwrap();
+    let missing_dli = open_configured_dli(&dli_path,&dli_snapshots).await;
+    let hits = raw_query(&missing_dli,&[0],16).await;
+    assert_eq!(hits.len(),dli_expected.len());
+    for (id,score) in hits { assert_eq!(score,if dli_expected[&id]==0 {1.0} else {0.0}); }
+    let (_,learned,fallback) = shard(&missing_dli).await.local_dli_counts_for_test().await.unwrap();
+    assert_eq!(learned,0); assert!(fallback>0);
+    println!("DLI_COLLECTION_MISSING_QUANTIZATION learned={learned} exact={fallback}");
+    missing_dli.stop_gracefully().await; drop(missing_dli);
+    std::fs::rename(saved,missing).unwrap();
+    let original_metadata = std::fs::read(missing).unwrap();
+    for incompatible in [false,true] {
+        if incompatible {
+            let mut json: serde_json::Value = serde_json::from_slice(&original_metadata).unwrap();
+            json["vector_parameters"]["dim"] = serde_json::json!(DIM + 1);
+            std::fs::write(missing,serde_json::to_vec(&json).unwrap()).unwrap();
+        } else { std::fs::write(missing,b"not-json").unwrap(); }
+        let degraded = open_configured_dli(&dli_path,&dli_snapshots).await;
+        let hits = raw_query(&degraded,&[0],16).await;
+        assert_eq!(hits.len(),dli_expected.len());
+        for (id,score) in hits { assert_eq!(score,if dli_expected[&id]==0 {1.0} else {0.0}); }
+        let (_,learned,fallback) = shard(&degraded).await.local_dli_counts_for_test().await.unwrap();
+        assert_eq!(learned,0); assert!(fallback>0);
+        println!("DLI_COLLECTION_INVALID_QUANTIZATION incompatible={incompatible} learned={learned} exact={fallback}");
+        degraded.stop_gracefully().await; drop(degraded);
+        std::fs::write(missing,&original_metadata).unwrap();
+    }
+
 
     // Invalid derived state must fail closed while native recovered vectors
     // remain searchable, and must not prevent a later safe reconstruction.
