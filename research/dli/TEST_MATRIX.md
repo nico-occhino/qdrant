@@ -174,3 +174,5 @@ Continuation36 additional: quantized-publication.log1PASS covers native optimize
 Continuation37: corrupt-recovery-regression.log26PASS/6ignored, includes barrier-pinned quantized learnedquery across final native optimizer swap, configured4publication/completeCollection reopen, mixed missing scalar metadata, corruptJSON and incompatibledimension recovery with exactfallback and zero learned attribution. Learned native loader corruption degrades safely; cancelled operation result preserved. Debug correctness only;65K fullCollection performance/resource gate still open.
 
 Continuation38: full65K pool oracle preparation executed successfully for32 previously used diagnostic queries; input/output hashes recorded. No new native performance/correctness regression or collection-level quantized scoring test claimed.
+
+Continuation39: segment candidate scorer9PASS/1ignored, collection dli_26PASS/6ignored, quantized scoring conservation control1PASS with DLI_REQUEST_SCORING_PROFILE=1. Learned-only request profile does not count Plain/exact fallback or assert complete query attribution.

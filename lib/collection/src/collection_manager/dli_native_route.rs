@@ -47,9 +47,20 @@ pub struct NativeRouteResult {
     pub models_evaluated: usize,
     pub posting_candidates: usize,
     pub unique_posting_offsets: usize,
+    /// Optional request-local native scorer measurements for learned members.
+    pub learned_scoring: Option<LearnedScoringProfile>,
     /// Live point count, which can exceed the number of vectors in the buffer.
     pub buffer_point_estimate: usize,
     pub per_segment: Vec<(Uuid, Vec<ScoredPoint>)>,
+}
+
+#[derive(Default, Debug, serde::Serialize)]
+pub struct LearnedScoringProfile {
+    pub quantized_scored: usize,
+    pub original_scored: usize,
+    pub quantized_elapsed_ns: u128,
+    pub original_elapsed_ns: u128,
+    pub shortlist_offsets: usize,
 }
 
 /// Reasons this bounded check cannot establish native visibility. The caller
@@ -298,6 +309,7 @@ pub fn route_pinned_with_quantized_shortlist(
     let mut posting_candidates = 0usize;
     let mut unique_posting_offsets = 0usize;
     let mut buffer_point_estimate = 0usize;
+    let mut learned_scoring = std::env::var_os("DLI_REQUEST_SCORING_PROFILE").map(|_| LearnedScoringProfile::default());
     let mut per_segment = Vec::new();
     let query_vector: QueryVector = query.to_vec().into();
     let access_trace = std::env::var_os("DLI_NATIVE_ACCESS_EVENTS");
@@ -360,21 +372,31 @@ pub fn route_pinned_with_quantized_shortlist(
                 if quantized.storage_path() != expected_path || quantized.config().vector_parameters.dim != query.len() {
                     return Err(fail("quantized physical generation mismatch"));
                 }
-                let approximate = score_candidates_with_quantization(
+                let approximate = if let Some(profile) = learned_scoring.as_mut() {
+                    let tick = Instant::now();
+                    let (hits, stats) = segment::index::candidate_scoring::score_candidates_quantized_profiled(
+                        &query_vector, &candidates, shortlist.max(materialize_limit), &*tracker, &*storage, Some(quantized), context)?;
+                    profile.quantized_elapsed_ns += tick.elapsed().as_nanos();
+                    profile.quantized_scored += stats.scored_vectors;
+                    profile.shortlist_offsets += hits.len();
+                    hits
+                } else { score_candidates_with_quantization(
                     &query_vector, &candidates, shortlist.max(materialize_limit),
                     &*tracker, &*storage, Some(quantized), context,
-                )?;
+                )? };
                 rerank_candidates = approximate.into_iter().map(|hit| hit.idx).collect::<Vec<_>>();
                 &rerank_candidates
             } else { &candidates };
-            let offsets = score_candidates(
-                &query_vector,
-                candidates,
-                candidates.len().min(materialize_limit),
-                &tracker,
-                &storage,
-                context,
-            )?;
+            let offsets = if let Some(profile) = learned_scoring.as_mut() {
+                let tick = Instant::now();
+                let (hits, stats) = segment::index::candidate_scoring::score_candidates_quantized_profiled(
+                    &query_vector, candidates, candidates.len().min(materialize_limit), &*tracker, &*storage, None, context)?;
+                profile.original_elapsed_ns += tick.elapsed().as_nanos();
+                profile.original_scored += stats.scored_vectors;
+                hits
+            } else { score_candidates(
+                &query_vector, candidates, candidates.len().min(materialize_limit), &tracker, &storage, context,
+            )? };
             native_scorer_time += score_started.elapsed();
             offsets
         };
@@ -426,6 +448,7 @@ pub fn route_pinned_with_quantized_shortlist(
         scoring_time: started_scoring.elapsed(),
         posting_candidates,
         unique_posting_offsets,
+        learned_scoring,
         buffer_point_estimate,
         per_segment,
     })
@@ -1743,6 +1766,13 @@ mod tests {
             &context, RoutingPolicy::PopulationDensity, 30, Some(30)).unwrap();
         let original = route_pinned_with_policy(&members, &[1.,0.], 2, 100,
             &context, RoutingPolicy::PopulationDensity, 30).unwrap();
+        if let (Some(q), Some(o)) = (&quantized.learned_scoring, &original.learned_scoring) {
+            assert_eq!(q.quantized_scored, 6);
+            assert_eq!(q.original_scored, 6);
+            assert_eq!(q.shortlist_offsets, 6);
+            assert_eq!(o.quantized_scored, 0);
+            assert_eq!(o.original_scored, 6);
+        }
         assert_eq!(quantized.per_segment, original.per_segment);
         assert!(matches!(resolve_pinned_candidates(&members, quantized, 30).unwrap(), CandidateResolution::Resolved(_)));
         // Same dimension/population is insufficient: another physical generation must fail closed.

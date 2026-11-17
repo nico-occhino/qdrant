@@ -662,8 +662,30 @@ impl SegmentsSearcher {
                     routed.per_segment.iter().map(|(_, h)| h.len() as u64).sum(),
                     Ordering::Relaxed,
                 );
+                let mut request_profile = routed.learned_scoring.as_ref().map(|profile| serde_json::json!({
+                    "learned_scoring": profile,
+                    "posting_entries": routed.posting_candidates,
+                    "unique_offsets": routed.unique_posting_offsets,
+                    "models": routed.models_evaluated,
+                    "selected_buckets": routed.plan.buckets.len(),
+                    "routing_ns": routed.routing_and_planning_time.as_nanos(),
+                    "materialization_ns": routed.hit_materialization_time.as_nanos(),
+                    "plain_scoring_count": null,
+                }));
                 let resolution_start = Instant::now();
                 let resolution = resolve_pinned_candidates(&members, routed, limit);
+                if let (Some(profile), Some(path)) = (request_profile.as_mut(), std::env::var_os("DLI_REQUEST_SCORING_EVENTS")) {
+                    use std::io::Write;
+                    profile["resolution_ns"] = serde_json::json!(resolution_start.elapsed().as_nanos());
+                    profile["candidate_resolution"] = serde_json::json!(match &resolution {
+                        Ok(CandidateResolution::Resolved(_)) => "resolved",
+                        Ok(CandidateResolution::ExactFallback(_)) => "fallback",
+                        Err(_) => "error",
+                    });
+                    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                        let _ = writeln!(file, "{profile}");
+                    }
+                }
                 attempt_config.resolution_nanos.fetch_add(
                     u64::try_from(resolution_start.elapsed().as_nanos()).unwrap_or(u64::MAX),
                     Ordering::Relaxed,
