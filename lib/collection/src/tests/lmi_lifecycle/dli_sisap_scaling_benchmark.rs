@@ -1531,6 +1531,16 @@ async fn sisap23_65k_multilevel_collection_s0_vs_s2() {
             );
             assert!(lp["original_scored"].as_u64().unwrap() > 0);
             assert_eq!(lp["quantized_scored"].as_u64().unwrap() > 0, mode.is_some());
+            let unique_offsets = request_profile["unique_offsets"].as_u64().unwrap();
+            assert!(request_profile["posting_entries"].as_u64().unwrap() >= unique_offsets);
+            if mode.is_some() {
+                assert_eq!(lp["quantized_scored"].as_u64().unwrap(), unique_offsets);
+                assert!(lp["original_scored"].as_u64().unwrap() <= 2 * 128);
+            } else {
+                assert_eq!(lp["original_scored"].as_u64().unwrap(), unique_offsets);
+                assert_eq!(lp["quantized_scored"].as_u64().unwrap(), 0);
+            }
+            assert_eq!(lp["plain_scored"].as_u64().unwrap(), 5_536);
             let attributed = lp["quantized_scored"].as_u64().unwrap()
                 + lp["original_scored"].as_u64().unwrap()
                 + lp["plain_scored"].as_u64().unwrap();
