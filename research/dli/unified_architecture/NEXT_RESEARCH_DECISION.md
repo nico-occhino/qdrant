@@ -9,3 +9,5 @@
 7. **Rejected:**128 high-recall scaling, full-shortlist scalar, assuming better assignment accuracy wins, multiplying speedups, and claims against unmatched static/HNSW.
 
 All prior managed sessions completed; no experiment monitoring needed. Raw continuation36 holds exact binary/source identity and outputs. Geometric scheduler/full retraining unchanged.
+
+Additional closure: quantization-enabled native proxy/publication/cancellation with upsert/delete passes; cancellation resumes actual learned quantized dispatch. Native segment missing/corrupt quantization metadata rejects compressed usage while original scoring remains usable after missing metadata reopen. Per-shard shortlist override is default0 and avoids unsafe process-env mutation in tests. Full26-regression suite passes. Still no300K: collection-level timed/resource/actual-scoring accounting, in-flight query spanning swap, and full collection corrupted-quantization recovery remain open.

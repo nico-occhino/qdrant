@@ -66,6 +66,8 @@ pub struct DliResearchConfig {
     pub arity: usize,
     pub candidate_budget: std::sync::atomic::AtomicUsize,
     pub materialize_topk: std::sync::atomic::AtomicBool,
+    /// Per-shard research override; zero retains legacy environment/default behavior.
+    pub quantized_shortlist: std::sync::atomic::AtomicUsize,
     pub routing_policy: parking_lot::RwLock<super::dli_bucket_plan::RoutingPolicy>,
     pub learned_queries: std::sync::atomic::AtomicU64,
     pub exact_fallbacks: std::sync::atomic::AtomicU64,
@@ -108,6 +110,7 @@ impl DliResearchConfig {
             arity,
             candidate_budget: budget.into(),
             materialize_topk: Default::default(),
+            quantized_shortlist: Default::default(),
             routing_policy: Default::default(),
             learned_queries: Default::default(),
             exact_fallbacks: Default::default(),
@@ -591,7 +594,10 @@ impl SegmentsSearcher {
                     } else {
                         usize::MAX
                     },
-                    std::env::var("DLI_QUANTIZED_SHORTLIST").ok().map(|value| value.parse::<usize>().unwrap_or(0)),
+                    match attempt_config.quantized_shortlist.load(Ordering::Relaxed) {
+                        0 => std::env::var("DLI_QUANTIZED_SHORTLIST").ok().map(|value| value.parse::<usize>().unwrap_or(0)),
+                        shortlist => Some(shortlist),
+                    },
                 ) {
                     Ok(routed) => routed,
                     Err(error) => {

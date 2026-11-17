@@ -859,7 +859,7 @@ mod tests {
         for cancel in [false, true] {
             let root = tempfile::tempdir().unwrap();
             let staging = tempfile::tempdir().unwrap();
-            let level = trained(
+            let level = trained_configured(
                 root.path(),
                 &[
                     (11, [1., 0.]),
@@ -867,8 +867,11 @@ mod tests {
                     (13, [-1., 0.]),
                     (14, [0., -1.]),
                 ],
-                17,
+                17, true,
             );
+            level.flush(true).unwrap();
+            let path = level.segment_path.clone(); let uuid = level.uuid; drop(level);
+            let level = segment::segment_constructor::load_segment(&path, uuid, None, &AtomicBool::new(false), true).unwrap();
             let buffer = build_simple_segment(root.path(), 2, Distance::Cosine).unwrap();
             let config = Arc::new(
                 DliResearchConfig::new(vec![(level.uuid, 1), (buffer.uuid, 0)], 2, 100).unwrap(),
@@ -876,6 +879,7 @@ mod tests {
             config
                 .materialize_topk
                 .store(true, std::sync::atomic::Ordering::Relaxed);
+            config.quantized_shortlist.store(64, std::sync::atomic::Ordering::Relaxed);
             let mut native = SegmentHolder::default();
             let expected = level.uuid;
             let validated = Arc::new(AtomicBool::new(false));
@@ -937,7 +941,7 @@ mod tests {
                                 query: vec![1., 0.].into(),
                                 filter: None,
                                 params: None,
-                                limit: 10,
+                                limit: 4,
                                 offset: 0,
                                 with_payload: None,
                                 with_vector: None,
@@ -989,6 +993,10 @@ mod tests {
             }
             worker.join().unwrap();
             let after = run().await;
+            if cancel {
+                assert_eq!(config.learned_queries.load(std::sync::atomic::Ordering::Relaxed), 1, "cancelled optimizer must restore a usable quantized generation");
+            }
+
             let expected = HashMap::from([(11_u64, 0.0_f32), (13, -1.0), (14, 0.0), (99, 1.0)]);
             assert_eq!(after[0].len(), expected.len());
             let mut ids = HashSet::new();
@@ -1064,6 +1072,26 @@ mod tests {
         assert!(matches!(resolve_pinned_candidates(&members,quant,3).unwrap(),CandidateResolution::Resolved(_)));
         a.vector_data[DEFAULT_VECTOR_NAME].quantized_vectors.borrow_mut().take();
         assert!(route_pinned_with_quantized_shortlist(&members,&[1.,0.],2,100,&ctx,RoutingPolicy::PopulationDensity,3,Some(64)).is_err());
+        let quant_path = segment::segment_constructor::get_vector_storage_path(&a.segment_path, DEFAULT_VECTOR_NAME);
+        let metadata = quant_path.join("quantized.config.json");
+        let saved = std::fs::read(&metadata).unwrap();
+        std::fs::write(&metadata, b"not-json").unwrap();
+        let scalar: segment::types::QuantizationConfig = segment::types::ScalarQuantizationConfig {
+            memory: None, r#type: Default::default(), quantile: None, always_ram: None,
+        }.into();
+        {
+            let storage = a.vector_data[DEFAULT_VECTOR_NAME].vector_storage.borrow();
+            assert!(segment::vector_storage::quantized::quantized_vectors::QuantizedVectors::load(&scalar, &storage, &quant_path, &AtomicBool::new(false)).is_err());
+        }
+        std::fs::write(&metadata, saved).unwrap();
+        a.flush(true).unwrap(); drop(a);
+        std::fs::rename(&metadata, quant_path.join("quantized.config.saved")).unwrap();
+        let reopened = segment::segment_constructor::load_segment(&path, uuid, None, &AtomicBool::new(false), true).unwrap();
+        assert!(reopened.vector_data[DEFAULT_VECTOR_NAME].quantized_vectors.borrow().is_none());
+        let refs = [(1,&reopened),(0,&buffer)];
+        assert!(route_pinned_with_quantized_shortlist(&refs,&[1.,0.],2,100,&ctx,RoutingPolicy::PopulationDensity,3,Some(64)).is_err());
+        assert!(route_pinned_with_policy(&refs,&[1.,0.],2,100,&ctx,RoutingPolicy::PopulationDensity,3).is_ok());
+
     }
 
     #[test]
