@@ -158,3 +158,5 @@ Continuation29: offline locality replay covers 144 existing held-out member-quer
 Continuation30: segment candidate_scoring_v120 suite9 PASS/1 ignored; explicit ignored native65K scalar shortlist fixture1 PASS. Native create/load/missing-artifact/delete and exact rerank score equality checked; no cross-segment compressed-path or10M latency claim. Logs continuation30/regression.log and native-subset.log.
 
 Continuation31: full feature-gated collection dli_ suite25 PASS/6 ignored after actual learned-posting quantized rerank/deletion/Plain reinsertion/missing-object fixture. Default-path concurrency/publication/reopen regressions retained; they do not establish quantized-specific persisted recovery or concurrent publication. Failed/corrected logs continuation31.
+
+Continuation32: partition_oracle.py executed on32 queries/65K pool with actual saved postings and local Float32 oracle; Python compilation passes. Archive extraction paths validated and SHA256/ZIP comments recorded. Native scalar release experiment has been launched but is not counted PASS until completed. No new quantized-publication/recovery guarantee claimed.

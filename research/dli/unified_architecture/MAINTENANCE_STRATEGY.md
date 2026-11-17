@@ -1,0 +1,5 @@
+# Model-preserving compaction
+
+Verified Plhák index.rs493–525: compact existing available level, extract lower-level data, retrain only if destination storage.size()==0, then insert_many. New level calls train. Storage::size is configured bucket capacity (bucket size times bucket count), whereas occupied uses record_count (level_index.rs). Thus empty occupancy does not imply retraining; reuse is possible across compatible destination capacity. This is not a measured quality-adaptive retraining policy.
+
+Qdrant current geometric native builder retrains chosen physical destination and assigns native offsets/postings anew. A reused model can survive physical UUID change only after complete reassignment and atomic compatible metadata publication. No reuse code enabled. C0 remains the supported maintenance baseline; C1 is a secondary experiment, C2 quality-triggered needs validated drift statistics. No claimed savings beyond historical measured1936s teacher/MLP work in the original10M campaign.

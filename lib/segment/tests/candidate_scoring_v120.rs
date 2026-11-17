@@ -358,7 +358,9 @@ fn native_quantized_sisap_subset() {
             .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
             .collect::<Vec<_>>()
             .into();
+        let original_started = std::time::Instant::now();
         let original = score_candidates(&query, &candidates, 30, &tracker, &storage, &ctx).unwrap();
+        eprintln!("S0 query={qi} original=65536 wall_ns={}", original_started.elapsed().as_nanos());
         for limit in [128, 512, 2048, 65536] {
             let started = std::time::Instant::now();
             let approximate = score_candidates_with_quantization(
@@ -371,9 +373,12 @@ fn native_quantized_sisap_subset() {
                 &ctx,
             )
             .unwrap();
+            let quantized_ns = started.elapsed().as_nanos();
+            let s1_recall = original.iter().filter(|h| approximate.iter().take(30).any(|a| a.idx == h.idx)).count() as f64 / 30.;
             let offsets: Vec<_> = approximate.iter().map(|x| x.idx).collect();
             let reranked =
                 score_candidates(&query, &offsets, 30, &tracker, &storage, &ctx).unwrap();
+            let execution_ns = started.elapsed().as_nanos();
             let recall = original
                 .iter()
                 .filter(|h| reranked.iter().any(|r| r.idx == h.idx))
@@ -388,7 +393,7 @@ fn native_quantized_sisap_subset() {
                 assert_eq!(original, reranked);
             }
             eprintln!(
-                "NATIVE_SCALAR query={qi} quantized=65536 original={} recall30={recall} wall_ms={}",
+                "NATIVE_SCALAR query={qi} quantized=65536 original={} recall30={recall} s1_recall30={s1_recall} quantized_ns={quantized_ns} execution_ns={execution_ns} wall_ms={}",
                 offsets.len(),
                 started.elapsed().as_millis()
             );

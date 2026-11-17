@@ -1,0 +1,7 @@
+# Bounded elimination protocol
+
+Primary: native scalar scoring with identical selected offsets and native exact reranking. Compare S0/S1/S2, split quantized/original evaluation counts, separate execution from score assertions. First65K four-query fixture is only a smoke test. Increase held-out count and add learned-posting integration before accepting a production strategy. Require unchanged visible ID/version and returned original scores, at least4x fewer original candidates and a repeatable optimized latency gain; reject a candidate if memory/build cost eliminates that gain. No10M backfill before this gate.
+
+Model experiment: M0 fixed548/32768 sample versus M1 approximately128/256/548 buckets on the identical65K pool; first compare teacher bucket coverage and work using an exact local oracle. Hold sample, hidden width, epochs and seeds constant. Separately M2 retain548 teacher and vary classifier samples to65536 or boundary-stratified sampling, retaining untouched queries. Do not simultaneously change teacher and classifier sample and attribute the result to one. Advance only a Pareto-improving configuration to300K/1M. No full10M retraining authorized by current evidence.
+
+Reuse experiment: same bounded insertion stream and geometric scheduler, train-once model reassignment versus retrain; record assignment cost as maintenance. Keep default retraining until native generation publication/recovery and distribution-shift quality gates pass. Source-level availability of reuse is not a benchmark result.

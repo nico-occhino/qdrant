@@ -1,0 +1,5 @@
+# Architecture decision
+
+Primary supported architecture remains native geometric maintenance, calibrated density routing as experimental option, original scorer/top-k and complete visibility fallback. Primary optimization candidate is native scalar shortlist plus original rerank; collection path is default-off pending same-posting release timings, counters and quantized-specific concurrency/recovery. No evidence yet establishes production quantization superiority.
+
+Secondary research direction: adaptive bucket count with controlled sampling, using small exact-oracle teacher/model factorial before larger training. Model reuse is a subsequent maintenance ablation, not a current selected replacement. Retain full retraining default. Reject borrowing the supplied Faiss kernel speedup (dimension/index-build mismatch), wholesale replacement of vector storage, and an unvalidated custom projection persistence layer. These decisions avoid combining unmeasured benefits. No matched10M static/HNSW baseline or QPI break-even is invented.
