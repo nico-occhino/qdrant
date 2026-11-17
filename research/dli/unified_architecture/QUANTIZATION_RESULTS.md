@@ -62,3 +62,47 @@ Deterministic real-optimizer control pins a quantized learned query before proxy
 `prepare_65k_oracle.py` computes a blocked Float64 cosine oracle over all65,536 existing pool vectors after Float32 preprocessing and Float16 storage conversion; ties use external-ID order. Executed32 previously used queries800–831, no collection or model modification. Manifest/input/output hashes and arrays: continuation38/oracle. Native Float16 score near-ties can differ; no claim of native bitwise score equivalence. These32 queries are not an untouched held-out set.
 
 Collection instrumentation currently records aggregate native scorer time and global scorer work; it does not independently attribute successful quantized versus original evaluations per query or isolate the two timings. This blocks the requested controlled collection-level cost attribution. No new S0/S2 collection run or cold experiment was executed, and no speedup or 300K promotion gate is claimed.
+
+## Continuation40 — multi-level 65K Collection S0/S2 completed
+
+At source `ceca71685743b7c3c66c57114faa3cde171d5f28`, the ignored release benchmark constructed a normal Qdrant Collection from 65,536 distinct Float16 CLIP-768 vectors through four automatic native optimizer publications. Verified active topology after publication and before queries:
+
+| Role | UUID | Live population | Native files |
+|---|---|---:|---|
+| Plain buffer, level 0 | `f9ef5fd5-4a38-4238-b7fa-09f2e385e6da` | 1,536 | original vectors |
+| Geometric level 2 | `6544fb04-e99b-41bc-85a9-8ebd16a006d3` | 48,000 | scalar128 + LMI router/postings |
+| Geometric level 1 | `178b666e-ae7d-41d9-b73a-fae9159899e7` | 16,000 | scalar128 + LMI router/postings |
+
+The test asserted exactly 65,536 unique active external IDs equal to the oracle pool, disjoint membership, two independent LMI members, a nonempty appendable Plain member, matching posting/segment generations and four automatic publications. Each S0/S2 query pair used the same physical members and exact same selected buckets/posting offsets. All 64 queries recorded successful learned dispatch and zero exact fallback. Every timed query returned 30 hits; returned exact-oracle IDs were checked against native scores outside the timed interval. The complete Collection closed and reopened in 3.396 s; a post-reopen query executed learned routing with zero fallback.
+
+### Collection-level result
+
+Release build, warm repeated access only, 64 paired queries, four timed passes per query in ABBA/BAAB order. The held-out label refers to query rows 932–963; the selection record confirms they were not used in continuations 26–38, but prior use outside those records was not independently excluded.
+
+| Metric | A0: original scorer | A2: scalar128 + exact rerank |
+|---|---:|---:|
+| Full-pool Recall@10 | 0.9922 | 0.9922 |
+| Full-pool Recall@30 | 0.9766 | 0.9766 |
+| Nominally held-out Recall@10 / @30 (32 queries) | 0.9906 / 0.9708 | 0.9906 / 0.9708 |
+| Collection `search` p50 / p95 | 8.058 / 10.371 ms | 5.441 / 7.157 ms |
+| Median per-query paired A0/A2 latency ratio | — | 1.483 (p10 1.293, p90 1.772); A2 faster for 64/64 query medians |
+| Learned posting entries evaluated/query | 8,512.8 original | 8,512.8 quantized |
+| Learned original full-dimensional evaluations/query | 8,512.8 | 256 (128/member) |
+| Plain original evaluations/query | 1,536 | 1,536 |
+| Exact fallback | 0/64 | 0/64 |
+
+Conditional A2-vs-A0 overlap was 1.0 at both k=10 and k=30. This says the quantized shortlist/reranker preserved the selected-posting scorer's results on these queries; full-pool recall is reported separately above. A2 reduces learned original scorer inputs by 33.3× (97.0%), and combined full-dimensional inputs including Plain by 82.2%. It still evaluates the same 8,513 learned posting candidates approximately; candidate selection/work did not shrink.
+
+Request-local profiling was disabled during latency passes. In the separate profiling pass, median stages were: A0 route/plan 2.374 ms, learned original scoring 4.706 ms, Plain scoring 0.337 ms, materialization 0.061 ms, complete-member resolution 0.251 ms; A2 route/plan 2.638 ms, quantized scoring 1.394 ms, exact learned reranking 0.246 ms, Plain scoring 0.316 ms, materialization 0.045 ms, resolution 0.208 ms. These stage measurements are not added to or substituted for end-to-end latency. Warm timed calls recorded zero major/minor faults; this is not a controlled cold-access test or hardware-byte measurement. Process CPU ticks were coarse (97 ticks over 128 A0 calls; 70 over 128 A2 calls).
+
+### Storage and construction cost
+
+The raw Float16 pool is 100,663,296 bytes. Correct recursive inspection of persisted mmap chunks found 101,088,768 logical bytes / 100,765,696 allocated bytes (chunk capacity/segment files), 49,408,603 scalar-quantized bytes, and 5,664,508 LMI model/posting-index bytes. Quantized bytes by active member were 37,056,302 at level 2 and 12,352,301 at level 1. Whole test-process peak RSS was 914,536 KiB; incremental RSS attributable to quantization was not isolated.
+
+The native builder recorded 0.646 s total inside the four optimizer builds for quantization construction (per destination: 0.118, 0.173, 0.254, 0.101 s); native job wall-time sum was 143.723 s. There is no matched no-quantization optimizer build, so a construction-cost break-even is not established. A naive division of the measured component by the 2.617 ms median per-query saving yields about 247 searches, but that is only a scenario and excludes RAM residency and storage cost.
+
+The first 20K-batch fixture attempt is preserved at `continuation-40/multilevel-native/`; it failed before search because native scheduling correctly coalesced the data into only levels 0 and 2. The corrected 16K schedule and successful release result are under `continuation-40/multilevel-native-retry1/`. `summary.json` retains the raw output; its one-level storage scan undercounted nested mmap chunks, so use `analysis.json`'s corrected recursive resource accounting. The benchmark executable used commit `ceca7168`; the subsequent diagnostics-only byte-count/profile-key correction is commit `b8d4b9157`. The raw inputs and oracle hashes are in the run manifest.
+
+**Decision:** scalar128 is now a promising, native Collection-level experimental scorer on this 65K warm topology, and advances ahead of the original scorer for further bounded validation. It remains opt-in; do not change defaults yet. Independent untouched-query provenance, controlled cold behavior, quantization-specific incremental RSS and matched quantized/unquantized build overhead remain open. No A1/A3 routing combination or 300K run was executed.
+
+The follow-up request-event instrumentation also records native exact-fallback work independently from successful learned-member profiling. A forced underfill emits linked request events for the learned attempt and exact fallback, including explicit fallback reason, successful exact scorer inputs, fallback-stage elapsed time and whole DLI-shard elapsed time. Concurrent filtered/full exact searches retain separate request-local counts. Focused assertions and the 27-test DLI regression set pass. This closes counter attribution for the tested shard-level fallback path; the recorded warm Collection run itself had zero fallbacks, and its end-to-end latency still comes from the timed Collection caller rather than summing nested stage timers.

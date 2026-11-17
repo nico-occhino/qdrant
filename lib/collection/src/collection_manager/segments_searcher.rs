@@ -50,6 +50,16 @@ type BatchSearchResult = Vec<SegmentBatchSearchResult>;
 // Result of batch search in one segment
 type SegmentSearchExecutedResult = CollectionResult<(SegmentBatchSearchResult, Vec<bool>)>;
 
+/// Request-local counters for the native exact search that services an unsafe
+/// DLI query. Worker tasks add successful scorer inputs to this request's Arc,
+/// avoiding process-global deltas when collection searches overlap.
+#[derive(Default)]
+pub(crate) struct NativeExactSearchProfile {
+    pub scored_vectors: std::sync::atomic::AtomicU64,
+    pub segment_search_nanos: std::sync::atomic::AtomicU64,
+    pub total_elapsed_nanos: std::sync::atomic::AtomicU64,
+}
+
 /// Experimental topology hint. UUIDs identify physical segments, not DLI
 /// levels or model generations. This is not a persisted DLI descriptor.
 #[cfg(feature = "dli-research")]
@@ -70,6 +80,8 @@ pub struct DliResearchConfig {
     pub quantized_shortlist: std::sync::atomic::AtomicUsize,
     /// Opt-in request-local stage timings and scorer attribution.
     pub profile_scoring: std::sync::atomic::AtomicBool,
+    /// Optional request-event destination, kept per DLI shard for concurrent tests/runs.
+    pub profile_output_path: parking_lot::RwLock<Option<std::path::PathBuf>>,
     pub routing_policy: parking_lot::RwLock<super::dli_bucket_plan::RoutingPolicy>,
     pub learned_queries: std::sync::atomic::AtomicU64,
     pub exact_fallbacks: std::sync::atomic::AtomicU64,
@@ -114,6 +126,9 @@ impl DliResearchConfig {
             materialize_topk: Default::default(),
             quantized_shortlist: Default::default(),
             profile_scoring: std::env::var_os("DLI_REQUEST_SCORING_PROFILE").is_some().into(),
+            profile_output_path: parking_lot::RwLock::new(
+                std::env::var_os("DLI_REQUEST_SCORING_EVENTS").map(std::path::PathBuf::from),
+            ),
             routing_policy: Default::default(),
             learned_queries: Default::default(),
             exact_fallbacks: Default::default(),
@@ -461,6 +476,9 @@ impl SegmentsSearcher {
         use std::sync::atomic::Ordering;
 
         let started = Instant::now();
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let profile_enabled = config.profile_scoring.load(Ordering::Relaxed);
+        let rejection_reason = std::sync::Arc::new(parking_lot::Mutex::new(None));
         let captured = Self::capture_segments(&holder, timeout)?;
         let attempt_segments = captured.clone();
         let attempt_request = batch_request.clone();
@@ -469,11 +487,14 @@ impl SegmentsSearcher {
         let cpu_utilization = attempt_context.handoff().cpu_utilization();
         let handoff = attempt_context.handoff().clone();
         let attempt_config = config.clone();
+        let attempt_reason = rejection_reason.clone();
+        let attempt_request_id = request_id.clone();
         let attempt = runtime_handle.spawn_blocking(move || {
             let _scope = handoff.enter_guard();
             cpu_utilization.measure(|| {
                 macro_rules! reject {
                     ($reason:expr) => {{
+                        *attempt_reason.lock() = Some($reason);
                         *attempt_config
                             .fallback_reasons
                             .lock()
@@ -674,12 +695,17 @@ impl SegmentsSearcher {
                     "selected_buckets": routed.plan.buckets.len(),
                     "routing_ns": routed.routing_and_planning_time.as_nanos(),
                     "materialization_ns": routed.hit_materialization_time.as_nanos(),
+                    "request_id": attempt_request_id,
                 }));
                 let resolution_start = Instant::now();
                 let resolution = resolve_pinned_candidates(&members, routed, limit);
-                if let (Some(profile), Some(path)) = (request_profile.as_mut(), std::env::var_os("DLI_REQUEST_SCORING_EVENTS")) {
+                if let (Some(profile), Some(path)) =
+                    (request_profile.as_mut(), attempt_config.profile_output_path.read().clone())
+                {
                     use std::io::Write;
                     profile["resolution_ns"] = serde_json::json!(resolution_start.elapsed().as_nanos());
+                    profile["dli_shard_search_elapsed_ns"] =
+                        serde_json::json!(started.elapsed().as_nanos());
                     profile["candidate_resolution"] = serde_json::json!(match &resolution {
                         Ok(CandidateResolution::Resolved(_)) => "resolved",
                         Ok(CandidateResolution::ExactFallback(_)) => "fallback",
@@ -739,15 +765,59 @@ impl SegmentsSearcher {
             params.exact = true;
         }
         config.exact_fallbacks.fetch_add(1, Ordering::Relaxed);
-        Self::search_captured(
-            captured,
-            Arc::new(exact_request),
-            runtime_handle,
-            false,
-            query_context,
-            timeout.saturating_sub(started.elapsed()),
-        )
-        .await
+        let exact_request = Arc::new(exact_request);
+        let fallback_started = Instant::now();
+        let exact_profile = profile_enabled.then(|| Arc::new(NativeExactSearchProfile::default()));
+        let results = if let Some(profile) = exact_profile.as_ref() {
+            Self::search_captured_profiled(
+                captured,
+                exact_request,
+                runtime_handle,
+                false,
+                query_context,
+                timeout.saturating_sub(started.elapsed()),
+                profile.clone(),
+            )
+            .await?
+        } else {
+            Self::search_captured(
+                captured,
+                exact_request,
+                runtime_handle,
+                false,
+                query_context,
+                timeout.saturating_sub(started.elapsed()),
+            )
+            .await?
+        };
+        if let Some(profile) = exact_profile {
+            let elapsed_ns = fallback_started.elapsed().as_nanos();
+            profile.total_elapsed_nanos.store(
+                u64::try_from(elapsed_ns).unwrap_or(u64::MAX),
+                Ordering::Relaxed,
+            );
+            if let Some(path) = config.profile_output_path.read().clone() {
+                use std::io::Write;
+                let fallback_reason = rejection_reason
+                    .lock()
+                    .unwrap_or("unspecified_native_exact_fallback");
+                let event = serde_json::json!({
+                    "request_id": request_id,
+                    "query_mode": "native_exact_fallback",
+                    "learned_route_supplied_results": false,
+                    "fallback_reason": fallback_reason,
+                    "exact_fallback_scored_vectors": profile.scored_vectors.load(Ordering::Relaxed),
+                    "exact_fallback_segment_search_ns_sum": profile.segment_search_nanos.load(Ordering::Relaxed),
+                    "exact_fallback_elapsed_ns": profile.total_elapsed_nanos.load(Ordering::Relaxed),
+                    "dli_shard_search_elapsed_ns": started.elapsed().as_nanos(),
+                    "returned_results": results.iter().map(Vec::len).sum::<usize>(),
+                });
+                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                    let _ = writeln!(file, "{event}");
+                }
+            }
+        }
+        Ok(results)
     }
 
     /// Experimental correctness baseline for a future derived DLI view.
@@ -820,6 +890,48 @@ impl SegmentsSearcher {
         query_context: QueryContext,
         timeout: Duration,
     ) -> CollectionResult<Vec<Vec<ScoredPoint>>> {
+        Self::search_captured_inner(
+            segments,
+            batch_request,
+            runtime_handle,
+            sampling_enabled,
+            query_context,
+            timeout,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn search_captured_profiled(
+        segments: Vec<LockedSegment>,
+        batch_request: Arc<CoreSearchRequestBatch>,
+        runtime_handle: &AdaptiveSearchHandle,
+        sampling_enabled: bool,
+        query_context: QueryContext,
+        timeout: Duration,
+        profile: Arc<NativeExactSearchProfile>,
+    ) -> CollectionResult<Vec<Vec<ScoredPoint>>> {
+        Self::search_captured_inner(
+            segments,
+            batch_request,
+            runtime_handle,
+            sampling_enabled,
+            query_context,
+            timeout,
+            Some(profile),
+        )
+        .await
+    }
+
+    async fn search_captured_inner(
+        segments: Vec<LockedSegment>,
+        batch_request: Arc<CoreSearchRequestBatch>,
+        runtime_handle: &AdaptiveSearchHandle,
+        sampling_enabled: bool,
+        query_context: QueryContext,
+        timeout: Duration,
+        exact_profile: Option<Arc<NativeExactSearchProfile>>,
+    ) -> CollectionResult<Vec<Vec<ScoredPoint>>> {
         let start = Instant::now();
         let query_context_arc = Arc::new(query_context);
         let (locked_segments, searches): (Vec<_>, Vec<_>) = {
@@ -843,17 +955,18 @@ impl SegmentsSearcher {
                     let search = runtime_handle.spawn_blocking({
                         let (segment, batch_request) = (segment.clone(), batch_request.clone());
                         let cpu_utilization = query_context_arc.handoff().cpu_utilization();
+                        let exact_profile = exact_profile.clone();
                         move || {
                             cpu_utilization.measure(|| {
                                 let segment_query_context =
                                     query_context_arc_segment.get_segment_query_context();
-
-                                search_in_segment(
+                                run_segment_search_profiled(
                                     segment,
                                     batch_request,
                                     use_sampling,
                                     &segment_query_context,
                                     timeout,
+                                    exact_profile.as_deref(),
                                 )
                             })
                         }
@@ -908,17 +1021,18 @@ impl SegmentsSearcher {
                     // update timeout
                     let timeout = timeout.saturating_sub(start.elapsed());
                     let cpu_utilization = query_context_arc.handoff().cpu_utilization();
+                    let exact_profile = exact_profile.clone();
                     let handle = runtime_handle.spawn_blocking(move || {
                         cpu_utilization.measure(|| {
                             let segment_query_context =
                                 query_context_arc_segment.get_segment_query_context();
-
-                            search_in_segment(
+                            run_segment_search_profiled(
                                 segment,
                                 partial_batch_request,
                                 false,
                                 &segment_query_context,
                                 timeout,
+                                exact_profile.as_deref(),
                             )
                         })
                     });
@@ -1315,6 +1429,44 @@ fn effective_limit(limit: usize, ef_limit: usize, poisson_sampling: usize) -> us
 /// Collection Result of:
 /// * Vector of ScoredPoints for each request in the batch
 /// * Vector of boolean indicating if the segment have further points to search
+fn run_segment_search_profiled(
+    segment: LockedSegment,
+    request: Arc<CoreSearchRequestBatch>,
+    use_sampling: bool,
+    segment_query_context: &SegmentQueryContext,
+    timeout: Duration,
+    profile: Option<&NativeExactSearchProfile>,
+) -> CollectionResult<(Vec<Vec<ScoredPoint>>, Vec<bool>)> {
+    let Some(profile) = profile else {
+        return search_in_segment(
+            segment,
+            request,
+            use_sampling,
+            segment_query_context,
+            timeout,
+        );
+    };
+
+    let _scoring_guard = segment::index::hnsw_index::point_scorer::TaskScoringProfileGuard::begin();
+    let started = Instant::now();
+    let result = search_in_segment(
+        segment,
+        request,
+        use_sampling,
+        segment_query_context,
+        timeout,
+    );
+    let elapsed = started.elapsed().as_nanos();
+    let scored = segment::index::hnsw_index::point_scorer::scoring_task_success_snapshot();
+    use std::sync::atomic::Ordering::Relaxed;
+    profile.scored_vectors.fetch_add(scored, Relaxed);
+    profile.segment_search_nanos.fetch_add(
+        u64::try_from(elapsed).unwrap_or(u64::MAX),
+        Relaxed,
+    );
+    result
+}
+
 fn search_in_segment(
     segment: LockedSegment,
     request: Arc<CoreSearchRequestBatch>,
@@ -1427,6 +1579,7 @@ mod tests {
 
     use std::assert_matches;
     use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
 
     use ahash::AHashSet;
     use api::rest::SearchRequestInternal;
@@ -1530,6 +1683,63 @@ mod tests {
 
         assert!(result[0].id == 3.into() || result[0].id == 11.into());
         assert!(result[1].id == 3.into() || result[1].id == 11.into());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_exact_profiles_are_request_local_under_concurrency() {
+        let _scope = ambient::test_guard();
+        let first_dir = Builder::new().prefix("profiled_exact_a").tempdir().unwrap();
+        let second_dir = Builder::new().prefix("profiled_exact_b").tempdir().unwrap();
+        let first_holder = build_test_holder(first_dir.path());
+        let second_holder = build_test_holder(second_dir.path());
+        let first_segments = SegmentsSearcher::capture_segments(&first_holder, TEST_TIMEOUT).unwrap();
+        let second_segments = SegmentsSearcher::capture_segments(&second_holder, TEST_TIMEOUT).unwrap();
+        let query = vec![1.0, 1.0, 1.0, 1.0];
+        let request = |filter| CoreSearchRequest {
+            query: query.clone().into(),
+            with_payload: None,
+            with_vector: None,
+            filter,
+            params: Some(segment::types::SearchParams { exact: true, ..Default::default() }),
+            limit: 5,
+            score_threshold: None,
+            offset: 0,
+        };
+        let first_profile = Arc::new(NativeExactSearchProfile::default());
+        let second_profile = Arc::new(NativeExactSearchProfile::default());
+        let runtime = AdaptiveSearchHandle::current_for_tests();
+        let first = SegmentsSearcher::search_captured_profiled(
+            first_segments,
+            Arc::new(CoreSearchRequestBatch { searches: vec![request(None)] }),
+            &runtime,
+            false,
+            QueryContext::new(DEFAULT_INDEXING_THRESHOLD_KB, Handoff::Measured(AmbientContext::new())),
+            TEST_TIMEOUT,
+            first_profile.clone(),
+        );
+        let ids = AHashSet::from([3_u64.into(), 11_u64.into()]);
+        let second = SegmentsSearcher::search_captured_profiled(
+            second_segments,
+            Arc::new(CoreSearchRequestBatch {
+                searches: vec![request(Some(Filter::new_must(Condition::HasId(
+                    HasIdCondition::from(ids),
+                ))))],
+            }),
+            &runtime,
+            false,
+            QueryContext::new(DEFAULT_INDEXING_THRESHOLD_KB, Handoff::Measured(AmbientContext::new())),
+            TEST_TIMEOUT,
+            second_profile.clone(),
+        );
+        let (first_result, second_result) = tokio::join!(first, second);
+        assert_eq!(first_result.unwrap()[0].len(), 5);
+        assert_eq!(second_result.unwrap()[0].len(), 2);
+        let first_scored = first_profile.scored_vectors.load(Ordering::Relaxed);
+        let second_scored = second_profile.scored_vectors.load(Ordering::Relaxed);
+        assert!(first_scored > 0 && second_scored > 0);
+        assert!(second_scored < first_scored, "filtered request must retain its own lower scorer count");
+        assert!(first_profile.segment_search_nanos.load(Ordering::Relaxed) > 0);
+        assert!(second_profile.segment_search_nanos.load(Ordering::Relaxed) > 0);
     }
 
     #[tokio::test]

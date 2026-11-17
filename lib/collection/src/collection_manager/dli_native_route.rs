@@ -1454,6 +1454,11 @@ mod tests {
         config
             .materialize_topk
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        config
+            .profile_scoring
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let profile_path = root.path().join("dli-exact-fallback-profile.jsonl");
+        *config.profile_output_path.write() = Some(profile_path.clone());
         let mut holder = SegmentHolder::default();
         holder.add_new(learned);
         holder.add_new(plain);
@@ -1492,6 +1497,23 @@ mod tests {
                 .get("insufficient_valid_candidates"),
             Some(&1)
         );
+        let events: Vec<serde_json::Value> = std::fs::read_to_string(profile_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(events.len(), 2, "learned attempt and exact fallback are linked events");
+        assert_eq!(events[0]["candidate_resolution"], "resolved");
+        assert_eq!(events[1]["query_mode"], "native_exact_fallback");
+        assert_eq!(events[1]["fallback_reason"], "insufficient_valid_candidates");
+        assert_eq!(events[0]["request_id"], events[1]["request_id"]);
+        assert_eq!(events[1]["learned_route_supplied_results"], false);
+        assert!(events[1]["exact_fallback_scored_vectors"].as_u64().unwrap() > 0);
+        assert!(events[1]["exact_fallback_elapsed_ns"].as_u64().unwrap() > 0);
+        assert!(events[0]["dli_shard_search_elapsed_ns"].as_u64().unwrap() > 0);
+        assert!(events[1]["dli_shard_search_elapsed_ns"].as_u64().unwrap()
+            > events[1]["exact_fallback_elapsed_ns"].as_u64().unwrap());
+        assert_eq!(events[1]["returned_results"], 3);
     }
 
     #[test]
