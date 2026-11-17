@@ -1211,6 +1211,10 @@ async fn sisap23_65k_multilevel_collection_s0_vs_s2() {
     use segment::types::ExtendedPointId;
 
     let _ambient = common::ambient::test_guard();
+    // Four 16K drains produce a level-2 run of 48K followed by a separate
+    // level-1 run of 16K under the geometric scheduler. The final 1,536 IDs
+    // remain in Plain, giving a real three-role topology at exactly 65,536.
+    const MULTILEVEL_BUFFER: usize = 16_000;
     for name in [
         "DLI_REQUEST_SCORING_EVENTS",
         "DLI_ROUTING_EVENTS",
@@ -1260,7 +1264,7 @@ async fn sisap23_65k_multilevel_collection_s0_vs_s2() {
 
     let mut config = collection_config(true);
     let dli = config.dli_experimental.as_mut().unwrap();
-    dli.buffer_capacity = SMALL_NATIVE_BUFFER;
+    dli.buffer_capacity = MULTILEVEL_BUFFER;
     dli.materialize_topk = true;
     dli.quantized_shortlist = Some(128); // built natively; S0 overrides query use only
     // Slot weighting ranks Plain at priority 1.0, so include its whole bucket
@@ -1273,9 +1277,10 @@ async fn sisap23_65k_multilevel_collection_s0_vs_s2() {
     let local = replica(&collection).await;
     let mut publications = Vec::new();
     for (batch, first, end) in [
-        (0usize, 0usize, 20_000usize),
-        (1, 20_000, 40_000),
-        (2, 40_000, 60_000),
+        (0usize, 0usize, 16_000usize),
+        (1, 16_000, 32_000),
+        (2, 32_000, 48_000),
+        (3, 48_000, 64_000),
     ] {
         let mut block = vec![0u8; (end - first) * DIMENSIONS * 2];
         vectors
@@ -1299,8 +1304,8 @@ async fn sisap23_65k_multilevel_collection_s0_vs_s2() {
             "expected_output_points":event.expected_output_points,"published_output_points":event.published_output_points,
             "optimizer_micros":event.optimizer_micros}));
     }
-    // 5,536 new points remain in the native appendable Plain buffer.
-    let first = 60_000;
+    // 1,536 new points remain in the native appendable Plain buffer.
+    let first = 64_000;
     let end = SMALL_NATIVE_POPULATION;
     let mut block = vec![0u8; (end - first) * DIMENSIONS * 2];
     vectors
@@ -1449,8 +1454,8 @@ async fn sisap23_65k_multilevel_collection_s0_vs_s2() {
     drop(holder);
     assert_eq!(
         local.local_dli_counts_for_test().await.unwrap().0,
-        3,
-        "three automatic native publications"
+        4,
+        "four automatic native publications"
     );
 
     let scorer_events = output.join("request-scoring.jsonl");
@@ -1540,7 +1545,7 @@ async fn sisap23_65k_multilevel_collection_s0_vs_s2() {
                 assert_eq!(lp["original_scored"].as_u64().unwrap(), unique_offsets);
                 assert_eq!(lp["quantized_scored"].as_u64().unwrap(), 0);
             }
-            assert_eq!(lp["plain_scored"].as_u64().unwrap(), 5_536);
+            assert_eq!(lp["plain_scored"].as_u64().unwrap(), 1_536);
             let attributed = lp["quantized_scored"].as_u64().unwrap()
                 + lp["original_scored"].as_u64().unwrap()
                 + lp["plain_scored"].as_u64().unwrap();
@@ -1625,8 +1630,8 @@ async fn sisap23_65k_multilevel_collection_s0_vs_s2() {
             .collect();
     assert_eq!(
         quantization_events.len(),
-        3,
-        "each of the three native destinations quantizes once"
+        4,
+        "each native destination quantizes once"
     );
     let quantized_bytes_total: u64 = topology
         .iter()
@@ -1641,7 +1646,7 @@ async fn sisap23_65k_multilevel_collection_s0_vs_s2() {
                 .saturating_sub(row["scalar_quantized_bytes"].as_u64().unwrap_or(0))
         })
         .sum();
-    let mut summary = serde_json::json!({"population":SMALL_NATIVE_POPULATION,"dimensions":DIMENSIONS,"model":model_config(),"buffer_capacity":SMALL_NATIVE_BUFFER,"candidate_budget":10_000,"hierarchy_generation":generation,"logical_roles":roles,"topology":topology,"publications":publications,"profiled_queries":profiles,"timed_queries":query_rows,"warm_only":true,"counterbalance":"per-query ABBA/BAAB","official_query_rows":"900-963; validation 900-931; test 932-963 (selection manifest says not used in continuations 26-38)","oracle":"continuation-39 full-pool FP16 corpus; Float64 cosine, ID tie break; exact oracle generated outside timed search","source_sha":std::process::Command::new("git").args(["rev-parse","HEAD"]).output().ok().map(|o|String::from_utf8_lossy(&o.stdout).trim().to_owned()),"raw_original_vector_bytes":SMALL_NATIVE_POPULATION*DIMENSIONS*2,"persisted_original_vector_storage_bytes":original_vector_storage_bytes,"persisted_scalar_quantized_bytes":quantized_bytes_total,"quantization_build_events":quantization_events,"process_peak_rss_kib":peak_rss_kib()});
+    let mut summary = serde_json::json!({"population":SMALL_NATIVE_POPULATION,"dimensions":DIMENSIONS,"model":model_config(),"buffer_capacity":MULTILEVEL_BUFFER,"candidate_budget":10_000,"hierarchy_generation":generation,"logical_roles":roles,"topology":topology,"publications":publications,"profiled_queries":profiles,"timed_queries":query_rows,"warm_only":true,"counterbalance":"per-query ABBA/BAAB","official_query_rows":"900-963; validation 900-931; test 932-963 (selection manifest says not used in continuations 26-38)","oracle":"continuation-39 full-pool FP16 corpus; Float64 cosine, ID tie break; exact oracle generated outside timed search","source_sha":std::process::Command::new("git").args(["rev-parse","HEAD"]).output().ok().map(|o|String::from_utf8_lossy(&o.stdout).trim().to_owned()),"raw_original_vector_bytes":SMALL_NATIVE_POPULATION*DIMENSIONS*2,"persisted_original_vector_storage_bytes":original_vector_storage_bytes,"persisted_scalar_quantized_bytes":quantized_bytes_total,"quantization_build_events":quantization_events,"process_peak_rss_kib":peak_rss_kib()});
     local.force_flush_local_for_test().await;
     drop(local);
     collection.stop_gracefully().await;
