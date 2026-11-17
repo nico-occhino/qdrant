@@ -184,6 +184,11 @@ async fn dli_concurrent_readers_and_writer_preserve_visibility() {
         .await
         .unwrap(),
     );
+    // Without an Active replica, collection search returns nothing while
+    // `update_local` still applies writes: every read would be vacuously valid.
+    c.set_shard_replica_state(0, 1, ReplicaState::Active, None)
+        .await
+        .unwrap();
 
     // Seed enough points to train the first learned level.
     let mut history: BTreeMap<u64, Vec<Version>> = BTreeMap::new();
@@ -221,6 +226,7 @@ async fn dli_concurrent_readers_and_writer_preserve_visibility() {
     let mut reader_tasks = Vec::new();
     for r in 0..readers {
         let (c, done) = (c.clone(), done.clone());
+        use common::ambient::AmbientFutureExt as _;
         reader_tasks.push(tokio::spawn(async move {
             let mut rng = Rng(0xabcd_0000 + r as u64 * 7919);
             let mut reads = Vec::new();
@@ -232,7 +238,8 @@ async fn dli_concurrent_readers_and_writer_preserve_visibility() {
                 reads.push((axis, start, end, hits));
             }
             reads
-        }));
+        }
+        .in_current_ambient()));
     }
 
     // Writer: deterministic mix of inserts, re-axis upserts and deletes.
@@ -275,6 +282,9 @@ async fn dli_concurrent_readers_and_writer_preserve_visibility() {
         reads.extend(t.await.unwrap());
     }
 
+    // Guard against vacuous validation: concurrent reads must return hits.
+    let nonempty = reads.iter().filter(|r| !r.3.is_empty()).count();
+    assert!(nonempty * 10 >= reads.len() * 9, "most concurrent reads must return hits: {nonempty}/{}", reads.len());
     // Interval-linearizability check for every concurrent hit.
     let mut violations = Vec::new();
     let mut read_latencies = Vec::new();
@@ -311,7 +321,13 @@ async fn dli_concurrent_readers_and_writer_preserve_visibility() {
             for axis in 0..DIM {
                 let hits = axis_query(&c, axis, 100_000).await;
                 let ones: HashSet<u64> = hits.iter().filter(|h| h.1 > 0.5).map(|h| h.0).collect();
-                assert_eq!(ones, expected(axis), "{label}: axis {axis} live set");
+                assert_eq!(
+                    ones,
+                    expected(axis),
+                    "{label}: axis {axis} live set; {} hits, first {:?}",
+                    hits.len(),
+                    &hits[..hits.len().min(5)]
+                );
                 let all: HashSet<u64> = hits.iter().map(|h| h.0).collect();
                 assert_eq!(all.len(), hits.len(), "{label}: duplicate ids");
             }
@@ -321,6 +337,23 @@ async fn dli_concurrent_readers_and_writer_preserve_visibility() {
     let (published_after, learned_after, fallback_after) =
         replica.local_dli_counts_for_test().await.unwrap();
     let profile = replica.local_dli_named_profile_for_test().await.unwrap();
+    let holder_uuids = |h: shard::segment_holder::locked::LockedSegmentHolder| -> Vec<String> {
+        let g = h.read();
+        let mut v: Vec<String> = g
+            .iter()
+            .map(|(_, s)| s.get().read().segment_uuid().to_string())
+            .collect();
+        v.sort();
+        v
+    };
+    // Optional: flush before shutdown so deferred post-flush segment drops run.
+    let flush_before_stop = std::env::var_os("DLI_WORKLOAD_FLUSH_BEFORE_STOP").is_some();
+    if flush_before_stop {
+        replica.force_flush_local_for_test().await;
+        replica.force_flush_local_for_test().await;
+    }
+    let roles_before_stop = replica.local_dli_roles_for_test().await;
+    let holder_before_stop = holder_uuids(replica.local_segments_for_test().await.unwrap());
     let resurrected: Vec<u64> = deleted_ids
         .iter()
         .filter(|id| history[id].last().unwrap().axis.is_none())
@@ -354,12 +387,21 @@ async fn dli_concurrent_readers_and_writer_preserve_visibility() {
         .unwrap();
     check_state("reopened", reopened.clone()).await;
     let reopened_counts = shard(&reopened).await.local_dli_counts_for_test().await;
+    let reopened_ready = shard(&reopened).await.local_dli_runtime_ready_for_test().await;
+    let holder_after_reopen = holder_uuids(shard(&reopened).await.local_segments_for_test().await.unwrap());
+    let reopened_profile = shard(&reopened).await.local_dli_named_profile_for_test().await;
+    let descriptor: Option<serde_json::Value> = fs_err::read(path.join("0").join("dli_hierarchy.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok());
+    let segment_dirs: Vec<String> = fs_err::read_dir(path.join("0").join("segments"))
+        .map(|d| d.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+        .unwrap_or_default();
 
     let mut wl = write_latencies.clone();
     let mut rl = read_latencies.clone();
     let summary = serde_json::json!({
         "readers": readers, "ops": ops, "buffer_capacity": buffer_capacity,
-        "reads": reads.len(), "violations": violations.len(), "violation_examples": violations.iter().take(5).collect::<Vec<_>>(),
+        "reads": reads.len(), "nonempty_reads": nonempty, "violations": violations.len(), "violation_examples": violations.iter().take(5).collect::<Vec<_>>(),
         "deleted_ids": deleted_ids.len(), "resurrection_checked_ids": resurrected.len(),
         "read_ms": {"p50": percentile(&mut rl, 0.5), "p95": percentile(&mut rl, 0.95), "p99": percentile(&mut rl, 0.99)},
         "write_ms": {"p50": percentile(&mut wl, 0.5), "p95": percentile(&mut wl, 0.95), "p99": percentile(&mut wl, 0.99)},
@@ -369,6 +411,15 @@ async fn dli_concurrent_readers_and_writer_preserve_visibility() {
         "fallback_reasons": profile["fallback_reasons"],
         "read_guard_nanos": profile["read_guard_nanos"],
         "reopened_counts": reopened_counts,
+        "reopened_runtime_ready": reopened_ready,
+        "reopened_fallback_reasons": reopened_profile.as_ref().map(|p| p["fallback_reasons"].clone()),
+        "descriptor_members": descriptor.as_ref().map(|d| d["members"].clone()),
+        "descriptor_generation": descriptor.as_ref().map(|d| d["generation"].clone()),
+        "segment_dirs": segment_dirs,
+        "flush_before_stop": flush_before_stop,
+        "roles_before_stop": roles_before_stop,
+        "holder_before_stop": holder_before_stop,
+        "holder_after_reopen": holder_after_reopen,
     });
     println!("DLI_WORKLOAD_SUMMARY {summary}");
     if let Some(output) = output {
@@ -378,5 +429,12 @@ async fn dli_concurrent_readers_and_writer_preserve_visibility() {
         fs_err::write(file, serde_json::to_vec_pretty(&summary).unwrap()).unwrap();
     }
     assert!(violations.is_empty(), "visibility violations: {violations:?}");
+    // F12: after a *graceful* stop the hierarchy must be restored without a
+    // rebuild: retired segments must not be reloaded beside their replacement.
+    assert!(reopened_ready, "graceful reopen must restore the DLI runtime");
+    assert!(
+        reopened_counts.is_some_and(|(_, learned, fallbacks)| learned > 0 && fallbacks == 0),
+        "graceful reopen must serve learned queries: {reopened_counts:?}"
+    );
     assert!(published_after > published_before, "workload must drive publications");
 }

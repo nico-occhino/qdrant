@@ -555,6 +555,8 @@ impl ShardOperation for LocalShard {
         #[cfg(feature = "dli-research")]
         let dli_maintenance = { self.update_tracker.dli_maintenance.read().clone() };
         #[cfg(feature = "dli-research")]
+        let dli_configured = dli_maintenance.is_some();
+        #[cfg(feature = "dli-research")]
         if let Some(maintenance) = dli_maintenance {
             // DLI compactions execute the native optimizer from a tracked
             // blocking task. Cancel and join it before stopping the native
@@ -583,6 +585,25 @@ impl ShardOperation for LocalShard {
             }
             Err(err) => {
                 log::warn!("Update workers failed with: {err}");
+            }
+        }
+
+        // Retired segments are destroyed by post-flush actions once their
+        // replacement is durable; until then a restart reloads them beside it
+        // (upstream crash-consistency design, resolved by load-time dedup).
+        // The DLI descriptor requires exact holder membership, so reloaded
+        // retired segments make activation fail closed and force a full
+        // hierarchy rebuild. Workers and DLI maintenance are stopped here, so a
+        // final sync flush runs every ready drop before a graceful close. Only
+        // drops whose replacement is already durable can run.
+        #[cfg(feature = "dli-research")]
+        if dli_configured {
+            if let Err(err) = self
+                .segments
+                .read()
+                .flush_all(shard::segment_holder::FlushMode::Sync, true)
+            {
+                log::warn!("DLI shutdown flush failed; restart may require hierarchy rebuild: {err}");
             }
         }
 
