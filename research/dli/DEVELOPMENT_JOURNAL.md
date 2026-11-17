@@ -453,3 +453,10 @@ Remaining risks:
 - Vendored all 897 locked packages (1.4 GB) and created a git bundle of `072be2e0c`, uploaded with remote hash verification to `dli-v120-20261117/`.
 - First `qsub` was rejected: direct queue access is denied, so jobs must go through the routing queue. Fixed.
 - Smoke job 25677590 submitted. The preregistered H-10M script `dli-10m-frontier.pbs` is not yet submitted at the time of writing.
+
+**Continuation44 — H-10M submission.**
+- Smoke 25677590 failed at `stage_source`: Git LFS smudge against the bundle. `FAILED.json` was written correctly.
+- Fixed by disabling the LFS filters. The fix was rehearsed locally: clean checkout from the bundle, and `cargo metadata` resolving against vendored sources with an empty `CARGO_HOME`.
+- Smoke 25677616 reached COMPLETE: offline vendored build in 7 min 56 s on an EPYC 9474F, 6/6 regressions, binary sha256 `4b3d5bf5…`.
+- Ingestion harness validated on the current source at 1M (`continuation-44/ingest-1m-validation`: 380 s, 4 publications). The full ingest → static → frontier → analysis chain was rehearsed at 1M (`frontier-1m-chain`).
+- Preregistered H-10M job **25677858** submitted at 21:12:49 CET and **queued** (`q_1d`), not running at handoff. See `hpc-bundle-20261117/H10M_PREREGISTRATION.md` and `HANDOFF_25677858.md`.
