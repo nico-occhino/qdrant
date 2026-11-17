@@ -158,7 +158,18 @@ impl Collection {
     ) -> CollectionResult<()> {
         {
             let mut config = self.collection_config.write().await;
-            config.optimizer_config = config.optimizer_config.update(&optimizer_config_diff);
+            let updated = config.optimizer_config.update(&optimizer_config_diff);
+            // Experimental DLI owns its segments' physical topology. Enabling
+            // generic optimizer workers would let them restructure DLI members,
+            // and the persisted config would then be rejected at the next load
+            // (`configure_dli_experimental`). Reject before persisting.
+            #[cfg(feature = "dli-research")]
+            if config.dli_experimental.is_some() && updated.max_optimization_threads != Some(0) {
+                return Err(CollectionError::bad_input(
+                    "Experimental DLI requires optimizer_config.max_optimization_threads = 0",
+                ));
+            }
+            config.optimizer_config = updated;
         }
         self.collection_config.read().await.save(&self.path)?;
         Ok(())
@@ -186,6 +197,16 @@ impl Collection {
             {
                 return Err(CollectionError::bad_input(
                     "LMI is incompatible with collection-wide quantization",
+                ));
+            }
+            // DLI derives its own per-member quantization; a collection-wide
+            // config would be rejected at the next load, leaving it unloadable.
+            #[cfg(feature = "dli-research")]
+            if !matches!(quantization_config_diff, QuantizationConfigDiff::Disabled(_))
+                && config.dli_experimental.is_some()
+            {
+                return Err(CollectionError::bad_input(
+                    "Experimental DLI is incompatible with collection-wide quantization",
                 ));
             }
             match quantization_config_diff {

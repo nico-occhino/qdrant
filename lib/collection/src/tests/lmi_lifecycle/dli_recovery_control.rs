@@ -1708,6 +1708,25 @@ async fn dli_recovery_control_body() {
     )
     .await
     .unwrap();
+    // F7 runtime boundary: enabling generic optimizer workers or collection-wide
+    // quantization on an active DLI collection is rejected before persistence,
+    // so neither can restructure DLI members nor make the next load fail.
+    let saved_config = fs_err::read(dli_path.join("config.json")).unwrap();
+    let threads_error = configured_dli
+        .update_optimizer_params_from_diff(
+            serde_json::from_value(serde_json::json!({"max_optimization_threads": 1})).unwrap(),
+        )
+        .await
+        .unwrap_err();
+    assert!(threads_error.to_string().contains("max_optimization_threads = 0"), "{threads_error}");
+    let quantization_error = configured_dli
+        .update_quantization_config_from_diff(
+            serde_json::from_value(serde_json::json!({"scalar": {"type": "int8"}})).unwrap(),
+        )
+        .await
+        .unwrap_err();
+    assert!(quantization_error.to_string().contains("collection-wide quantization"), "{quantization_error}");
+    assert_eq!(fs_err::read(dli_path.join("config.json")).unwrap(), saved_config, "rejected updates must not persist");
     configured_dli
         .set_shard_replica_state(0, 1, ReplicaState::Active, None)
         .await
