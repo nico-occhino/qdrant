@@ -1,10 +1,11 @@
-# Current architecture decision — continuation35
+# Supported decision — continuation36
 
-1. **Bucket configuration:** retain548/32768-sample/512-hidden baseline. Completed128 and256 controls plus older548 refined curves reject128 for high-recall scaling;256 is a smaller-model ablation, not proven replacement. Fresh548 replicate is still in the original serial process; it is not silently treated as complete.
-2. **Scalar scoring:** retain default-off. The32-query identical-posting result preserves conditional Recall30 with16.83x fewer original inputs, but ordered warming fails the repeatable end-to-end gate. New warm-only ABBA/BAAB test records conditional Recall10/30, task CPU ticks, faults and wall nanoseconds, with score assertions outside timing. Release compilation/measurement status is separate; no warm result is called cold or collection-level timing.
-3. **Routing:** T2 remains an experimental quality candidate, not a proven latency winner. No new heuristic or oracle inference policy.
-4. **Bottlenecks:** high-recall bucket expansion and original scoring remain supported concerns. Smaller outputs help agreement but lose selectivity. Cold physical I/O remains distinct from warm scorer cost.
-5. **Resources:**548 router2.70MB vs2562.10MB; build-duration comparisons are confounded. Quantization persisted bytes/RSS and repeated collection-level work remain unmeasured.
-6. **Scaling:** no1M or10M gate passes. A validation/test-separated bounded300K study is reasonable only after finalized factorial and repeated scorer plus compressed-publication/recovery gates. Do not launch it here.
-7. **Before10M:** correct counters, artifact generation compatibility, missing/stale metadata, concurrent publication, reopen and exact fallback tests, and matched storage/query/oracle protocol.
-8. **Rejected/promotions deferred:**128 high-recall policy, full-shortlist scalar, multiplying isolated gains and claims versus unmatched staticLMI/HNSW. Geometric scheduler unchanged; model reuse remains deferred.
+1. **Model:**548 outputs,32768samples,512hidden remains baseline. Fresh548 is byte-identical to historical control.256 remains a smaller-model ablation;128 rejected for high-recall scaling despite higher assignment agreement. Refined95% coverage work9825/7450/5827 for128/256/548. Training timing is confounded, not used for a claimed cost win.
+2. **Scorer:** scalar128 passes warm kernel screening:1.825x median paired speed ratio,32/32 query wins, exact conditional top10/30 preserved,16.83x fewer original inputs. Default remains original; promotion waits for full collection, quantified memory and quantized concurrency/recovery.
+3. **Routing:** retain slot baseline and T2density experimental option; no demonstrated combined end-to-end superiority.
+4. **Safety implemented:** native physical path/dimension guard, foreign-generation object swap rejection, native builder quantization reopen, deletion/Plain reinsertion and complete resolution; unavailable quantization fails closed with explicit reasons.26regressions pass. This does not close corrupted-artifact or concurrent quantized-publication gates.
+5. **Bottleneck/resource:** high-recall expansion/original access remains important; cold I/O is not represented by fault-free warm control.548 router2.70MB vs2562.10MB; persistent quantization bytes/RSS/maintenance still unmeasured.
+6. **Scaling:**300K NOT launched; its explicit gates are incomplete. No1M/10M. Next justified work is quantized concurrent publication, persisted stale/missing artifacts and collection-level matched-recall/resource measurements on the65K control.
+7. **Rejected:**128 high-recall scaling, full-shortlist scalar, assuming better assignment accuracy wins, multiplying speedups, and claims against unmatched static/HNSW.
+
+All prior managed sessions completed; no experiment monitoring needed. Raw continuation36 holds exact binary/source identity and outputs. Geometric scheduler/full retraining unchanged.

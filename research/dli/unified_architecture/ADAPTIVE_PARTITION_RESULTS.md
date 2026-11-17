@@ -17,3 +17,9 @@ Native fixture elapsed108.51s (128),188.39s (256),46.18s (older548). These are c
 **Decision:** reject128 as a scaling candidate on current evidence. Retain548 as current baseline and256 as a memory ablation; do not change physical hierarchy output policy or launch1M/10M. Final adoption awaits fresh548 replicate and a validation/test-separated native comparison. The geometry of larger buckets contributes even when the classifier agrees better; increasing classifier accuracy alone is insufficient.
 
 Raw curves/per-query CSV and coverage-work.svg: continuation35/refined. New tool summarize_bucket_control.py retains actual metadata/configs and refuses missing cases. Do not silently substitute an old548 result into the completed continuation34 factorial.
+
+## Continuation36 — factorial complete
+
+All three native cases and analyses now completed successfully in the existing serial session. Fresh548 teacher JSON, sampled offsets, router binary, postings binary, coverage CSV and quality JSON are SHA256-identical to continuation28 (replicate-equivalence.json). Thus refined548 curves above also describe the fresh replicate; no contradictory quality result. Native fixture elapsed548=359.25s versus historical46.18s,128=108.51s,256=188.39s. These timing differences must not be attributed to model design: execution conditions, concurrent work and build contexts differ. Quality repeatability is established for one seed; cost repeatability is not.
+
+Accepted:548 baseline,256 explicitly selectable model-memory ablation;128 retained as historical control but rejected for high-recall scaling. Benchmark sources explicitly retain548/32768/512 defaults. Configurable output path and metadata serialized/reopened successfully in the128/256/548 controls. No policy default or scheduler change was required.
