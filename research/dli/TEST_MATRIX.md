@@ -201,3 +201,9 @@ Continuation41 (independent audit; `--locked --offline`, features `testing,lmi-t
 - Segment `candidate_scoring_v120` + `lmi_static_v120`: `lmi-research` 9+8 PASS; `lmi-scorer-profile` only 7+8 PASS (`segment-feature-split.log`). `cargo tree -e features` under `collection/dli-research` resolves segment `lmi-scorer-profile` + `lmi-training`, without `lmi-research`.
 - Intermediate commits `593225584`/`74bb36b63` were not separately compiled; the final tree containing them was tested. Ignored release benchmarks and the workspace suite were not run.
 - After lint fixes: same filter 35 PASS / 0 FAIL / 7 ignored (`final-suite.log`). Clippy (`collection`, DLI features) shows no warning on audit-changed lines; pre-existing research-code warnings remain (`clippy-collection.log`).
+
+Continuation42–44 (`--locked --offline`, features `testing,lmi-training,dli-research`):
+- **Segment** (`continuation-43/segment-static-suite.log`), with `lmi-research`: lmi_static_v120 9, lmi_shell_v120 3, lmi_training_v120 5, candidate_scoring_v120 9 + 1 ignored, dli_native_topology 1, all PASS. lmi_static_v120 also passes without `lmi-research` (9). New: `underfilled_learned_probe_widens_to_fill_top`.
+- **Collection, dev:** `dli_`, `native_exact`, `destination_quantization`, `lmi_lifecycle`, `worker_lifecycle` — 35 PASS / 0 FAIL / 9 ignored (`collection-suite-f12.log`); `local_shard` 18 PASS. Includes the F7 runtime-update rejection and an unchanged `config.json`.
+- **Concurrent workload** (ignored test, perf): readers 1/4/8 × 1,500 operations, all PASS, 0 violations, graceful reopen 16/16 learned (`continuation-43/workload/`). F12 fix verified 3/3 without a test-side flush.
+- **Selection frontier** (ignored, perf): 65K, 320 queries × 11 budgets × 6 configurations, PASS in 166 s (`continuation-42/frontier-run.log`). 10M harness validation PASS (`frontier-10m-validation.log`).

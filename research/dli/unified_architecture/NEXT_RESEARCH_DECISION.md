@@ -41,3 +41,15 @@ Continuation38: generated exact65K pool oracle for32 previously used diagnostic 
 4. **Next experimental gate (proposed, not run):** isolate candidate *selection* from candidate *scoring* on the existing 65K topology. Build a recall-versus-work frontier over `candidate_budget` for slot-weighted and T=2 routing. Scoring is held fixed (A0 and A2) and judged against the full-pool oracle and a static-LMI / IVF-style flat-partition baseline at matched candidate counts. This is offline-replayable from saved postings first, before any native run.
    - Prerequisites: a demonstrably disjoint held-out query range with its own oracle; incremental quantization RSS; a matched no-quantization build-cost control.
    - No 300K/1M/10M ingestion until the frontier shows algorithmic competitiveness at matched recall.
+
+## Continuation42–44 decision
+
+1. **Selection is the bottleneck.** At 65K, a static LMI with the same model configuration beats geometric DLI at every matched work level and needs about 32% less work at R@30 ≥ 0.95. Router ranking (about 3.5× over the oracle) is the largest loss, and DLI cross-level allocation adds about 1.8×. Scalar quantization reduces scoring cost but does not address this.
+2. **Policies.** Keep `slot` as the default. T=2 remains experimental: it helps only at very low work. `proportional` is a small gain and is not promoted.
+3. **Correctness.**
+   - Static underfill fixed.
+   - F12 (retired segments reloaded after graceful stop) fixed.
+   - F7 runtime boundary closed.
+   - Concurrent visibility verified for the Tier A fixture.
+   - Crash-restart rebuild and F8 contention at scale remain open.
+4. **10M.** A preregistered, bounded negative-scaling study (H-10M: static versus DLI selection efficiency at 10M, A0 scorer, HNSW and A2 excluded) is justified. It is gated on the HPC smoke job passing.

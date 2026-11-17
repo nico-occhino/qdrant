@@ -330,3 +330,12 @@ Not run:
 - the ignored release benchmarks,
 - the workspace-wide suite,
 - `cargo +nightly fmt`. Repository-wide formatting already fails on baseline research files, and reformatting them would obscure this diff.
+
+## 5. Continuation43 additions
+
+| Finding | Status | Evidence | Commit |
+|---|---|---|---|
+| F7 runtime boundary | **FIXED AND VERIFIED** | A runtime optimizer-threads ≠ 0 update, or a collection-wide quantization update, is rejected before persistence. `dli_recovery_control` asserts both errors and a byte-identical `config.json`. | `8c74ac1b0` |
+| F8 lock contention | **REPRODUCIBLE DESIGN RISK, mechanism measured** | Tier A workload: `busy` fallback 2.0% / 12.1% / 14.9% of reads at 1 / 4 / 8 readers; writer p99 0.68 → 1.29 ms. Not yet measured at 65K/10M. | — |
+| F12 retired segments reloaded after graceful stop | **CONFIRMED DEFECT → FIXED AND VERIFIED** | Upstream deferred segment drops reload beside the replacement until it is durable. The exact-membership descriptor then failed closed and forced a rebuild. A final sync flush at DLI graceful stop fixes it: holder 7 → 2, learned 0/16 → 16/16, 3/3 runs. Crash restart remains fail-closed with rebuild. | `072be2e0c` |
+| Static LMI underfill (S1) | **CONFIRMED DEFECT → FIXED AND VERIFIED** | See `research/lmi/STATIC_LMI_INDEPENDENT_AUDIT.md`. | `15727cc2e` |

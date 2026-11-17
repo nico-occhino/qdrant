@@ -427,3 +427,29 @@ Remaining risks:
 - F10: the descriptor is not transactional with the native swap. Fail-closed, but can force a full rebuild; power loss is not demonstrated.
 - F7 runtime optimizer-config updates are caught only at the next load.
 - No quantization rebuild without recompaction.
+
+## Continuation42–44 — static LMI audit, selection frontier, concurrency, HPC preparation (Claude Code)
+
+**PBS cleanup.** Deleted the ten verified obsolete held jobs, 25014350–25014544, from the Oct 27 chain. Before/after state is in `hpc-pbs-cleanup-20261117/`. `qstat -u nico` is empty afterwards.
+
+**Static LMI** ([audit](../lmi/STATIC_LMI_INDEPENDENT_AUDIT.md)).
+- Fixed an underfill defect (`15727cc2e`): learned search returned fewer than `min(top, live)` hits when the top-`nprobe` buckets were small or empty, or contained deletions. The probe now doubles until filled, in both the mutable and read-only indexes.
+- The accepted Nov 3 latency gap to HNSW is about 91% candidate scoring (117K candidates per query at nprobe 30) and about 8.5% routing.
+
+**Selection frontier** ([report](selection_frontier/CANDIDATE_SELECTION_REPORT.md); `continuation-42/`).
+- Native replay on the frozen continuation40 65K topology plus a static LMI built in-run, with a new DLI-unseen 256-query test set and exact oracle.
+- Static beats every DLI policy at equal scored work (+0.011 to +0.239 R@30, CIs exclude 0). It needs about 32% less work for val-locked R@30 ≥ 0.95.
+- Router ranking costs about 3.5× over the gold-bucket oracle; DLI cross-level allocation adds about 1.8×.
+- T=2 helps only at ≤ 3K work. Proportional allocation gives +0.6 to +1.2 pp at ≥ 4K and is not promoted.
+- The harness was validated on the retained continuation25 10M topology.
+
+**Concurrency** ([report](concurrency/CONCURRENT_WORKLOAD_REPORT.md); `continuation-43/`).
+- Tier A: 26,681 concurrent reads at 1/4/8 readers with 12 publications each. Zero linearizability violations, and the final state was exact at quiescence and after reopen.
+- `busy` fallback rises from 2% to 15% with readers (F8 mechanism).
+- F12, found and fixed (`072be2e0c`): graceful stop left retired segments to reload beside their replacement, so DLI failed closed and rebuilt. DLI shards now flush at graceful stop.
+- F7 runtime boundary fixed (`8c74ac1b0`).
+
+**HPC.**
+- Vendored all 897 locked packages (1.4 GB) and created a git bundle of `072be2e0c`, uploaded with remote hash verification to `dli-v120-20261117/`.
+- First `qsub` was rejected: direct queue access is denied, so jobs must go through the routing queue. Fixed.
+- Smoke job 25677590 submitted. The preregistered H-10M script `dli-10m-frontier.pbs` is not yet submitted at the time of writing.
