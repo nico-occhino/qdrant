@@ -39,7 +39,7 @@ q64=queries.astype(np.float64);q64/=np.linalg.norm(q64,axis=1)[:,None]
 scores=q64@d64.T;gold=np.argsort(-scores,axis=1,kind='stable')[:,:30]
 rows=[]
 for placement,labels in [('teacher',teacher_labels),('model',model_labels)]:
- sizes=np.bincount(labels,minlength=548)
+ sizes=np.bincount(labels,minlength=len(centers))
  for routing,rank in [('teacher',teacher_rank),('model',model_rank)]:
   for qi in range(len(queries)):
    order=rank[qi];cumulative=np.cumsum(sizes[order]);position=np.argsort(order)
@@ -53,5 +53,5 @@ for placement in ['teacher','model']:
    rr=[x for x in rows if x['placement']==placement and x['routing']==routing and x['budget']==budget]
    summary.append(dict(placement=placement,routing=routing,budget=budget,**{k:float(np.mean([x[k] for x in rr])) for k in ['candidates','bucket10','bucket30']}))
 with (r/'teacher-frontier.csv').open('w') as f:w=csv.DictWriter(f,fieldnames=summary[0].keys());w.writeheader();w.writerows(summary)
-result=dict(population=65536,training_sample=32768,queries=len(queries),buckets=548,model_config=metadata['model'],sample_capture_vs_blas_teacher_agreement=capture_agreement,train_classifier_agreement=float(np.mean(model_labels[trainmask]==teacher_labels[trainmask])),heldout_pool_classifier_agreement=float(np.mean(model_labels[~trainmask]==teacher_labels[~trainmask])),query_teacher_bucket_in_model_top={str(k):float(np.mean([teacher_rank[i,0] in model_rank[i,:k] for i in range(len(queries))])) for k in [1,4,8,16]},scope='controlled65K subset; exact local oracle, not official10M gold; not reconstruction of saved6M teacher; BLAS/native teacher boundary differences measured')
+result=dict(population=65536,training_sample=32768,queries=len(queries),buckets=len(centers),model_config=metadata['model'],sample_capture_vs_blas_teacher_agreement=capture_agreement,train_classifier_agreement=float(np.mean(model_labels[trainmask]==teacher_labels[trainmask])),heldout_pool_classifier_agreement=float(np.mean(model_labels[~trainmask]==teacher_labels[~trainmask])),query_teacher_bucket_in_model_top={str(k):float(np.mean([teacher_rank[i,0] in model_rank[i,:k] for i in range(len(queries))])) for k in [1,4,8,16]},scope='controlled65K subset; exact local oracle, not official10M gold; not reconstruction of saved6M teacher; BLAS/native teacher boundary differences measured')
 (r/'teacher-checks.json').write_text(json.dumps(result,indent=2));print(json.dumps(result,indent=2))

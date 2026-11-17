@@ -316,6 +316,11 @@ fn native_quantized_sisap_subset() {
     let raw = std::fs::read(input.join("pool.f16")).unwrap();
     assert_eq!(raw.len(), 65536 * 768 * 2);
     let root = tempfile::tempdir().unwrap();
+    let segment = if let Ok(path) = std::env::var("DLI_LEARNED_CONTROL_INDEX") {
+        let path = std::path::PathBuf::from(path);
+        let uuid = path.file_name().unwrap().to_str().unwrap().parse().unwrap();
+        segment::segment_constructor::load_segment(&path, uuid, None, &AtomicBool::new(false), true).unwrap()
+    } else {
     let mut segment = build_simple_segment(root.path(), 768, Distance::Cosine).unwrap();
     for (id, bytes) in raw.chunks_exact(768 * 2).enumerate() {
         let v: Vec<f32> = bytes
@@ -326,6 +331,8 @@ fn native_quantized_sisap_subset() {
             .upsert_point(1, (id as u64 + 1).into(), only_default_vector(&v))
             .unwrap();
     }
+        segment
+    };
     let query_bytes = std::fs::read(input.join("queries.f32")).unwrap();
     let tracker = segment.id_tracker.borrow();
     let storage = segment.vector_data[DEFAULT_VECTOR_NAME]
@@ -352,16 +359,30 @@ fn native_quantized_sisap_subset() {
     eprintln!("SCALAR_BUILD_MS={}", started.elapsed().as_millis());
     let candidates: Vec<u32> = (0..65536).collect();
     let ctx = VectorQueryContext::default();
-    for (qi, bytes) in query_bytes.chunks_exact(768 * 4).take(4).enumerate() {
+    for (qi, bytes) in query_bytes.chunks_exact(768 * 4).enumerate() {
         let query: QueryVector = bytes
             .chunks_exact(4)
             .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
             .collect::<Vec<_>>()
             .into();
+        let candidates = if std::env::var_os("DLI_LEARNED_CONTROL_INDEX").is_some() {
+            use segment::index::VectorIndexEnum;
+            let index = segment.vector_data[DEFAULT_VECTOR_NAME].vector_index.borrow();
+            let VectorIndexEnum::Lmi(lmi) = &*index else { panic!("trained LMI required") };
+            let state = lmi.routing_state().unwrap();
+            let values: Vec<f32> = bytes.chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+            let values = Distance::Cosine.preprocess_vector::<f32>(values);
+            let logits = state.router().forward(&values).unwrap();
+            let mut order: Vec<usize> = (0..logits.len()).collect();
+            order.sort_by(|a,b| logits[*b].total_cmp(&logits[*a]));
+            let mut selected = Vec::new();
+            for bucket in order.into_iter().take(16) { selected.extend_from_slice(state.postings().get(bucket).unwrap()); }
+            selected.sort_unstable(); selected.dedup(); selected
+        } else { candidates.clone() };
         let original_started = std::time::Instant::now();
         let original = score_candidates(&query, &candidates, 30, &tracker, &storage, &ctx).unwrap();
-        eprintln!("S0 query={qi} original=65536 wall_ns={}", original_started.elapsed().as_nanos());
-        for limit in [128, 512, 2048, 65536] {
+        eprintln!("S0 query={qi} original={} wall_ns={}", candidates.len(), original_started.elapsed().as_nanos());
+        for limit in [64, 128, 256, 512, 1024, 2048, 65536] {
             let started = std::time::Instant::now();
             let approximate = score_candidates_with_quantization(
                 &query,
@@ -393,8 +414,8 @@ fn native_quantized_sisap_subset() {
                 assert_eq!(original, reranked);
             }
             eprintln!(
-                "NATIVE_SCALAR query={qi} quantized=65536 original={} recall30={recall} s1_recall30={s1_recall} quantized_ns={quantized_ns} execution_ns={execution_ns} wall_ms={}",
-                offsets.len(),
+                "NATIVE_SCALAR query={qi} quantized={} original={} recall30={recall} s1_recall30={s1_recall} quantized_ns={quantized_ns} execution_ns={execution_ns} wall_ms={}",
+                candidates.len(), offsets.len(),
                 started.elapsed().as_millis()
             );
         }

@@ -1,0 +1,5 @@
+# Adaptive partition checkpoint
+
+Existing M0:548 buckets/32768 samples on65K; classifier train/heldout assignment agreement .99945/.80310. Completed continuation32 gold-aware greedy diagnostic reaches90/95/100% top30 at1169/1453/1704 mean candidates; not an inference policy or optimal lower bound. Teacher/model factorial at~2K candidates gives teacher/teacher Recall30 coverage .8792 versus model/model .8531 on32 queries. Partition concentration and query ranking both merit evaluation.
+
+Implemented bounded DLI_CONTROL_BUCKETS override128/256/548 in the native private-builder fixture and generalized teacher analyzer to the captured bucket count (previously548 hardcoded). Native training execution for M1/M2 is **NOT RUN**. M3 sampling must hold teacher fixed and therefore cannot be implemented by simply enlarging the current native teacher reservoir; M4 is likewise unrun. These are experiments awaiting source compile, not validated model improvements. No1M or10M retraining gate passes yet.

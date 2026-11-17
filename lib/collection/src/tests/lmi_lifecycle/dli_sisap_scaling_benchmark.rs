@@ -1105,6 +1105,12 @@ fn dli_small_teacher_router_control() {
     use shard::optimize::OptimizationStrategy;
     let _scope = common::ambient::test_guard();
     let output = PathBuf::from(std::env::var("DLI_TEACHER_CONTROL").unwrap());
+    let mut model = model_config();
+    if let Ok(buckets) = std::env::var("DLI_CONTROL_BUCKETS") {
+        model.n_buckets = buckets.parse().unwrap();
+        assert!([128, 256, 548].contains(&model.n_buckets));
+    }
+
     let bytes = std::fs::read(output.join("pool.f16")).unwrap();
     let id_bytes = std::fs::read(output.join("pool_ids.u64")).unwrap();
     let ids: Vec<u64> = id_bytes
@@ -1151,7 +1157,7 @@ fn dli_small_teacher_router_control() {
         segments_path: output.join("segments"),
         segment_config: config,
         destination_on_disk: false,
-        model: model_config(),
+        model: model.clone(),
         expected_sources: HashSet::from([source_uuid]),
         expected_topology: None,
         validation_hook: None,
@@ -1181,5 +1187,5 @@ fn dli_small_teacher_router_control() {
     )
     .unwrap();
     assert_eq!(reopened.available_point_count(), 65536);
-    std::fs::write(output.join("index.json"),serde_json::to_vec_pretty(&serde_json::json!({"path":path,"uuid":uuid,"population":65536,"model":model_config(),"scope":"disposable subset, not reconstruction of original6M teacher"})).unwrap()).unwrap();
+    std::fs::write(output.join("index.json"),serde_json::to_vec_pretty(&serde_json::json!({"path":path,"uuid":uuid,"population":65536,"model":model,"scope":"disposable subset, not reconstruction of original6M teacher"})).unwrap()).unwrap();
 }

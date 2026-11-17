@@ -1,0 +1,5 @@
+# Current decision
+
+Best validated operational architecture remains geometric native maintenance, original scorer, safe top-k and complete visibility fallback; T2 allocation is a measured quality candidate with limited held-out support. Scalar128-rerank is the leading execution candidate, not a validated collection replacement. Full-shortlist scalar is rejected as overhead without access reduction on the small control. No best adaptive partition can be selected without M1/M2 runs. No1M validation or10M retraining gate passes. Model reuse remains the next maintenance research phase after the scorer/partition decision, not a reason to change compaction now. There is no matched static/HNSW baseline establishing competitiveness.
+
+Immediate evidence gap: completed32-query learned-posting release results, quantized-specific concurrent-publication/recovery and actual scored-work/I/O accounting. Only then select scorer and run controlled bucket-count training. Build/session metadata in continuation33/handoff.json records unresolved persistence rather than claiming a detached service.
