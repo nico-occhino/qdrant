@@ -177,7 +177,7 @@ if controls:
 validation = [s for s in summaries if s['pass_name'] == 'validation']
 test = [s for s in summaries if s['pass_name'] == 'test_warm']
 comparisons = {}
-for objective in ['work30000', 'recall060']:
+for objective in (['work30000', 'recall060'] if validation else []):
     group = []
     for policy in ['SlotWeighted','ReservedPerLevel','PopulationDensity']:
         relevant = [s for s in validation if s['policy'] == policy]

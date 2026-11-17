@@ -1,0 +1,21 @@
+# Static-LMI10M baseline: evidence and executable preparation
+
+No valid completed static-LMI10M result was found in the scanned local research experiment summaries. Scope and candidate paths are recorded in continuation28/static-discovery.json; this is not proof of absence outside those roots. Existing300K static results and10M DLI results are not interchangeable. No ingestion is launched by this plan.
+
+The existing `sisap23_scaling_static_lmi_vs_temporal_dli` ignored test already accepts `DLI_SINGLE_SYSTEM=static`, `DLI_BENCH_POINTS=10120191`, `DLI_ORACLE_POPULATION=10120191`. Its `collection_config(false)` enables native static LMI and normal generic maintenance, one shard/replica, Float16 cosine, native appendable segments, **forty250K batches plus the120191-point tail** at full scale (41 acknowledged operations), seed42. No DLI dispatcher or scheduler should run. Normal generic optimization remains enabled: indexing_threshold20000KB, one optimizer thread, default_segment_number1. Preserve that policy rather than forcing complete rebuilds.
+
+Use the verified continuation25/data manifest: official10120191×768 Float16 corpus, official2023 queries and full10M gold, one-based point IDs. Shared model reference is548 buckets,32,768 training samples, hidden512,30 epochs,5 clustering iterations, seed42. Match the explicit Cold vector policy; record actual native destination backend (static immutable Mmap may differ from DLI ChunkedMmap). Preserve native WAL/preimage cleanup. Inspect all source/destination identities and indexed/live/Plain counts at quiescence.
+
+## Prerequisites before an expensive run
+
+1. A frozen static query-probe sweep is needed: `SearchParams` currently has no LMI nprobe override; `LmiIndex` takes `state.nprobe()`. Do not send an HNSW parameter and claim LMI work changed. Add a narrowly scoped, validated research override or prove safe reopen-only probe changes without retraining. Every budget must record actual native-scored vectors and learned attribution.
+2. Use the same validation/test split, normalized cosine oracle and release binary/features as DLI. Select approximately matched recall on validation, test once on held-out rows. Report unmatched targets as infeasible. Do not use full10M gold at partial-population checkpoints.
+3. Reuse shared native optimization/build/scoring events. Separate acknowledged writes, summed job wall, elapsed quiescence, training, copied/destination populations and peak resources.
+4. Alternate run order or replicate frozen query orders, control warmup and capture major faults/CPU/core-affinity conditions. Do not compare cold DLI with warm static.
+5. Validate1M/3M static resource pilots before10M. No pilot/full run is launched in this continuation.
+
+## Resource envelope (estimates, not measurements)
+
+Raw Float16 vectors require15,544,613,376B (~14.48GiB). One active copy plus one largest destination plus one retained preimage is~46.63GB of vector files alone; manifests may retain additional generations. Reserve at least100–150GB free storage for a controlled single-system run, plus the existing source dataset. Query-only CPU/private model memory is small relative to vector cache, but build/payload/ID/Plain/input buffers and training tensors add to RAM. The local machine exposes16 logical CPUs and~23GiB RAM, with~496GiB free disk at preflight. Earlier geometric peakRSS~20.3GiB leaves little build margin. Prefer≥48GiB RAM for conservative full-scale headroom; the23GiB host requires measured pilots and bounded on-disk/streaming behavior, not an assertion of impossibility or guaranteed success. Keep CPU training/optimization concurrency bounded at2 threads/one job and run variants sequentially.
+
+An isolated foreground command, only after these gates and explicit campaign scheduling, would use the existing compatible Cargo target, LibTorch2.5.1, `--release --features testing,lmi-training,dli-research`, the exact full test name with `--ignored --exact`, and the three static-system environment variables above. Record binary/source/config/dataset hashes and process ownership. The sandbox user-systemd bus is denied; nohup/setsid is not proof of survival. A long run needs a verified supported independent service or an operator-owned foreground terminal. No host SSH/security/cache settings should be changed.
