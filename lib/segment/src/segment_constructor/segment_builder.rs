@@ -920,7 +920,7 @@ impl SegmentBuilder {
 
                 let vector_storage_path = get_vector_storage_path(segment_path, vector_name);
 
-                #[cfg(feature = "lmi-research")]
+                #[cfg(feature = "lmi-scorer-profile")]
                 let quantization_started = std::env::var_os("DLI_QUANTIZATION_BUILD_EVENTS")
                     .map(|_| std::time::Instant::now());
 
@@ -933,7 +933,7 @@ impl SegmentBuilder {
                     stopped,
                 )?;
 
-                #[cfg(feature = "lmi-research")]
+                #[cfg(feature = "lmi-scorer-profile")]
                 if let (Some(started), Some(path)) = (
                     quantization_started,
                     std::env::var_os("DLI_QUANTIZATION_BUILD_EVENTS"),

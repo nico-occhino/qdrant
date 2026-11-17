@@ -660,7 +660,7 @@ impl<'a> BatchFilteredSearcher<'a> {
     /// Research-only accounting at the actual native scorer call site.
     /// The three durations are exclusive portions of this method; `total_ns`
     /// also includes iterator and visibility checks.
-    #[cfg(feature = "lmi-research")]
+    #[cfg(feature = "lmi-scorer-profile")]
     pub fn peek_top_iter_profiled(
         mut self,
         mut points: impl Iterator<Item = PointOffsetType>,

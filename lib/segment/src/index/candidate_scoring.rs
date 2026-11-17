@@ -106,7 +106,7 @@ where
         .expect("one input query yields one result batch"))
 }
 
-#[cfg(feature = "lmi-research")]
+#[cfg(feature = "lmi-scorer-profile")]
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct CandidateScoreProfile {
     pub input_offsets: usize,
@@ -122,7 +122,7 @@ pub struct CandidateScoreProfile {
 }
 
 /// Same native scorer path as `score_candidates_generic`, with opt-in accounting.
-#[cfg(feature = "lmi-research")]
+#[cfg(feature = "lmi-scorer-profile")]
 pub fn score_candidates_profiled<V, I>(
     query: &QueryVector,
     candidates: &[PointOffsetType],
@@ -139,7 +139,7 @@ where
 }
 
 /// Request-local successful native scorer accounting, including quantized scoring.
-#[cfg(feature = "lmi-research")]
+#[cfg(feature = "lmi-scorer-profile")]
 pub fn score_candidates_quantized_profiled<V, I>(
     query: &QueryVector,
     candidates: &[PointOffsetType],

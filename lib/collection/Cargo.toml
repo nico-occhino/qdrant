@@ -12,7 +12,9 @@ edition = "2024"
 workspace = true
 
 [features]
-dli-research = ["lmi-training", "segment/lmi-research"]
+# Uses only scorer-profiling APIs; must not enable static `segment/lmi-research`,
+# which changes the static LMI search path and would contaminate static baselines.
+dli-research = ["lmi-training", "segment/lmi-scorer-profile"]
 lmi-training = ["segment/lmi-training"]
 testing = ["common/testing", "segment/testing", "shard/testing"]
 tracing = ["dep:tracing", "api/tracing", "segment/tracing"]

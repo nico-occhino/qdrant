@@ -14,7 +14,10 @@ workspace = true
 [features]
 default = []
 lmi-training = ["dep:tch"]
-lmi-research = []
+# Request-local scorer accounting APIs (no behavior change unless called).
+lmi-scorer-profile = []
+# Static LMI search profiling: switches `LmiIndex::search` to profiled routing/scoring with per-query logs.
+lmi-research = ["lmi-scorer-profile"]
 testing = ["common/testing", "sparse/testing", "gpu/testing", "quantization/testing", "dep:exhaustive"]
 gpu = ["gpu/gpu"]
 
