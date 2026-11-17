@@ -56,3 +56,9 @@ Missing scalar metadata on one member yields mixed quantized/unquantized learned
 Deterministic real-optimizer control pins a quantized learned query before proxy installation, completes the real physical holder swap while that query is barrier-paused, then resumes it and checks its old physical view's expected version/score. Subsequent queries see the new topology and native visibility. Success/cancel controls preserve mutations; all26 regressions PASS/6ignored (`continuation37/corrupt-recovery-regression.log`). All new timings are debug correctness only.
 
 **Still missing:** a65K multi-level Collection S0/S2 release comparison against a full-pool oracle, actual scorer rather than input accounting, compressed RSS/read-byte/phase-cost telemetry, cold controls and the A0–A3 validation/test comparison. No300K gate passes. Prior warm scorer results remain the only optimized performance evidence.
+
+## Continuation38 — full-pool oracle preparation
+
+`prepare_65k_oracle.py` computes a blocked Float64 cosine oracle over all65,536 existing pool vectors after Float32 preprocessing and Float16 storage conversion; ties use external-ID order. Executed32 previously used queries800–831, no collection or model modification. Manifest/input/output hashes and arrays: continuation38/oracle. Native Float16 score near-ties can differ; no claim of native bitwise score equivalence. These32 queries are not an untouched held-out set.
+
+Collection instrumentation currently records aggregate native scorer time and global scorer work; it does not independently attribute successful quantized versus original evaluations per query or isolate the two timings. This blocks the requested controlled collection-level cost attribution. No new S0/S2 collection run or cold experiment was executed, and no speedup or 300K promotion gate is claimed.

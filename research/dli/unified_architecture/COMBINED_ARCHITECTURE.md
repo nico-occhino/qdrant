@@ -7,3 +7,5 @@ The strongest bounded execution candidate is548 plus scalar128 reranking; the be
 Bounded quantized-native proxy/cancel/publication and segment reopen/missing/corrupt metadata controls now pass. They justify further65K integration, not default promotion or a combined T2/multi-level performance claim. Native final scores and visible populations remain authoritative.
 
 Continuation37: explicit collection quantized-shortlist configuration and native construction/reopen are now implemented and exercised through normal updates. Native generation pinning through a barrier-forced final holder swap, mixed-member missing/corrupt/incompatible scalar recovery and exact-fallback attribution pass. Tiny multi-level lifecycle evidence does not supply an A0–A3 performance ranking. Keep original default and defer300K until full65K query/resource measurements.
+
+Continuation38: full65K pool oracle generated and hashed for previously used32 diagnostic queries. It is not a new multi-level collection experiment or untouched test split. Separate per-query native quantized/original work and timing remain necessary for A0/A2 comparison; no new architecture winner is inferred.
