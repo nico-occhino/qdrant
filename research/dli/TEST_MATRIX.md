@@ -186,3 +186,18 @@ Continuation40:
 - Query rows 900–963 are unreported in logs for continuations26–38, but earlier use has not been excluded. Treat the 32 row932–963 test split as diagnostic, not proven untouched. No 300K run.
 
 Continuation40 request-local fallback profile follow-up (PyTorch 2.5.1, shared research target, `--locked --offline`, features `testing,lmi-training,dli-research`): `collection_manager::dli_native_route::tests::dli_topk_underfill_uses_complete_native_fallback` PASS; verifies linked request ID, explicit underfill reason, nonzero exact scorer successes, fallback and whole DLI-shard timers, and native result count. `collection_manager::segments_searcher::tests::native_exact_profiles_are_request_local_under_concurrency` PASS; simultaneous full and ID-filtered holders retain independent successful scorer counts. Full native DLI routing module 13 PASS; `tests::lmi_lifecycle::dli_recovery_control` PASS. Existing global scorer counters are not used for request deltas. Latency not measured in these tests.
+
+Continuation41 (independent audit; `--locked --offline`, features `testing,lmi-training,dli-research`, shared research target):
+- At `7a499ea92`: `dli_` + `native_exact_profiles`: 32 PASS / 0 FAIL / 7 ignored (`continuation-41/commit2-accounting-suite.log`). New tests:
+  - `dli_request_events_are_final_and_request_local_under_concurrency` (16 concurrent requests, exact fixture-derived Plain/learned counts, one event each)
+  - `dli_request_events_cover_rejection_and_unavailable_quantization`
+  - `dli_request_events_absent_when_profiling_disabled`
+  - `invalid_quantized_shortlist_environment_selects_original_scoring`
+  - Underfill and exact-concurrency tests strengthened from inequalities to equalities.
+- At `277cf0d94`: `dli_`, `native_exact`, `destination_quantization`, `lmi_lifecycle`, `worker_lifecycle`: 35 PASS / 0 FAIL / 7 ignored (`lifecycle-fixes-suite.log`). Covers:
+  - degraded quantization: route-level, plus Collection reopen with missing/corrupt/incompatible metadata giving `learned=1 exact=0 degraded=1`;
+  - destination quantization derivation;
+  - activation rejection with generic optimizers (`None`, `Some(1)`).
+- Segment `candidate_scoring_v120` + `lmi_static_v120`: `lmi-research` 9+8 PASS; `lmi-scorer-profile` only 7+8 PASS (`segment-feature-split.log`). `cargo tree -e features` under `collection/dli-research` resolves segment `lmi-scorer-profile` + `lmi-training`, without `lmi-research`.
+- Intermediate commits `593225584`/`74bb36b63` were not separately compiled; the final tree containing them was tested. Ignored release benchmarks and the workspace suite were not run.
+- After lint fixes: same filter 35 PASS / 0 FAIL / 7 ignored (`final-suite.log`). Clippy (`collection`, DLI features) shows no warning on audit-changed lines; pre-existing research-code warnings remain (`clippy-collection.log`).

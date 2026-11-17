@@ -28,3 +28,16 @@ Continuation38: generated exact65K pool oracle for32 previously used diagnostic 
 4. **Routing/model:** A0/A2 isolate scoring only. A1/A3 T=2 routing, adaptive buckets, model changes and static-LMI/HNSW comparisons were not run or inferred.
 5. **Next gate:** Do not launch 300K yet. The 32 nominal test rows were not used in recorded continuations 26–38, but exclusion from earlier work is unverified. Select/document a truly disjoint query test range and regenerate its 65K exact oracle before promotion. Measure incremental quantization RSS and a matched no-quant build before claiming full economic break-even. No 1M/10M campaign.
 6. **Execution:** The preserved 20K fixture failed before search because native scheduling left only levels 0 and 2. The corrected 16K schedule passed the release Collection test in 156.83 s after binary build. Focused tests: recursive storage accounting 1/1 and native DLI routing/visibility 13/13. Commits: `ceca71685` fixture correction; `b8d4b9157` recursive byte accounting and profile cleanup.
+
+## Continuation41 decision — independent audit
+
+1. **Continuation40 stands** within its stated limits. Its latency pass ran with profiling disabled, and the request accounting defects found by the audit (early outcome label, guard-held I/O, interleaved concurrent JSONL, static-path feature coupling) did not touch its measurements. No rerun.
+2. **Per-request accounting gate is now met** for learned, Plain, quantized, original and exact-fallback work, with one final outcome per request.
+3. **Semantics changes to carry into future runs:**
+   - Missing derived quantization now degrades the affected member to original scoring (counted) instead of complete exact fallback.
+   - DLI activation requires `max_optimization_threads = 0`.
+   - Static LMI search is unprofiled in `dli-research` builds.
+   - Static-vs-DLI timing must still be compiled from one source with identical features.
+4. **Next experimental gate (proposed, not run):** isolate candidate *selection* from candidate *scoring* on the existing 65K topology. Build a recall-versus-work frontier over `candidate_budget` for slot-weighted and T=2 routing. Scoring is held fixed (A0 and A2) and judged against the full-pool oracle and a static-LMI / IVF-style flat-partition baseline at matched candidate counts. This is offline-replayable from saved postings first, before any native run.
+   - Prerequisites: a demonstrably disjoint held-out query range with its own oracle; incremental quantization RSS; a matched no-quantization build-cost control.
+   - No 300K/1M/10M ingestion until the frontier shows algorithmic competitiveness at matched recall.

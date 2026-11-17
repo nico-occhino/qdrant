@@ -404,3 +404,26 @@ Continuation39: added opt-in request-local learned-member scorer profile, counti
 Continuation40: completed the first native release-mode 65K multi-level Collection S0/A2 benchmark. Four normal insert drains triggered four physical publications; final active role map has 48K level2,16K level1,1,536 Plain; unique active point IDs exactly match the 65,536 oracle pool. S0/A2 paired identical learned postings and routes, each learned for all64 queries with zero fallback and exact scores asserted outside timers. Full-pool recall is .9922/.9766 at k10/30 for both; complete Collection search p50/p95 8.058/10.371ms original versus5.441/7.157ms scalar128+rerank, median paired S0/S2 ratio1.483 and S2 faster on64/64 query medians. Reopen 3.396s and learned route resumed. Four quantization build phases total0.646s within143.723s optimizer job-wall sum. Actual recursive active files: vector mmap chunks101,088,768 logical/100,765,696 allocated bytes; quantized49,408,603; router/postings5,664,508; process peak RSS914,536KiB not incremental. Raw continuation40/multilevel-native-retry1; corrected analysis and per-query CSV preserved there. First 20K schedule failed topology assertion (only levels0/2) before search; preserved, then fixed batch/capacity to16K and committed `ceca71685`. Fixed recursive disk-byte counter and removed a null duplicate profile field, added nested file test; commit `b8d4b9157`. Tests: benchmark1PASS release; recursive storage accounting1PASS; native routing/visibility13PASS. Query rows 932–963 not confirmed untouched outside continuations26–38; no300K launch. Next requirement is disjoint-query confirmation and incremental-RSS/matched-build controls before promotion/scaling.
 
 Continuation40 fallback-accounting follow-up at `b8d4b9157`: native exact fallback scoring now uses a task-local scorer guard per segment worker and merges successful scorer inputs/timing into a request-owned profile, avoiding process-global deltas across concurrent requests. Underfill test verifies linked learned-attempt/fallback events share a request UUID, records `insufficient_valid_candidates`, nonzero native exact evaluations, separate fallback and DLI-shard elapsed durations, and three returned points. A concurrent two-holder fixture verifies independent scorer counts for full and filtered native exact requests. Focused tests `dli_topk_underfill_uses_complete_native_fallback` and `native_exact_profiles_are_request_local_under_concurrency` PASS; all13 native DLI routing tests PASS; `dli_recovery_control` PASS. This is debug correctness evidence, not a latency measurement. Complete Collection query wall time remains reported by the benchmark caller; DLI shard wall time is separately named in request events.
+
+## Continuation41 — independent code audit and correctness hardening (Claude Code)
+
+Started clean at `be2e58f1e` (Codex handoff); no Cargo/benchmark process was running. Reviewed `e043de079..be2e58f1e` against the eleven earlier findings; full matrix, root causes and limits in [INDEPENDENT_CODE_AUDIT.md](unified_architecture/INDEPENDENT_CODE_AUDIT.md). Commits:
+- `58ff5f9d7`: `dli-research` no longer enables static `lmi-research` (new `segment/lmi-scorer-profile`).
+- `7a499ea92`: one final `dli_request` event per logical request (`learned` | `exact_fallback` | `error`), labelled after the underfill check, with attempt work (including partial work before routing errors) and request-local exact work kept separate. Diagnostic I/O now runs after segment guards are released, off the async executor. JSONL lines are written atomically. `DLI_QUANTIZED_SHORTLIST` is parsed once, and invalid values no longer force exact fallback.
+- `593225584`: destination quantization derived from the current shortlist, not `sources.first()`.
+- `74bb36b63`: a member whose derived quantized artifact is absent is scored with original vectors (counted `quantization_degraded_*`) instead of sending the whole query to exact fallback. A foreign/mismatched artifact still fails closed.
+- `277cf0d94`: DLI activation rejects enabled generic optimizer workers.
+
+New defect found by the 16-request concurrency test: concurrent JSONL appends interleaved because `writeln!` issues several writes. Two of my own test expectations were wrong and were corrected to the true semantics:
+- With budget 1, the slot-weighted plan never selects the Plain buffer.
+- Deleted postings consume budget but are never scored.
+
+Continuation40 validity: its timed ABBA pass at `ceca71685` ran with profiling disabled (no event or routing writes, unprofiled scorers) and its profile pass was sequential. F3/F4/F6 and the interleaving defect do not affect its reported latency, recall or work counts. No benchmark was rerun.
+
+Tests: `continuation-41/commit2-accounting-suite.log` 32/0/7, `lifecycle-fixes-suite.log` 35/0/7, `segment-feature-split.log` all pass under both feature sets.
+
+Remaining risks:
+- F8: all-member read guards are required for cross-member version resolution; behaviour under write load is unmeasured.
+- F10: the descriptor is not transactional with the native swap. Fail-closed, but can force a full rebuild; power loss is not demonstrated.
+- F7 runtime optimizer-config updates are caught only at the next load.
+- No quantization rebuild without recompaction.
