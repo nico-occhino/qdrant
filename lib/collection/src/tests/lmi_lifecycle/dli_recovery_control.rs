@@ -1646,6 +1646,46 @@ async fn dli_recovery_control_body() {
             seed: 73,
         },
     });
+    // F7: the same DLI configuration with generic optimizer workers enabled
+    // must be rejected at activation rather than degrade later, because native
+    // merge/indexing/vacuum would publish segments outside the DLI membership.
+    assert_eq!(dli_cfg.optimizer_config.max_optimization_threads, Some(0));
+    for threads in [None, Some(1)] {
+        let rejected_path = root.path().join(format!("dli_generic_optimizers_{threads:?}"));
+        let rejected_snapshots = root.path().join(format!("dli_generic_snapshots_{threads:?}"));
+        std::fs::create_dir(&rejected_path).unwrap();
+        std::fs::create_dir(&rejected_snapshots).unwrap();
+        let mut rejected_cfg = dli_cfg.clone();
+        rejected_cfg.optimizer_config.max_optimization_threads = threads;
+        let rejected = Collection::new(
+            "dli_with_generic_optimizers".into(),
+            1,
+            &rejected_path,
+            &rejected_snapshots,
+            &rejected_cfg,
+            Arc::new(SharedStorageConfig::default()),
+            CollectionShardDistribution {
+                shards: AHashMap::from([(0, HashSet::from([1]))]),
+            },
+            None,
+            ChannelService::default(),
+            dummy_on_replica_failure(),
+            dummy_request_shard_transfer(),
+            dummy_abort_shard_transfer(),
+            None,
+            None,
+            ResourceBudget::default(),
+            None,
+        )
+        .await;
+        let error = rejected.err().unwrap_or_else(|| {
+            panic!("DLI with max_optimization_threads={threads:?} must be rejected")
+        });
+        assert!(
+            error.to_string().contains("max_optimization_threads = 0"),
+            "unexpected activation error: {error}"
+        );
+    }
     let configured_dli = Collection::new(
         "configured_dli_collection".into(),
         1,

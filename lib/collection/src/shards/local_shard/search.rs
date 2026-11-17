@@ -59,6 +59,17 @@ impl LocalShard {
                 "Experimental DLI currently requires one local shard/replica, one dense Float16 cosine vector and no quantization or sparse vectors".to_owned(),
             ));
         }
+        // DLI maintenance owns the physical topology of every member. Native
+        // merge/indexing/vacuum workers would publish segments that are absent
+        // from the DLI membership: search then falls back permanently and
+        // `DliMaintenance::observe` stops scheduling (continuation 22 observed
+        // "new DLI member is not appendable" until fixtures disabled them).
+        // Fail closed at activation instead of degrading silently later.
+        if collection.optimizer_config.max_optimization_threads != Some(0) {
+            return Err(CollectionError::bad_input(
+                "Experimental DLI requires optimizer_config.max_optimization_threads = 0: generic Qdrant optimizers must not restructure DLI-managed segments".to_owned(),
+            ));
+        }
         #[allow(deprecated)] // Match native optimizer precedence for legacy collection files.
         let destination_on_disk = match &collection.params.vectors {
             VectorsConfig::Single(vector) => {
