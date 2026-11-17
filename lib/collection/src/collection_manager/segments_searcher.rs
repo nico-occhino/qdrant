@@ -82,6 +82,13 @@ pub struct DliResearchConfig {
     pub profile_scoring: std::sync::atomic::AtomicBool,
     /// Optional request-event destination, kept per DLI shard for concurrent tests/runs.
     pub profile_output_path: parking_lot::RwLock<Option<std::path::PathBuf>>,
+    /// Optional routing-plan event destination (`DLI_ROUTING_EVENTS`), read once.
+    pub routing_output_path: parking_lot::RwLock<Option<std::path::PathBuf>>,
+    /// Validated legacy `DLI_QUANTIZED_SHORTLIST` value, parsed once at construction.
+    /// Used only when `quantized_shortlist` is zero. Absent, zero or malformed
+    /// values select original scoring (the default) instead of forcing every
+    /// query into exact fallback.
+    pub env_quantized_shortlist: Option<usize>,
     pub routing_policy: parking_lot::RwLock<super::dli_bucket_plan::RoutingPolicy>,
     pub learned_queries: std::sync::atomic::AtomicU64,
     pub exact_fallbacks: std::sync::atomic::AtomicU64,
@@ -129,6 +136,12 @@ impl DliResearchConfig {
             profile_output_path: parking_lot::RwLock::new(
                 std::env::var_os("DLI_REQUEST_SCORING_EVENTS").map(std::path::PathBuf::from),
             ),
+            routing_output_path: parking_lot::RwLock::new(
+                std::env::var_os("DLI_ROUTING_EVENTS").map(std::path::PathBuf::from),
+            ),
+            env_quantized_shortlist: parse_env_quantized_shortlist(
+                std::env::var("DLI_QUANTIZED_SHORTLIST"),
+            ),
             routing_policy: Default::default(),
             learned_queries: Default::default(),
             exact_fallbacks: Default::default(),
@@ -152,6 +165,64 @@ impl DliResearchConfig {
             test_guard_hook: Default::default(),
         })
     }
+}
+
+#[cfg(feature = "dli-research")]
+pub(crate) fn parse_env_quantized_shortlist(value: Result<String, std::env::VarError>) -> Option<usize> {
+    match value {
+        Err(std::env::VarError::NotPresent) => None,
+        Ok(raw) => match raw.trim().parse::<usize>() {
+            Ok(shortlist) if shortlist > 0 => Some(shortlist),
+            _ => {
+                log::warn!(
+                    "Ignoring DLI_QUANTIZED_SHORTLIST={raw:?}: expected a positive integer; original scoring is used"
+                );
+                None
+            }
+        },
+        Err(std::env::VarError::NotUnicode(raw)) => {
+            log::warn!(
+                "Ignoring non-UTF-8 DLI_QUANTIZED_SHORTLIST={raw:?}; original scoring is used"
+            );
+            None
+        }
+    }
+}
+
+/// Request-local record of one learned attempt, collected while segment guards
+/// are held and persisted only after they are released.
+#[cfg(feature = "dli-research")]
+#[derive(Default)]
+struct DliAttemptRecord {
+    /// Attempt stage summary; `None` when routing did not complete.
+    summary: Option<serde_json::Value>,
+    /// Scorer work, including partial work before a routing error.
+    scoring: Option<crate::collection_manager::dli_native_route::LearnedScoringProfile>,
+    routing_event: Option<serde_json::Value>,
+}
+
+/// Persist one request's diagnostic events. Called only after the request's
+/// outcome is final and all segment guards are released; the blocking file
+/// I/O runs off the async executor threads.
+#[cfg(feature = "dli-research")]
+async fn persist_dli_events(
+    profile_path: Option<std::path::PathBuf>,
+    routing_path: Option<std::path::PathBuf>,
+    events: Option<(serde_json::Value, Option<serde_json::Value>)>,
+) {
+    let Some((event, routing_event)) = events else {
+        return;
+    };
+    let _ = tokio::task::spawn_blocking(move || {
+        use crate::collection_manager::dli_native_route::append_jsonl_line;
+        if let (Some(path), Some(routing_event)) = (routing_path, routing_event) {
+            append_jsonl_line(&path, &routing_event);
+        }
+        if let Some(path) = profile_path {
+            append_jsonl_line(&path, &event);
+        }
+    })
+    .await;
 }
 
 /// Reason the experimental entry point ran a complete native exact search.
@@ -479,6 +550,8 @@ impl SegmentsSearcher {
         let request_id = uuid::Uuid::new_v4().to_string();
         let profile_enabled = config.profile_scoring.load(Ordering::Relaxed);
         let rejection_reason = std::sync::Arc::new(parking_lot::Mutex::new(None));
+        // Request-local, uncontended: written by the attempt task, read after it joins.
+        let attempt_record = std::sync::Arc::new(parking_lot::Mutex::new(DliAttemptRecord::default()));
         let captured = Self::capture_segments(&holder, timeout)?;
         let attempt_segments = captured.clone();
         let attempt_request = batch_request.clone();
@@ -488,7 +561,7 @@ impl SegmentsSearcher {
         let handoff = attempt_context.handoff().clone();
         let attempt_config = config.clone();
         let attempt_reason = rejection_reason.clone();
-        let attempt_request_id = request_id.clone();
+        let attempt_trace_record = attempt_record.clone();
         let attempt = runtime_handle.spawn_blocking(move || {
             let _scope = handoff.enter_guard();
             cpu_utilization.measure(|| {
@@ -606,7 +679,9 @@ impl SegmentsSearcher {
                 }
                 let segment_context = attempt_context.get_segment_query_context();
                 let vector_context = segment_context.get_vector_context(DEFAULT_VECTOR_NAME, None);
-                let routed = match super::dli_native_route::route_pinned_with_quantized_shortlist_profiled(
+                let mut trace = profile_enabled
+                    .then(super::dli_native_route::RouteTrace::default);
+                let routed = match super::dli_native_route::route_pinned_traced(
                     &members,
                     query,
                     attempt_config.arity,
@@ -619,14 +694,20 @@ impl SegmentsSearcher {
                         usize::MAX
                     },
                     match attempt_config.quantized_shortlist.load(Ordering::Relaxed) {
-                        0 => std::env::var("DLI_QUANTIZED_SHORTLIST").ok().map(|value| value.parse::<usize>().unwrap_or(0)),
+                        0 => attempt_config.env_quantized_shortlist,
                         shortlist => Some(shortlist),
                     },
-                    attempt_config.profile_scoring.load(Ordering::Relaxed),
+                    trace.as_mut(),
                 ) {
                     Ok(routed) => routed,
                     Err(error) => {
                         log::debug!("dli_research: routing fallback: {error}");
+                        if let Some(trace) = trace.take() {
+                            // Keep partial scorer work performed before the error.
+                            let mut record = attempt_trace_record.lock();
+                            record.scoring = Some(trace.scoring);
+                            record.routing_event = trace.routing_event;
+                        }
                         let reason = match &error {
                             segment::common::operation_error::OperationError::ServiceError { description, .. } => match description.as_str() {
                                 "quantized generation unavailable" => "quantization_unavailable",
@@ -640,6 +721,11 @@ impl SegmentsSearcher {
                     }
                 };
                 if !routed.plan.buckets.iter().any(|bucket| bucket.level > 0) {
+                    if let Some(trace) = trace.take() {
+                        let mut record = attempt_trace_record.lock();
+                        record.scoring = Some(trace.scoring);
+                        record.routing_event = trace.routing_event;
+                    }
                     reject!("no_learned_bucket");
                 }
                 attempt_config.selected_postings.fetch_add(
@@ -687,49 +773,37 @@ impl SegmentsSearcher {
                     routed.per_segment.iter().map(|(_, h)| h.len() as u64).sum(),
                     Ordering::Relaxed,
                 );
-                let mut request_profile = routed.learned_scoring.as_ref().map(|profile| serde_json::json!({
-                    "learned_scoring": profile,
+                let attempt_summary = trace.as_ref().map(|_| serde_json::json!({
                     "posting_entries": routed.posting_candidates,
                     "unique_offsets": routed.unique_posting_offsets,
                     "models": routed.models_evaluated,
                     "selected_buckets": routed.plan.buckets.len(),
                     "routing_ns": routed.routing_and_planning_time.as_nanos(),
+                    "scoring_ns": routed.scoring_time.as_nanos(),
                     "materialization_ns": routed.hit_materialization_time.as_nanos(),
-                    "request_id": attempt_request_id,
                 }));
                 let resolution_start = Instant::now();
                 let resolution = resolve_pinned_candidates(&members, routed, limit);
-                if let (Some(profile), Some(path)) =
-                    (request_profile.as_mut(), attempt_config.profile_output_path.read().clone())
-                {
-                    use std::io::Write;
-                    profile["resolution_ns"] = serde_json::json!(resolution_start.elapsed().as_nanos());
-                    profile["dli_shard_search_elapsed_ns"] =
-                        serde_json::json!(started.elapsed().as_nanos());
-                    profile["candidate_resolution"] = serde_json::json!(match &resolution {
-                        Ok(CandidateResolution::Resolved(_)) => "resolved",
-                        Ok(CandidateResolution::ExactFallback(_)) => "fallback",
-                        Err(_) => "error",
-                    });
-                    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-                        let _ = writeln!(file, "{profile}");
-                    }
-                }
+                // Stop the clock before any bookkeeping; no I/O happens in this closure.
+                let resolution_elapsed = resolution_start.elapsed();
                 attempt_config.resolution_nanos.fetch_add(
-                    u64::try_from(resolution_start.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                    u64::try_from(resolution_elapsed.as_nanos()).unwrap_or(u64::MAX),
                     Ordering::Relaxed,
                 );
-                match resolution {
-                    Ok(CandidateResolution::Resolved(hits)) => {
-                        // Deleted posting entries must not consume the ANN budget and
-                        // silently underfill a query when the captured native population
-                        // can supply more hits. Native fallback also handles missing vectors.
-                        let required =
-                            limit.min(members.iter().map(|(_, s)| s.available_point_count()).sum());
-                        if hits.len() < required {
-                            reject!("insufficient_valid_candidates");
-                        }
-                        Some(hits)
+                // Deleted posting entries must not consume the ANN budget and
+                // silently underfill a query when the captured native population
+                // can supply more hits. Native fallback also handles missing vectors.
+                let required =
+                    limit.min(members.iter().map(|(_, s)| s.available_point_count()).sum());
+                // The attempt label is decided only after the underfill check, so
+                // an attempt that resolved candidates but could not supply the
+                // final result is never reported as "resolved".
+                let (outcome, attempt_resolution) = match resolution {
+                    Ok(CandidateResolution::Resolved(hits)) if hits.len() >= required => {
+                        (Ok(hits), "resolved")
+                    }
+                    Ok(CandidateResolution::Resolved(_)) => {
+                        (Err("insufficient_valid_candidates"), "underfilled")
                     }
                     Ok(CandidateResolution::ExactFallback(reason)) => {
                         log::debug!("dli_research: candidate fallback: {reason:?}");
@@ -741,26 +815,87 @@ impl SegmentsSearcher {
                             ResolutionFallback::DuplicateMember
                             | ResolutionFallback::CandidateMismatch => "identity",
                         };
-                        reject!(reason);
+                        (Err(reason), "fallback")
                     }
                     Err(error) => {
                         log::debug!("dli_research: routing fallback: {error}");
-                        reject!("resolution_error");
+                        (Err("resolution_error"), "error")
                     }
+                };
+                if let (Some(trace), Some(mut summary)) = (trace.take(), attempt_summary) {
+                    summary["resolution_ns"] = serde_json::json!(resolution_elapsed.as_nanos());
+                    summary["attempt_resolution"] = serde_json::json!(attempt_resolution);
+                    let mut record = attempt_trace_record.lock();
+                    record.summary = Some(summary);
+                    record.scoring = Some(trace.scoring);
+                    record.routing_event = trace.routing_event;
+                }
+                match outcome {
+                    Ok(hits) => Some(hits),
+                    Err(reason) => reject!(reason),
                 }
             })
         });
-        if let Some(hits) = AbortOnDropHandle::new(attempt).await? {
+        // One authoritative final event per logical request, written only after
+        // the outcome is known, every segment guard has been released (the
+        // attempt closure has returned) and every timer has stopped.
+        let emit = |final_outcome: &'static str,
+                    exact: Option<&NativeExactSearchProfile>,
+                    returned: Option<usize>,
+                    error: Option<String>| {
+            if !profile_enabled {
+                return None;
+            }
+            let record = std::mem::take(&mut *attempt_record.lock());
+            let fallback_reason = match final_outcome {
+                "learned" => None,
+                _ => Some(*rejection_reason.lock()),
+            };
+            let event = serde_json::json!({
+                "event": "dli_request",
+                "request_id": request_id,
+                "final_outcome": final_outcome,
+                "learned_route_supplied_results": final_outcome == "learned",
+                "fallback_reason": fallback_reason.map(|r| r.unwrap_or("unspecified_native_exact_fallback")),
+                "error": error,
+                "attempt": record.summary,
+                "learned_scoring": record.scoring,
+                "exact_fallback": exact.map(|p| serde_json::json!({
+                    "scored_vectors": p.scored_vectors.load(Ordering::Relaxed),
+                    "segment_search_ns_sum": p.segment_search_nanos.load(Ordering::Relaxed),
+                    "elapsed_ns": p.total_elapsed_nanos.load(Ordering::Relaxed),
+                })),
+                "returned_results": returned,
+                "dli_shard_search_elapsed_ns": started.elapsed().as_nanos(),
+            });
+            Some((event, record.routing_event))
+        };
+        let profile_path = config.profile_output_path.read().clone();
+        let routing_path = config.routing_output_path.read().clone();
+        let persist = |events| persist_dli_events(profile_path.clone(), routing_path.clone(), events);
+
+        let attempt_result = match AbortOnDropHandle::new(attempt).await {
+            Ok(result) => result,
+            Err(error) => {
+                let error = CollectionError::from(error);
+                persist(emit("error", None, None, Some(error.to_string()))).await;
+                return Err(error);
+            }
+        };
+        if let Some(hits) = attempt_result {
             config.learned_queries.fetch_add(1, Ordering::Relaxed);
+            persist(emit("learned", None, Some(hits.len()), None)).await;
             return Ok(vec![hits]);
         }
         let mut exact_request = (*batch_request).clone();
         for request in &mut exact_request.searches {
             let params = request.params.get_or_insert_default();
             if params.indexed_only {
-                return Err(CollectionError::bad_request(
+                let error = CollectionError::bad_request(
                     "experimental DLI fallback requires complete segment coverage",
-                ));
+                );
+                persist(emit("error", None, None, Some(error.to_string()))).await;
+                return Err(error);
             }
             params.exact = true;
         }
@@ -778,7 +913,7 @@ impl SegmentsSearcher {
                 timeout.saturating_sub(started.elapsed()),
                 profile.clone(),
             )
-            .await?
+            .await
         } else {
             Self::search_captured(
                 captured,
@@ -788,36 +923,27 @@ impl SegmentsSearcher {
                 query_context,
                 timeout.saturating_sub(started.elapsed()),
             )
-            .await?
+            .await
         };
-        if let Some(profile) = exact_profile {
-            let elapsed_ns = fallback_started.elapsed().as_nanos();
+        if let Some(profile) = exact_profile.as_ref() {
             profile.total_elapsed_nanos.store(
-                u64::try_from(elapsed_ns).unwrap_or(u64::MAX),
+                u64::try_from(fallback_started.elapsed().as_nanos()).unwrap_or(u64::MAX),
                 Ordering::Relaxed,
             );
-            if let Some(path) = config.profile_output_path.read().clone() {
-                use std::io::Write;
-                let fallback_reason = rejection_reason
-                    .lock()
-                    .unwrap_or("unspecified_native_exact_fallback");
-                let event = serde_json::json!({
-                    "request_id": request_id,
-                    "query_mode": "native_exact_fallback",
-                    "learned_route_supplied_results": false,
-                    "fallback_reason": fallback_reason,
-                    "exact_fallback_scored_vectors": profile.scored_vectors.load(Ordering::Relaxed),
-                    "exact_fallback_segment_search_ns_sum": profile.segment_search_nanos.load(Ordering::Relaxed),
-                    "exact_fallback_elapsed_ns": profile.total_elapsed_nanos.load(Ordering::Relaxed),
-                    "dli_shard_search_elapsed_ns": started.elapsed().as_nanos(),
-                    "returned_results": results.iter().map(Vec::len).sum::<usize>(),
-                });
-                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-                    let _ = writeln!(file, "{event}");
-                }
+        }
+        match results {
+            Ok(results) => {
+                let returned = results.iter().map(Vec::len).sum::<usize>();
+                persist(emit("exact_fallback", exact_profile.as_deref(), Some(returned), None))
+                    .await;
+                Ok(results)
+            }
+            Err(error) => {
+                persist(emit("error", exact_profile.as_deref(), None, Some(error.to_string())))
+                    .await;
+                Err(error)
             }
         }
-        Ok(results)
     }
 
     /// Experimental correctness baseline for a future derived DLI view.
@@ -1736,8 +1862,26 @@ mod tests {
         assert_eq!(second_result.unwrap()[0].len(), 2);
         let first_scored = first_profile.scored_vectors.load(Ordering::Relaxed);
         let second_scored = second_profile.scored_vectors.load(Ordering::Relaxed);
-        assert!(first_scored > 0 && second_scored > 0);
-        assert!(second_scored < first_scored, "filtered request must retain its own lower scorer count");
+        // Independent expectations from the fixture, not from the counters:
+        // an exact unfiltered search scores every live vector of every segment
+        // once; the HasId-filtered search scores only matching live vectors.
+        let (expected_all, expected_filtered) = {
+            let guard = second_holder.read();
+            let mut all = 0u64;
+            let mut filtered = 0u64;
+            for (_, segment) in guard.iter() {
+                let segment = segment.get();
+                let segment = segment.read();
+                all += segment.available_point_count() as u64;
+                filtered += [3_u64, 11]
+                    .into_iter()
+                    .filter(|id| segment.has_point((*id).into(), common::types::DeferredBehavior::VisibleOnly))
+                    .count() as u64;
+            }
+            (all, filtered)
+        };
+        assert_eq!(first_scored, expected_all, "unfiltered exact search scores each live vector once");
+        assert_eq!(second_scored, expected_filtered, "filtered request retains only its own scorer work");
         assert!(first_profile.segment_search_nanos.load(Ordering::Relaxed) > 0);
         assert!(second_profile.segment_search_nanos.load(Ordering::Relaxed) > 0);
     }

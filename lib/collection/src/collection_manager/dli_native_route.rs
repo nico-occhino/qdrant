@@ -210,6 +210,19 @@ pub fn route_pinned_with_quantized_shortlist(
     )
 }
 
+/// Caller-owned request-local measurements for one learned routing attempt.
+///
+/// The trace is filled incrementally while scoring runs, so work performed
+/// before a routing error (for example, a Plain member scored before a learned
+/// member reports unavailable quantization) is still attributed to the attempt.
+/// The routing-plan event is captured in memory; persisting it is the caller's
+/// responsibility, after segment read guards have been released.
+#[derive(Default, Debug)]
+pub struct RouteTrace {
+    pub scoring: LearnedScoringProfile,
+    pub routing_event: Option<serde_json::Value>,
+}
+
 pub fn route_pinned_with_quantized_shortlist_profiled(
     members: &[(usize, &Segment)],
     query: &[f32],
@@ -220,6 +233,81 @@ pub fn route_pinned_with_quantized_shortlist_profiled(
     materialize_limit: usize,
     shortlist: Option<usize>,
     profile_request: bool,
+) -> OperationResult<NativeRouteResult> {
+    if !profile_request {
+        return route_pinned_traced(
+            members,
+            query,
+            arity,
+            budget,
+            context,
+            policy,
+            materialize_limit,
+            shortlist,
+            None,
+        );
+    }
+    // Direct (non-Collection) callers keep the historical behavior: the plan
+    // event is appended to `DLI_ROUTING_EVENTS` and the scorer profile is
+    // returned in the result.
+    let mut trace = RouteTrace::default();
+    let result = route_pinned_traced(
+        members,
+        query,
+        arity,
+        budget,
+        context,
+        policy,
+        materialize_limit,
+        shortlist,
+        Some(&mut trace),
+    );
+    if let (Some(event), Some(path)) = (
+        trace.routing_event.take(),
+        std::env::var_os("DLI_ROUTING_EVENTS"),
+    ) {
+        append_jsonl_line(std::path::Path::new(&path), &event);
+    }
+    result.map(|mut routed| {
+        routed.learned_scoring = Some(trace.scoring);
+        routed
+    })
+}
+
+/// Best-effort diagnostic append. Callers must not hold segment locks or be
+/// inside a timed region when calling this.
+///
+/// The complete line is serialized first and emitted with one `write_all` on
+/// an `O_APPEND` descriptor. `writeln!(file, "{value}")` formats through
+/// `Display` and issues several `write(2)` calls, so concurrent appenders
+/// interleaved fragments of different lines (observed as unparsable JSONL).
+pub(crate) fn append_jsonl_line(path: &std::path::Path, value: &serde_json::Value) {
+    use std::io::Write;
+    let mut line = value.to_string();
+    line.push('\n');
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
+/// Routing and scoring with optional caller-owned tracing. When `trace` is
+/// `Some`, scorer work is accumulated into it as it happens (so it survives an
+/// `Err`), and `NativeRouteResult::learned_scoring` is left `None`.
+#[allow(clippy::too_many_arguments)]
+pub fn route_pinned_traced(
+    members: &[(usize, &Segment)],
+    query: &[f32],
+    arity: usize,
+    budget: usize,
+    context: &VectorQueryContext,
+    policy: RoutingPolicy,
+    materialize_limit: usize,
+    shortlist: Option<usize>,
+    mut trace: Option<&mut RouteTrace>,
 ) -> OperationResult<NativeRouteResult> {
     let fail = |message: &str| OperationError::service_error(message.to_owned());
     let temperature = match policy {
@@ -318,19 +406,11 @@ pub fn route_pinned_with_quantized_shortlist_profiled(
     .map_err(|e| fail(&format!("invalid DLI candidate plan: {e:?}")))?;
     let bucket_planning_time = planning_started.elapsed();
     let routing_and_planning_time = start.elapsed();
-    if profile_request {
-      if let Some(path) = std::env::var_os("DLI_ROUTING_EVENTS") {
-        use std::io::Write;
-        let event = serde_json::json!({"policy":policy,"budget":budget,"buckets":plan.buckets,"members":members.iter().map(|(l,s)|(s.uuid,l,s.available_point_count())).collect::<Vec<_>>()});
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-        {
-            let _ = writeln!(f, "{event}");
-        }
-      }
+    if let Some(trace) = trace.as_deref_mut() {
+        // Captured only; never written while the caller's guards are held.
+        trace.routing_event = Some(serde_json::json!({"policy":policy,"budget":budget,"buckets":plan.buckets,"members":members.iter().map(|(l,s)|(s.uuid,l,s.available_point_count())).collect::<Vec<_>>()}));
     }
+    let mut learned_scoring = trace.map(|trace| &mut trace.scoring);
 
     let mut native_scorer_time = Duration::ZERO;
     let mut hit_materialization_time = Duration::ZERO;
@@ -338,8 +418,10 @@ pub fn route_pinned_with_quantized_shortlist_profiled(
     let mut posting_candidates = 0usize;
     let mut unique_posting_offsets = 0usize;
     let mut buffer_point_estimate = 0usize;
-    let mut learned_scoring = profile_request.then(LearnedScoringProfile::default);
-    let _task_scoring_profile = profile_request.then(|| {
+    // Thread-local attribution is sound here because the whole route executes
+    // synchronously on this one blocking task; the guard is dropped (and the
+    // flag cleared) on every return path, including `?` and unwinding.
+    let _task_scoring_profile = learned_scoring.is_some().then(|| {
         segment::index::hnsw_index::point_scorer::TaskScoringProfileGuard::begin()
     });
     let mut per_segment = Vec::new();
@@ -493,7 +575,8 @@ pub fn route_pinned_with_quantized_shortlist_profiled(
         scoring_time: started_scoring.elapsed(),
         posting_candidates,
         unique_posting_offsets,
-        learned_scoring,
+        // Owned by the caller's trace when tracing; see `route_pinned_traced`.
+        learned_scoring: None,
         buffer_point_estimate,
         per_segment,
     })
@@ -1459,6 +1542,10 @@ mod tests {
             .store(true, std::sync::atomic::Ordering::Relaxed);
         let profile_path = root.path().join("dli-exact-fallback-profile.jsonl");
         *config.profile_output_path.write() = Some(profile_path.clone());
+        // Independent expectations: exact search scores every live vector of
+        // every captured segment exactly once; deleted offsets are never scored.
+        let learned_live = learned.available_point_count();
+        let plain_live = plain.available_point_count();
         let mut holder = SegmentHolder::default();
         holder.add_new(learned);
         holder.add_new(plain);
@@ -1502,18 +1589,288 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
-        assert_eq!(events.len(), 2, "learned attempt and exact fallback are linked events");
-        assert_eq!(events[0]["candidate_resolution"], "resolved");
-        assert_eq!(events[1]["query_mode"], "native_exact_fallback");
-        assert_eq!(events[1]["fallback_reason"], "insufficient_valid_candidates");
-        assert_eq!(events[0]["request_id"], events[1]["request_id"]);
-        assert_eq!(events[1]["learned_route_supplied_results"], false);
-        assert!(events[1]["exact_fallback_scored_vectors"].as_u64().unwrap() > 0);
-        assert!(events[1]["exact_fallback_elapsed_ns"].as_u64().unwrap() > 0);
-        assert!(events[0]["dli_shard_search_elapsed_ns"].as_u64().unwrap() > 0);
-        assert!(events[1]["dli_shard_search_elapsed_ns"].as_u64().unwrap()
-            > events[1]["exact_fallback_elapsed_ns"].as_u64().unwrap());
-        assert_eq!(events[1]["returned_results"], 3);
+        // Exactly one authoritative event per logical request.
+        assert_eq!(events.len(), 1, "one final event per request: {events:?}");
+        let event = &events[0];
+        assert_eq!(event["event"], "dli_request");
+        assert_eq!(event["final_outcome"], "exact_fallback");
+        assert_eq!(event["learned_route_supplied_results"], false);
+        assert_eq!(event["fallback_reason"], "insufficient_valid_candidates");
+        // The learned attempt resolved candidates but could not fill the
+        // result; it must not be labelled as a resolved (learned) result.
+        assert_eq!(event["attempt"]["attempt_resolution"], "underfilled");
+        // Partial learned work preceding fallback is retained and separated.
+        // With budget 1 the slot-weighted plan (P * a^level, a = 100) selects a
+        // learned bucket before the Plain buffer (priority 1.0) and stops, so the
+        // buffer is never scored: that starvation is why this request underfills.
+        let attempt = &event["learned_scoring"];
+        assert_eq!(attempt["plain_scored"].as_u64().unwrap(), 0);
+        // Every offset in the selected bucket was deleted above: postings still
+        // consume routing budget, but deleted offsets are filtered before the
+        // scorer, so successful original evaluations are exactly zero.
+        assert!(event["attempt"]["unique_offsets"].as_u64().unwrap() >= 1);
+        assert_eq!(attempt["original_scored"].as_u64().unwrap(), 0);
+        assert_eq!(attempt["quantized_scored"].as_u64().unwrap(), 0);
+        let exact = &event["exact_fallback"];
+        assert_eq!(
+            exact["scored_vectors"].as_u64().unwrap(),
+            (learned_live + plain_live) as u64,
+            "exact fallback must score each live captured vector exactly once"
+        );
+        assert!(exact["elapsed_ns"].as_u64().unwrap() > 0);
+        assert!(
+            event["dli_shard_search_elapsed_ns"].as_u64().unwrap()
+                >= exact["elapsed_ns"].as_u64().unwrap()
+        );
+        assert_eq!(event["returned_results"], 3);
+    }
+
+    /// Shared fixture for request-event tests: one trained learned member and
+    /// one Plain member, both with known live counts and no deletions.
+    fn request_event_fixture(
+        root: &std::path::Path,
+    ) -> (Segment, Segment) {
+        let learned = trained(
+            root,
+            &[
+                (1, [1., 0.]),
+                (2, [0.8, 0.6]),
+                (3, [-0.8, 0.6]),
+                (4, [-1., 0.]),
+                (5, [0.6, -0.8]),
+                (6, [0., 1.]),
+            ],
+            91,
+        );
+        let mut plain = build_simple_segment(root, 2, Distance::Cosine).unwrap();
+        for (id, v) in [(90, [0.9, 0.4358899]), (91, [-0.2, 0.9797959])] {
+            plain
+                .upsert_point(101, id.into(), only_default_vector(&v))
+                .unwrap();
+        }
+        (learned, plain)
+    }
+
+    async fn run_request_event_query(
+        holder: shard::segment_holder::locked::LockedSegmentHolder,
+        config: std::sync::Arc<crate::collection_manager::segments_searcher::DliResearchConfig>,
+        filter: Option<segment::types::Filter>,
+        limit: usize,
+    ) -> crate::operations::types::CollectionResult<Vec<Vec<segment::types::ScoredPoint>>> {
+        use crate::collection_manager::segments_searcher::SegmentsSearcher;
+        use crate::common::adaptive_handle::AdaptiveSearchHandle;
+        use crate::operations::types::CoreSearchRequest;
+        use common::ambient::{AmbientContext, Handoff};
+        use segment::data_types::query_context::QueryContext;
+        use shard::search::CoreSearchRequestBatch;
+        SegmentsSearcher::search_dli_research(
+            holder,
+            std::sync::Arc::new(CoreSearchRequestBatch {
+                searches: vec![CoreSearchRequest {
+                    query: vec![1., 0.].into(),
+                    filter,
+                    params: None,
+                    limit,
+                    offset: 0,
+                    with_payload: None,
+                    with_vector: None,
+                    score_threshold: None,
+                }],
+            }),
+            &AdaptiveSearchHandle::current_for_tests(),
+            QueryContext::new(
+                shard::optimizers::config::DEFAULT_INDEXING_THRESHOLD_KB,
+                Handoff::Measured(AmbientContext::new()),
+            ),
+            std::time::Duration::from_secs(10),
+            config,
+        )
+        .await
+    }
+
+    fn read_events(path: &std::path::Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    /// Successful learned requests, run concurrently: each request's single
+    /// event must carry exactly its own Plain and learned scorer work. The
+    /// expected counts are derived from the fixture, not from the counters.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn dli_request_events_are_final_and_request_local_under_concurrency() {
+        use crate::collection_manager::segments_searcher::DliResearchConfig;
+        use shard::segment_holder::{SegmentHolder, locked::LockedSegmentHolder};
+        use std::sync::Arc;
+        let _scope = common::ambient::test_guard();
+        let root = tempfile::tempdir().unwrap();
+        let (learned, plain) = request_event_fixture(root.path());
+        let learned_live = learned.available_point_count();
+        let plain_live = plain.available_point_count();
+        // Budget covers every bucket, so every live learned vector is a candidate.
+        let config = Arc::new(
+            DliResearchConfig::new(vec![(learned.uuid, 1), (plain.uuid, 0)], 2, 1_000).unwrap(),
+        );
+        config.profile_scoring.store(true, std::sync::atomic::Ordering::Relaxed);
+        let profile_path = root.path().join("events.jsonl");
+        let routing_path = root.path().join("routing.jsonl");
+        *config.profile_output_path.write() = Some(profile_path.clone());
+        *config.routing_output_path.write() = Some(routing_path.clone());
+        let mut holder = SegmentHolder::default();
+        holder.add_new(learned);
+        holder.add_new(plain);
+        let holder = LockedSegmentHolder::new(holder);
+        const REQUESTS: usize = 16;
+        let mut tasks = Vec::new();
+        for _ in 0..REQUESTS {
+            let (holder, config) = (holder.clone(), config.clone());
+            tasks.push(tokio::spawn(async move {
+                run_request_event_query(holder, config, None, 3).await.unwrap()
+            }));
+        }
+        for task in tasks {
+            assert_eq!(task.await.unwrap()[0].len(), 3);
+        }
+        let events = read_events(&profile_path);
+        assert_eq!(events.len(), REQUESTS, "exactly one event per request");
+        let ids: std::collections::HashSet<_> =
+            events.iter().map(|e| e["request_id"].to_string()).collect();
+        assert_eq!(ids.len(), REQUESTS, "request ids are unique");
+        assert_eq!(read_events(&routing_path).len(), REQUESTS);
+        for event in &events {
+            assert_eq!(event["final_outcome"], "learned");
+            assert_eq!(event["learned_route_supplied_results"], true);
+            assert!(event["fallback_reason"].is_null());
+            assert!(event["exact_fallback"].is_null());
+            assert_eq!(event["attempt"]["attempt_resolution"], "resolved");
+            let scoring = &event["learned_scoring"];
+            assert_eq!(scoring["plain_scored"].as_u64().unwrap(), plain_live as u64);
+            assert_eq!(scoring["original_scored"].as_u64().unwrap(), learned_live as u64);
+            assert_eq!(scoring["quantized_scored"].as_u64().unwrap(), 0);
+            assert_eq!(
+                event["attempt"]["unique_offsets"].as_u64().unwrap(),
+                learned_live as u64
+            );
+            assert_eq!(event["returned_results"], 3);
+        }
+        assert_eq!(
+            config.learned_queries.load(std::sync::atomic::Ordering::Relaxed),
+            REQUESTS as u64
+        );
+    }
+
+    /// Early rejection (unsupported filter) and unavailable quantization each
+    /// produce one final exact-fallback event with the precise reason, the
+    /// partial attempt (if any) and exact work equal to the live population.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dli_request_events_cover_rejection_and_unavailable_quantization() {
+        use crate::collection_manager::segments_searcher::DliResearchConfig;
+        use shard::segment_holder::{SegmentHolder, locked::LockedSegmentHolder};
+        use std::sync::Arc;
+        let _scope = common::ambient::test_guard();
+        let root = tempfile::tempdir().unwrap();
+        let (learned, plain) = request_event_fixture(root.path());
+        let live = (learned.available_point_count() + plain.available_point_count()) as u64;
+        let config = Arc::new(
+            DliResearchConfig::new(vec![(learned.uuid, 1), (plain.uuid, 0)], 2, 1_000).unwrap(),
+        );
+        config.profile_scoring.store(true, std::sync::atomic::Ordering::Relaxed);
+        config.materialize_topk.store(true, std::sync::atomic::Ordering::Relaxed);
+        let profile_path = root.path().join("events.jsonl");
+        *config.profile_output_path.write() = Some(profile_path.clone());
+        let mut holder = SegmentHolder::default();
+        holder.add_new(learned);
+        holder.add_new(plain);
+        let holder = LockedSegmentHolder::new(holder);
+
+        // 1. Early rejection before any learned work.
+        let filter = segment::types::Filter::new_must(segment::types::Condition::HasId(
+            segment::types::HasIdCondition::from(ahash::AHashSet::from([1_u64.into()])),
+        ));
+        let result = run_request_event_query(holder.clone(), config.clone(), Some(filter), 3)
+            .await
+            .unwrap();
+        assert_eq!(result[0].len(), 1);
+        // 2. Quantized scoring requested, but no quantized generation exists.
+        config.quantized_shortlist.store(4, std::sync::atomic::Ordering::Relaxed);
+        let result = run_request_event_query(holder.clone(), config.clone(), None, 3)
+            .await
+            .unwrap();
+        assert_eq!(result[0].len(), 3);
+
+        let events = read_events(&profile_path);
+        assert_eq!(events.len(), 2, "{events:?}");
+        let rejected = &events[0];
+        assert_eq!(rejected["final_outcome"], "exact_fallback");
+        assert_eq!(rejected["fallback_reason"], "unsupported_query");
+        assert!(rejected["attempt"].is_null());
+        assert!(rejected["learned_scoring"].is_null());
+        // The HasId filter admits one point; exact search scores only it.
+        assert_eq!(rejected["exact_fallback"]["scored_vectors"].as_u64().unwrap(), 1);
+
+        let unavailable = &events[1];
+        assert_eq!(unavailable["final_outcome"], "exact_fallback");
+        assert_eq!(unavailable["fallback_reason"], "quantization_unavailable");
+        // Routing did not complete, so there is no attempt summary, but the
+        // partial scorer record exists and holds no quantized work.
+        assert!(unavailable["attempt"].is_null());
+        assert_eq!(
+            unavailable["learned_scoring"]["quantized_scored"].as_u64().unwrap(),
+            0
+        );
+        assert_eq!(
+            unavailable["exact_fallback"]["scored_vectors"].as_u64().unwrap(),
+            live
+        );
+        assert_ne!(rejected["request_id"], unavailable["request_id"]);
+        let reasons = config.fallback_reasons.lock();
+        assert_eq!(reasons.get("unsupported_query"), Some(&1));
+        assert_eq!(reasons.get("quantization_unavailable"), Some(&1));
+    }
+
+    /// With profiling disabled (the latency-measurement configuration), no
+    /// diagnostic file is created and no scorer profile is collected.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dli_request_events_absent_when_profiling_disabled() {
+        use crate::collection_manager::segments_searcher::DliResearchConfig;
+        use shard::segment_holder::{SegmentHolder, locked::LockedSegmentHolder};
+        use std::sync::Arc;
+        let _scope = common::ambient::test_guard();
+        let root = tempfile::tempdir().unwrap();
+        let (learned, plain) = request_event_fixture(root.path());
+        let config = Arc::new(
+            DliResearchConfig::new(vec![(learned.uuid, 1), (plain.uuid, 0)], 2, 1_000).unwrap(),
+        );
+        config.profile_scoring.store(false, std::sync::atomic::Ordering::Relaxed);
+        let profile_path = root.path().join("events.jsonl");
+        let routing_path = root.path().join("routing.jsonl");
+        *config.profile_output_path.write() = Some(profile_path.clone());
+        *config.routing_output_path.write() = Some(routing_path.clone());
+        let mut holder = SegmentHolder::default();
+        holder.add_new(learned);
+        holder.add_new(plain);
+        let result = run_request_event_query(LockedSegmentHolder::new(holder), config.clone(), None, 3)
+            .await
+            .unwrap();
+        assert_eq!(result[0].len(), 3);
+        assert_eq!(config.learned_queries.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(!profile_path.exists());
+        assert!(!routing_path.exists());
+    }
+
+    #[test]
+    fn invalid_quantized_shortlist_environment_selects_original_scoring() {
+        use crate::collection_manager::segments_searcher::parse_env_quantized_shortlist as parse;
+        assert_eq!(parse(Err(std::env::VarError::NotPresent)), None);
+        assert_eq!(parse(Ok("128".into())), Some(128));
+        assert_eq!(parse(Ok(" 64 ".into())), Some(64));
+        // Previously these became Some(0), which forced every query into
+        // exact fallback with a misleading "quantization_configuration" reason.
+        assert_eq!(parse(Ok("0".into())), None);
+        assert_eq!(parse(Ok("abc".into())), None);
+        assert_eq!(parse(Ok("-1".into())), None);
     }
 
     #[test]
@@ -1835,7 +2192,11 @@ mod tests {
         let original = route_pinned_with_quantized_shortlist_profiled(
             &members, &[1.,0.], 2, 100, &context, RoutingPolicy::PopulationDensity, 30, None, true,
         ).unwrap();
-        if let (Some(q), Some(o)) = (&quantized.learned_scoring, &original.learned_scoring) {
+        // Profiling was requested explicitly; a missing profile is a failure,
+        // never a reason to skip the conservation assertions.
+        let q = quantized.learned_scoring.as_ref().expect("profiled quantized route");
+        let o = original.learned_scoring.as_ref().expect("profiled original route");
+        {
             assert_eq!(q.quantized_scored, 6);
             assert_eq!(q.original_scored, 6);
             assert_eq!(q.shortlist_offsets, 6);

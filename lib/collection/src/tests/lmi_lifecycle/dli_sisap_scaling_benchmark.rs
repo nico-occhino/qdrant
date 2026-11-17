@@ -1554,7 +1554,10 @@ async fn sisap23_65k_multilevel_collection_s0_vs_s2() {
                 fallback_delta, 0,
                 "do not count exact fallback as learned success"
             );
-            assert_eq!(request_profile["candidate_resolution"], "resolved");
+            // Final-outcome event schema (one event per logical request).
+            assert_eq!(request_profile["final_outcome"], "learned");
+            assert_eq!(request_profile["attempt"]["attempt_resolution"], "resolved");
+            assert!(request_profile["exact_fallback"].is_null());
             let lp = &request_profile["learned_scoring"];
             assert!(
                 lp["plain_scored"].as_u64().unwrap() > 0,
@@ -1562,8 +1565,8 @@ async fn sisap23_65k_multilevel_collection_s0_vs_s2() {
             );
             assert!(lp["original_scored"].as_u64().unwrap() > 0);
             assert_eq!(lp["quantized_scored"].as_u64().unwrap() > 0, mode.is_some());
-            let unique_offsets = request_profile["unique_offsets"].as_u64().unwrap();
-            assert!(request_profile["posting_entries"].as_u64().unwrap() >= unique_offsets);
+            let unique_offsets = request_profile["attempt"]["unique_offsets"].as_u64().unwrap();
+            assert!(request_profile["attempt"]["posting_entries"].as_u64().unwrap() >= unique_offsets);
             if mode.is_some() {
                 assert_eq!(lp["quantized_scored"].as_u64().unwrap(), unique_offsets);
                 assert!(lp["original_scored"].as_u64().unwrap() <= 2 * 128);
