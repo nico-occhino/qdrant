@@ -378,6 +378,28 @@ pub struct DliMaintenance {
 /// can leave `running` set forever and suppress every later threshold crossing.
 struct MaintenanceRunGuard(Arc<DliMaintenance>);
 
+/// Destination quantization is derived from the *current* DLI shortlist
+/// configuration, never inherited from whichever source segment comes first.
+///
+/// Collection-level quantization is rejected for DLI, so any quantization on a
+/// source is a derived artifact of an earlier publication. Without explicitly
+/// clearing it, disabling the shortlist kept producing quantized outputs
+/// whenever the first source was a previously quantized learned member.
+fn derive_destination_quantization(config: &mut segment::types::SegmentConfig, quantized: bool) {
+    for vector in config.vector_data.values_mut() {
+        vector.quantization_config = quantized.then(|| {
+            segment::types::ScalarQuantizationConfig {
+                memory: None,
+                r#type: Default::default(),
+                quantile: None,
+                #[allow(deprecated)]
+                always_ram: None,
+            }
+            .into()
+        });
+    }
+}
+
 impl Drop for MaintenanceRunGuard {
     fn drop(&mut self) {
         self.0.running.store(false, Ordering::Release);
@@ -670,13 +692,7 @@ impl DliMaintenance {
                     let quantized = state.search.lock().as_ref().is_some_and(|search| search.quantized_shortlist.load(Ordering::Relaxed) > 0);
                     let source = sources.first().ok_or("no sources")?.get().read();
                     let mut segment_config = source.config().clone();
-                    if quantized {
-                        for vector in segment_config.vector_data.values_mut() {
-                            vector.quantization_config = Some(segment::types::ScalarQuantizationConfig {
-                                memory: None, r#type: Default::default(), quantile: None, always_ram: None,
-                            }.into());
-                        }
-                    }
+                    derive_destination_quantization(&mut segment_config, quantized);
                     let segments_path = source
                         .data_path()
                         .parent()
@@ -891,6 +907,52 @@ impl DliMaintenance {
 #[cfg(test)]
 mod worker_lifecycle_tests {
     use super::*;
+
+    #[test]
+    fn destination_quantization_follows_current_shortlist_not_first_source() {
+        use segment::types::{
+            Distance, Indexes, QuantizationConfig, SegmentConfig, VectorDataConfig,
+            VectorStorageType,
+        };
+        let vector = |quantization: Option<QuantizationConfig>| VectorDataConfig {
+            size: 4,
+            distance: Distance::Cosine,
+            storage_type: VectorStorageType::default(),
+            index: Indexes::Plain {},
+            quantization_config: quantization,
+            multivector_config: None,
+            datatype: None,
+        };
+        let scalar: QuantizationConfig = segment::types::ScalarQuantizationConfig {
+            memory: None,
+            r#type: Default::default(),
+            quantile: None,
+            #[allow(deprecated)]
+            always_ram: None,
+        }
+        .into();
+        let config = |quantization| SegmentConfig {
+            vector_data: HashMap::from([(String::new().into(), vector(quantization))]),
+            sparse_vector_data: Default::default(),
+            payload_storage_type: Default::default(),
+            id_tracker_memory: None,
+        };
+        let quantization_of = |config: &SegmentConfig| {
+            config
+                .vector_data
+                .values()
+                .map(|v| v.quantization_config.clone())
+                .collect::<Vec<_>>()
+        };
+        // First source is a previously quantized learned member; shortlist now off.
+        let mut from_quantized_source = config(Some(scalar.clone()));
+        derive_destination_quantization(&mut from_quantized_source, false);
+        assert_eq!(quantization_of(&from_quantized_source), vec![None]);
+        // First source is unquantized Plain; shortlist on.
+        let mut from_plain_source = config(None);
+        derive_destination_quantization(&mut from_plain_source, true);
+        assert_eq!(quantization_of(&from_plain_source), vec![Some(scalar)]);
+    }
 
     #[test]
     fn worker_claim_is_released_when_native_job_panics() {
