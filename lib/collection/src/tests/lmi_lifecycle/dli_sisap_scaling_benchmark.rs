@@ -268,6 +268,17 @@ async fn run_queries(
     query_count: usize,
     deleted_ids: &HashSet<u32>,
 ) -> (f64, f64, f64, f64, f64) {
+    run_queries_params(collection, query_data, gold, query_count, deleted_ids, None).await
+}
+
+async fn run_queries_params(
+    collection: &Collection,
+    query_data: &[u8],
+    gold: &[u8],
+    query_count: usize,
+    deleted_ids: &HashSet<u32>,
+    params: Option<segment::types::SearchParams>,
+) -> (f64, f64, f64, f64, f64) {
     let detailed = std::env::var_os("DLI_DETAILED_QUERY_STATS").is_some();
     let local_profile = if detailed {
         Some(replica(collection).await)
@@ -300,7 +311,7 @@ async fn run_queries(
                 CoreSearchRequest {
                     query: QueryEnum::Nearest(NamedQuery::default_dense(vector)),
                     filter: None,
-                    params: None,
+                    params: params.clone(),
                     limit: 30,
                     offset: 0,
                     with_payload: None,
@@ -901,4 +912,274 @@ async fn study_case(
     *ordinal += count;
     println!("STUDY_CASE {row}");
     row
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "bounded release recall frontier on retained10M; no ingestion or model training"]
+async fn dli_frozen_recall_frontier() {
+    use crate::collection_manager::dli_bucket_plan::RoutingPolicy;
+    let _scope = common::ambient::test_guard();
+    let root = PathBuf::from(std::env::var("DLI_REOPEN_COLLECTION_ROOT").unwrap());
+    let inputs = PathBuf::from(std::env::var("DLI_SISAP_INPUTS").unwrap());
+    let output = PathBuf::from(std::env::var("DLI_SISAP_OUTPUT").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    let plan: Vec<serde_json::Value> = serde_json::from_slice(
+        &std::fs::read(std::env::var("DLI_FRONTIER_PLAN").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let count = std::env::var("DLI_FRONTIER_QUERY_COUNT")
+        .ok()
+        .map(|v| v.parse::<usize>().unwrap())
+        .unwrap_or(12);
+    assert!((1..=100).contains(&count));
+    assert!(!output.join("frontier.json").exists());
+    // Budget/temperature choices originate from validation400..499 only.
+    std::fs::write(
+        output.join("locked-selection.json"),
+        serde_json::to_vec_pretty(&plan).unwrap(),
+    )
+    .unwrap();
+    let collection = Collection::load(
+        "frozen_recall_frontier".into(),
+        1,
+        &root.join("storage"),
+        &root.join("snapshots"),
+        Arc::new(SharedStorageConfig::default()),
+        ChannelService::default(),
+        dummy_on_replica_failure(),
+        dummy_request_shard_transfer(),
+        dummy_abort_shard_transfer(),
+        None,
+        None,
+        ResourceBudget::default(),
+        None,
+    )
+    .await;
+    assert_eq!(
+        collection
+            .info(&ShardSelectorInternal::All)
+            .await
+            .unwrap()
+            .points_count,
+        Some(FULL_COUNT)
+    );
+    let local = replica(&collection).await;
+    let queries = std::fs::read(inputs.join("queries.f32")).unwrap();
+    let gold = std::fs::read(inputs.join("ground_truth.i32")).unwrap();
+    let mut cases = Vec::new();
+    let mut ordinal = 0;
+    for selection in plan {
+        let policy: RoutingPolicy = serde_json::from_value(selection["policy"].clone()).unwrap();
+        let budget = selection["budget"].as_u64().unwrap() as usize;
+        local
+            .configure_local_dli_query_for_test(true, policy, budget)
+            .await;
+        cases.push(
+            study_case(
+                &collection,
+                &local,
+                &queries,
+                &gold,
+                400,
+                count,
+                policy,
+                budget,
+                true,
+                "frontier_validation",
+                &mut ordinal,
+            )
+            .await,
+        );
+        // Do not repeatedly fault9GB back in at every large budget. Explicit
+        // cold repetition is opt-in; ordinary first-touch and warm are distinct.
+        let cold = std::env::var("DLI_FRONTIER_COLD").as_deref() == Ok("1");
+        let cleared = if cold {
+            local.clear_local_dli_cold_vectors_for_test().await
+        } else {
+            Vec::new()
+        };
+        for pass in [
+            if cold {
+                "test_cache_clear_attempt"
+            } else {
+                "test_first_touch"
+            },
+            "test_warm",
+        ] {
+            let mut row = study_case(
+                &collection,
+                &local,
+                &queries,
+                &gold,
+                600,
+                count,
+                policy,
+                budget,
+                true,
+                pass,
+                &mut ordinal,
+            )
+            .await;
+            row["cleared_cold_vectors"] = serde_json::json!(cleared);
+            cases.push(row);
+            std::fs::write(
+                output.join("frontier-partial.json"),
+                serde_json::to_vec_pretty(&cases).unwrap(),
+            )
+            .unwrap();
+        }
+    }
+    // Same-binary old-comparator/cache control, low budget, four alternating repeats.
+    for (i, policy) in [
+        RoutingPolicy::PopulationDensityUncached,
+        RoutingPolicy::PopulationDensityUncached,
+        RoutingPolicy::PopulationDensity,
+        RoutingPolicy::PopulationDensity,
+        RoutingPolicy::PopulationDensityUncached,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        local
+            .configure_local_dli_query_for_test(true, policy, 20000)
+            .await;
+        cases.push(
+            study_case(
+                &collection,
+                &local,
+                &queries,
+                &gold,
+                600,
+                count,
+                policy,
+                20000,
+                true,
+                if i == 0 {
+                    "priority_rehearsal"
+                } else {
+                    "priority_control"
+                },
+                &mut ordinal,
+            )
+            .await,
+        );
+    }
+    // Four full-population native exact controls identify execution/numerical ceiling.
+    let exact_count = count.min(4);
+    let before = local.local_dli_named_profile_for_test().await.unwrap();
+    let wb = segment::index::hnsw_index::point_scorer::scoring_work_snapshot();
+    let result = run_queries_params(
+        &collection,
+        &queries[600 * DIMENSIONS * 4..],
+        &gold[600 * 1000 * 4..],
+        exact_count,
+        &HashSet::new(),
+        Some(segment::types::SearchParams {
+            exact: true,
+            ..Default::default()
+        }),
+    )
+    .await;
+    let wa = segment::index::hnsw_index::point_scorer::scoring_work_snapshot();
+    let after = local.local_dli_named_profile_for_test().await.unwrap();
+    assert_eq!(before["learned_queries"], after["learned_queries"]);
+    assert_eq!(
+        after["exact_fallbacks"].as_u64().unwrap() - before["exact_fallbacks"].as_u64().unwrap(),
+        exact_count as u64
+    );
+    cases.push(serde_json::json!({"policy":"NativeExact","budget":FULL_COUNT,"topk":false,"exact":true,"pass":"exact_control","query_start":600,"query_count":exact_count,"ordinal_begin":ordinal,"recall10":result.0,"recall30":result.1,"p50_ms":result.2,"p95_ms":result.3,"mean_ms":result.4,"scored_vectors":wa[2]-wb[2],"mean_scored":(wa[2]-wb[2]) as f64/exact_count as f64,"before":before,"after":after}));
+    std::fs::write(
+        output.join("frontier.json"),
+        serde_json::to_vec_pretty(&cases).unwrap(),
+    )
+    .unwrap();
+    collection.stop_gracefully().await;
+}
+
+#[test]
+#[ignore = "one private64K teacher/router control, never a10M hierarchy rebuild"]
+fn dli_small_teacher_router_control() {
+    use crate::collection_manager::dli_maintenance::DliOptimizationStrategy;
+    use segment::data_types::vectors::DEFAULT_VECTOR_NAME;
+    use segment::entry::{SegmentEntry, StorageSegmentEntry};
+    use shard::optimize::OptimizationStrategy;
+    let _scope = common::ambient::test_guard();
+    let output = PathBuf::from(std::env::var("DLI_TEACHER_CONTROL").unwrap());
+    let bytes = std::fs::read(output.join("pool.f16")).unwrap();
+    let id_bytes = std::fs::read(output.join("pool_ids.u64")).unwrap();
+    let ids: Vec<u64> = id_bytes
+        .chunks_exact(8)
+        .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
+        .collect();
+    assert_eq!(ids.len(), 65536);
+    assert_eq!(bytes.len(), ids.len() * DIMENSIONS * 2);
+    std::fs::create_dir_all(output.join("segments")).unwrap();
+    std::fs::create_dir_all(output.join("staging")).unwrap();
+    let base = segment::segment_constructor::simple_segment_constructor::build_simple_segment(
+        &output.join("segments"),
+        DIMENSIONS,
+        Distance::Cosine,
+    )
+    .unwrap();
+    let mut config = base.config().clone();
+    drop(base);
+    config
+        .vector_data
+        .get_mut(DEFAULT_VECTOR_NAME)
+        .unwrap()
+        .datatype = Some(segment::types::VectorStorageDatatype::Float16);
+    let (mut source, _token) =
+        segment::segment_constructor::build_segment(&output.join("segments"), &config, None, true)
+            .unwrap();
+    for (row, id) in ids.iter().enumerate() {
+        let point = point_from_row(row, *id, &bytes);
+        let VectorStructPersisted::Single(v) = point.vector else {
+            unreachable!()
+        };
+        source
+            .upsert_point(
+                1,
+                point.id,
+                segment::data_types::vectors::only_default_vector(&v),
+            )
+            .unwrap();
+    }
+    let source_uuid = source.uuid;
+    let inputs = vec![shard::locked_segment::LockedSegment::from(source)];
+    let adapter = DliOptimizationStrategy {
+        staging: output.join("staging"),
+        segments_path: output.join("segments"),
+        segment_config: config,
+        destination_on_disk: false,
+        model: model_config(),
+        expected_sources: HashSet::from([source_uuid]),
+        expected_topology: None,
+        validation_hook: None,
+    };
+    let mut builder = adapter.create_segment_builder(&inputs).unwrap();
+    {
+        let shard::locked_segment::LockedSegment::Original(source) = &inputs[0] else {
+            unreachable!()
+        };
+        let source = source.read();
+        builder
+            .update(&[&*source], &std::sync::atomic::AtomicBool::new(false))
+            .unwrap();
+    }
+    let segment = builder.build_for_test(&output.join("segments"));
+    assert_eq!(segment.available_point_count(), 65536);
+    segment.flush(true).unwrap();
+    let path = segment.segment_path.clone();
+    let uuid = segment.uuid;
+    drop(segment);
+    let reopened = segment::segment_constructor::load_segment(
+        &path,
+        uuid,
+        None,
+        &std::sync::atomic::AtomicBool::new(false),
+        true,
+    )
+    .unwrap();
+    assert_eq!(reopened.available_point_count(), 65536);
+    std::fs::write(output.join("index.json"),serde_json::to_vec_pretty(&serde_json::json!({"path":path,"uuid":uuid,"population":65536,"model":model_config(),"scope":"disposable subset, not reconstruction of original6M teacher"})).unwrap()).unwrap();
 }

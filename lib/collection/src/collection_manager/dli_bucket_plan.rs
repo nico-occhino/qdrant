@@ -10,6 +10,12 @@ pub enum RoutingPolicy {
     SlotWeighted,
     ReservedPerLevel,
     PopulationDensity,
+    /// Explicit same-pipeline control for priority-cache timing.
+    PopulationDensityUncached,
+    /// Shared positive temperature fitted on validation queries, milli-units.
+    TemperatureDensity {
+        temperature_milli: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -120,6 +126,22 @@ pub fn select_density(
     arity: usize,
     budget: usize,
 ) -> Result<SelectedBuckets, PlanError> {
+    select_density_impl::<true>(predictions, arity, budget)
+}
+
+pub fn select_density_uncached(
+    predictions: Vec<BucketPrediction>,
+    arity: usize,
+    budget: usize,
+) -> Result<SelectedBuckets, PlanError> {
+    select_density_impl::<false>(predictions, arity, budget)
+}
+
+fn select_density_impl<const CACHE: bool>(
+    predictions: Vec<BucketPrediction>,
+    arity: usize,
+    budget: usize,
+) -> Result<SelectedBuckets, PlanError> {
     if budget == 0 {
         return Err(PlanError::ZeroBudget);
     }
@@ -140,9 +162,14 @@ pub fn select_density(
     };
     // A priority is immutable for a pinned generation/query. Cache it once;
     // otherwise every sort comparison repeats a UUID hash lookup and division.
-    let mut scored: Vec<_> = ranked.into_iter().map(|p| (score(&p), p)).collect();
+    let mut scored: Vec<_> = ranked
+        .into_iter()
+        .map(|p| (if CACHE { score(&p) } else { 0. }, p))
+        .collect();
     scored.sort_by(|a, b| {
-        b.0.total_cmp(&a.0)
+        let sa = if CACHE { a.0 } else { score(&a.1) };
+        let sb = if CACHE { b.0 } else { score(&b.1) };
+        sb.total_cmp(&sa)
             .then(a.1.level.cmp(&b.1.level))
             .then(a.1.physical.cmp(&b.1.physical))
             .then(a.1.bucket.cmp(&b.1.bucket))
@@ -227,6 +254,29 @@ mod tests {
             occupancy,
         }
     }
+    #[test]
+    fn cached_and_uncached_density_keep_complete_order_and_work() {
+        for seed in 1..21usize {
+            let input: Vec<_> = (0..200)
+                .map(|i| {
+                    b(
+                        i % 4 + 1,
+                        (i % 4 + 1) as u128,
+                        Some(i / 4),
+                        ((i * seed % 99 + 1) as f32) / 100.,
+                        i * seed % 1000 + 1,
+                    )
+                })
+                .collect();
+            for budget in [1, 100, 2000, usize::MAX] {
+                assert_eq!(
+                    select_density(input.clone(), 2, budget),
+                    select_density_uncached(input.clone(), 2, budget)
+                );
+            }
+        }
+    }
+
     #[test]
     fn density_uses_physical_population_and_cost_not_logical_slot() {
         let a = vec![

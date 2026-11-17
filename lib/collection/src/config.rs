@@ -421,6 +421,16 @@ impl DliExperimentalConfig {
                 "Invalid DLI configuration: buffer_capacity and candidate_budget must be positive, and arity must be at least 2".to_owned(),
             ));
         }
+        if let crate::collection_manager::dli_bucket_plan::RoutingPolicy::TemperatureDensity {
+            temperature_milli,
+        } = self.routing_policy
+        {
+            if !(100..=10000).contains(&temperature_milli) {
+                return Err(CollectionError::bad_input(
+                    "Routing temperature must be between0.1 and10".to_owned(),
+                ));
+            }
+        }
         self.model
             .check()
             .map_err(|err| CollectionError::bad_input(err.to_string()))

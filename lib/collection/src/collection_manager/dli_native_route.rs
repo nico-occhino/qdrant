@@ -20,7 +20,8 @@ use shard::search_result_aggregator::BatchResultAggregator;
 use uuid::Uuid;
 
 use super::dli_bucket_plan::{
-    BucketPrediction, RoutingPolicy, SelectedBuckets, select, select_density, select_reserved,
+    BucketPrediction, RoutingPolicy, SelectedBuckets, select, select_density,
+    select_density_uncached, select_reserved,
 };
 
 /// Linux task-local counters. CPU is in clock ticks (getconf CLK_TCK), not ns.
@@ -173,6 +174,15 @@ pub fn route_pinned_with_policy(
     materialize_limit: usize,
 ) -> OperationResult<NativeRouteResult> {
     let fail = |message: &str| OperationError::service_error(message.to_owned());
+    let temperature = match policy {
+        RoutingPolicy::TemperatureDensity { temperature_milli } => {
+            if !(100..=10000).contains(&temperature_milli) {
+                return Err(fail("invalid routing temperature"));
+            }
+            temperature_milli as f32 / 1000.
+        }
+        _ => 1.,
+    };
     let start = Instant::now();
     let mut predictions = Vec::new();
     let mut router_inference_time = Duration::ZERO;
@@ -225,7 +235,7 @@ pub fn route_pinned_with_policy(
                     return Err(fail("LMI router/postings bucket mismatch"));
                 }
                 let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-                let denominator: f32 = logits.iter().map(|v| (v - max).exp()).sum();
+                let denominator: f32 = logits.iter().map(|v| ((v - max) / temperature).exp()).sum();
                 if !denominator.is_finite() || denominator <= 0.0 {
                     return Err(fail("invalid LMI router probabilities"));
                 }
@@ -234,7 +244,7 @@ pub fn route_pinned_with_policy(
                         level,
                         physical: segment.uuid,
                         bucket: Some(bucket),
-                        probability: (logit - max).exp() / denominator,
+                        probability: ((logit - max) / temperature).exp() / denominator,
                         occupancy: state
                             .postings()
                             .get(bucket)
@@ -250,7 +260,12 @@ pub fn route_pinned_with_policy(
     let plan = match policy {
         RoutingPolicy::SlotWeighted => select(predictions, arity, budget),
         RoutingPolicy::ReservedPerLevel => select_reserved(predictions, arity, budget),
-        RoutingPolicy::PopulationDensity => select_density(predictions, arity, budget),
+        RoutingPolicy::PopulationDensity | RoutingPolicy::TemperatureDensity { .. } => {
+            select_density(predictions, arity, budget)
+        }
+        RoutingPolicy::PopulationDensityUncached => {
+            select_density_uncached(predictions, arity, budget)
+        }
     }
     .map_err(|e| fail(&format!("invalid DLI candidate plan: {e:?}")))?;
     let bucket_planning_time = planning_started.elapsed();
@@ -1598,6 +1613,54 @@ mod tests {
             .unwrap();
         let members = [(1, &a), (2, &b), (0, &buffer)];
         let context = VectorQueryContext::default();
+        let density = route_pinned_with_policy(
+            &members,
+            &[1., 0.],
+            2,
+            100,
+            &context,
+            RoutingPolicy::PopulationDensity,
+            30,
+        )
+        .unwrap();
+        let uncached = route_pinned_with_policy(
+            &members,
+            &[1., 0.],
+            2,
+            100,
+            &context,
+            RoutingPolicy::PopulationDensityUncached,
+            30,
+        )
+        .unwrap();
+        let t1 = route_pinned_with_policy(
+            &members,
+            &[1., 0.],
+            2,
+            100,
+            &context,
+            RoutingPolicy::TemperatureDensity {
+                temperature_milli: 1000,
+            },
+            30,
+        )
+        .unwrap();
+        assert_eq!(density.plan, uncached.plan);
+        assert_eq!(density.plan, t1.plan);
+        assert!(
+            route_pinned_with_policy(
+                &members,
+                &[1., 0.],
+                2,
+                100,
+                &context,
+                RoutingPolicy::TemperatureDensity {
+                    temperature_milli: 0
+                },
+                30
+            )
+            .is_err()
+        );
         let all = route_pinned(&members, &[1., 0.], 2, 100, &context).unwrap();
         assert_eq!(
             all.plan

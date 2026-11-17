@@ -191,6 +191,17 @@ impl LmiIndex {
             args.stopped,
             |id| progress.store(id as u64 + 1, Ordering::Relaxed),
         )?;
+        if let Some(path) = std::env::var_os("LMI_TEACHER_DIAGNOSTIC") {
+            let mut path = std::path::PathBuf::from(path);
+            path.set_extension("offsets.json");
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .map_err(|e| OperationError::service_error(format!("sample diagnostic: {e}")))?;
+            serde_json::to_writer(file, &sample)
+                .map_err(|e| OperationError::service_error(format!("sample diagnostic: {e}")))?;
+        }
         log::info!(
             "LMI sample_offsets: eligible={eligible_count} selected={} seconds={:.6}",
             sample.len(),

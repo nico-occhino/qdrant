@@ -331,8 +331,20 @@ pub(super) fn train_with_tch(
     let cluster_started = std::time::Instant::now();
     let labels = match distance {
         Distance::Cosine => {
-            let (labels, _, stats) =
+            let (labels, centers, stats) =
                 super::spherical_kmeans::cluster_with_centers_qdrant(data, dim, config, stopped)?;
+            // Explicit derived diagnostic artifact for a bounded private build.
+            // Disabled normally; never used as authoritative index/recovery state.
+            if let Some(path) = std::env::var_os("LMI_TEACHER_DIAGNOSTIC") {
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(path)
+                    .map_err(|e| {
+                        OperationError::service_error(format!("teacher diagnostic: {e}"))
+                    })?;
+                serde_json::to_writer(file,&serde_json::json!({"dimensions":dim,"model":config,"centers":centers,"labels":labels})).map_err(|e|OperationError::service_error(format!("teacher diagnostic: {e}")))?;
+            }
             log::info!(
                 "LMI spherical teacher: iterations={} init_seconds={:.6} assignment_seconds={:?} accumulation_seconds={:?} normalization_seconds={:?} final_assignment_seconds={:.6} empty_buckets={} min_bucket={} max_bucket={}",
                 stats.iterations,
