@@ -2,7 +2,11 @@
 import argparse,json,struct,csv
 from pathlib import Path
 import numpy as np
-p=argparse.ArgumentParser();p.add_argument('run',type=Path);a=p.parse_args();r=a.run
+p=argparse.ArgumentParser();p.add_argument('run',type=Path);p.add_argument('--budget-step',type=int,default=0);a=p.parse_args();r=a.run
+budgets=[100,250,500,1000,2000,4000,8000,16000,32000,65536]
+if a.budget_step:
+ assert a.budget_step>0
+ budgets=sorted(set(budgets+list(range(a.budget_step,16001,a.budget_step))))
 teacher=json.loads((r/'teacher.json').read_text());centers=np.array(teacher['centers'],dtype=np.float32)
 metadata=json.loads((r/'index.json').read_text());index=Path(metadata['path'])
 ids=np.fromfile(r/'pool_ids.u64',dtype='<u8');raw=np.fromfile(r/'pool.f16',dtype='<f2').reshape(65536,768).astype(np.float32)
@@ -43,13 +47,14 @@ for placement,labels in [('teacher',teacher_labels),('model',model_labels)]:
  for routing,rank in [('teacher',teacher_rank),('model',model_rank)]:
   for qi in range(len(queries)):
    order=rank[qi];cumulative=np.cumsum(sizes[order]);position=np.argsort(order)
-   for budget in [100,250,500,1000,2000,4000,8000,16000,32000,65536]:
+   for budget in budgets:
     n=min(len(order),int(np.searchsorted(cumulative,budget,side='left'))+1)
     rows.append(dict(placement=placement,routing=routing,query=qi+800,budget=budget,candidates=int(cumulative[n-1]),bucket10=float(np.mean(position[labels[gold[qi,:10]]]<n)),bucket30=float(np.mean(position[labels[gold[qi]]]<n))))
+with (r/'teacher-query-frontier.csv').open('w') as f:w=csv.DictWriter(f,fieldnames=rows[0].keys());w.writeheader();w.writerows(rows)
 summary=[]
 for placement in ['teacher','model']:
  for routing in ['teacher','model']:
-  for budget in [100,250,500,1000,2000,4000,8000,16000,32000,65536]:
+  for budget in budgets:
    rr=[x for x in rows if x['placement']==placement and x['routing']==routing and x['budget']==budget]
    summary.append(dict(placement=placement,routing=routing,budget=budget,**{k:float(np.mean([x[k] for x in rr])) for k in ['candidates','bucket10','bucket30']}))
 with (r/'teacher-frontier.csv').open('w') as f:w=csv.DictWriter(f,fieldnames=summary[0].keys());w.writeheader();w.writerows(summary)

@@ -382,6 +382,31 @@ fn native_quantized_sisap_subset() {
         let original_started = std::time::Instant::now();
         let original = score_candidates(&query, &candidates, 30, &tracker, &storage, &ctx).unwrap();
         eprintln!("S0 query={qi} original={} wall_ns={}", candidates.len(), original_started.elapsed().as_nanos());
+        if std::env::var_os("DLI_COUNTERBALANCED").is_some() {
+            // Warm-only ABBA/BAAB. Baseline above is an explicit untimed-for-this-control warmup.
+            let counters = || -> (u64,u64,u64) {
+                let stat = std::fs::read_to_string("/proc/thread-self/stat").unwrap();
+                let fields: Vec<_> = stat.rsplit_once(')').unwrap().1.split_whitespace().collect();
+                let n = |i:usize| fields[i].parse::<u64>().unwrap();
+                (n(7), n(9), n(11)+n(12))
+            };
+            for (pass, approximate_mode) in [false,true,true,false,true,false,false,true].into_iter().enumerate() {
+                let before = counters();
+                let tick = std::time::Instant::now();
+                let (hits, originals) = if approximate_mode {
+                    let shortlist = score_candidates_with_quantization(&query, &candidates, 128, &*tracker, &*storage, Some(&quant), &ctx).unwrap();
+                    let ids: Vec<_> = shortlist.iter().map(|h|h.idx).collect();
+                    (score_candidates(&query, &ids, 30, &tracker, &storage, &ctx).unwrap(), ids.len())
+                } else { (score_candidates(&query, &candidates, 30, &tracker, &storage, &ctx).unwrap(), candidates.len()) };
+                let ns = tick.elapsed().as_nanos();
+                let after = counters();
+                let recall = |k:usize| original.iter().take(k).filter(|h| hits.iter().take(k).any(|r|r.idx==h.idx)).count() as f64/k as f64;
+                for h in &hits { assert_eq!(h.score, score_candidates(&query,&[h.idx],1,&tracker,&storage,&ctx).unwrap()[0].score); }
+                eprintln!("ABBA query={qi} pass={pass} quantized={} original={originals} ns={ns} minor={} major={} cpu_ticks={} recall10={} recall30={}",
+                    if approximate_mode {candidates.len()} else {0}, after.0-before.0, after.1-before.1, after.2-before.2, recall(10),recall(30));
+            }
+            continue;
+        }
         for limit in [64, 128, 256, 512, 1024, 2048, 65536] {
             let started = std::time::Instant::now();
             let approximate = score_candidates_with_quantization(

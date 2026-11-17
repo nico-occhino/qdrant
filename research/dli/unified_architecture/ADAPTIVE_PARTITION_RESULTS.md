@@ -1,7 +1,19 @@
-# Adaptive partition checkpoint
+# Adaptive partition results — continuation35
 
-Existing M0:548 buckets/32768 samples on65K; classifier train/heldout assignment agreement .99945/.80310. Completed continuation32 gold-aware greedy diagnostic reaches90/95/100% top30 at1169/1453/1704 mean candidates; not an inference policy or optimal lower bound. Teacher/model factorial at~2K candidates gives teacher/teacher Recall30 coverage .8792 versus model/model .8531 on32 queries. Partition concentration and query ranking both merit evaluation.
+Original serial native factorial remains running:128 and256 completed, fresh548 not complete at the single session check. No duplicate training launched. Results below compare completed128/256 against the **earlier continuation28 548 control**, not the unfinished replicate. Provisional symlinks and source identities are explicit under continuation35/provisional. Same65K pool,32768 samples,512hidden,30epochs,5teacher kmeans iterations, seed42,32 diagnostic queries800–831. These queries are reused diagnostics, not untouched final tests.
 
-Implemented bounded DLI_CONTROL_BUCKETS override128/256/548 in the native private-builder fixture and generalized teacher analyzer to the captured bucket count (previously548 hardcoded). Native training execution for M1/M2 is **NOT RUN**. M3 sampling must hold teacher fixed and therefore cannot be implemented by simply enlarging the current native teacher reservoir; M4 is likewise unrun. These are experiments awaiting source compile, not validated model improvements. No1M or10M retraining gate passes yet.
+Coarse budget steps overstated work needed for95% coverage. A focused correction adds --budget-step250 and per-query rows to the existing offline analyzer, re-executed into **new** continuation35/refined directories without changing historical outputs or training again. Candidate work below is offline selected posting entries; it is not an instrumented native scorer count. Coverage is against an exact local Float64 normalized pool oracle.
 
-Continuation34: actual native65K factorial launched serially for128/256/548 outputs, sample32768, seed42, hidden512,30epochs,5teacher iterations, same source pool and32 query rows800–831. Native128 training observed active;256/548 queued in same runner. Exact teacher centers/labels/offsets are captured per variant and analyzer now handles varying output counts. Execution summaries are pending, not passed model comparisons. `summarize_bucket_control.py CONTINUATION34` requires all three completed outputs, computes coverage/work thresholds, heldout agreement, occupancyCV/empty buckets/model bytes and native fixture wall time. First variant may include Cargo compilation in process CPU/RSS, so use in-test elapsed separately and do not compare inclusive job CPU as training-only CPU. Independent persistence not verified.
+|Outputs|Heldout assignment|Model bytes|Model work at ≥.90 coverage10&30|Model work at ≥.95|Teacher work at ≥.95|
+|---:|---:|---:|---:|---:|---:|
+|128|.88013|1,837,652|5283|9825|8598|
+|256|.84744|2,100,308|3429|7450|6973|
+|548 earlier|.80310|2,699,492|3354|5827|4344|
+
+Occupancy min/max/CV:128=78/1860/.543;256=9/1015/.578;548=1/648/.741; all zero empty model buckets. Fewer outputs improve classifier agreement but worsen high-quality work here. At95% target the earlier548 model selects21.8% fewer entries than256, with28.5% more model bytes.128 is not the quality/work winner. At90%,256 and548 are close in work, so256 remains a credible smaller-model alternative. No statistical confidence claim from one seed/32 diagnostic queries.
+
+Native fixture elapsed108.51s (128),188.39s (256),46.18s (older548). These are complete private-build test durations in different execution contexts, not comparable isolated teacher/MLP training times. Concurrent analyses/builds and source revisions constrain any cost interpretation. Router latency, native search latency and native full-pool recall are unmeasured for these new128/256 models.
+
+**Decision:** reject128 as a scaling candidate on current evidence. Retain548 as current baseline and256 as a memory ablation; do not change physical hierarchy output policy or launch1M/10M. Final adoption awaits fresh548 replicate and a validation/test-separated native comparison. The geometry of larger buckets contributes even when the classifier agrees better; increasing classifier accuracy alone is insufficient.
+
+Raw curves/per-query CSV and coverage-work.svg: continuation35/refined. New tool summarize_bucket_control.py retains actual metadata/configs and refuses missing cases. Do not silently substitute an old548 result into the completed continuation34 factorial.
