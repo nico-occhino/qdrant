@@ -123,12 +123,18 @@ fn install_state(lmi: &Segment, config: LmiConfig) {
     Segment::save_state(&state, &lmi.segment_path).unwrap();
 }
 
+/// Top-1 search: the learned bucket for this query holds one live point, so a
+/// filled learned answer (offset 1) differs from the exact answer (offset 0).
 fn ids(segment: &Segment) -> Vec<u32> {
+    ids_top(segment, 1)
+}
+
+fn ids_top(segment: &Segment, top: usize) -> Vec<u32> {
     let q: QueryVector = [0.8_f32, 1.0].into();
     segment.vector_data[DEFAULT_VECTOR_NAME]
         .vector_index
         .borrow()
-        .search(&[&q], None, 2, None, &VectorQueryContext::default())
+        .search(&[&q], None, top, None, &VectorQueryContext::default())
         .unwrap()[0]
         .iter()
         .map(|p| p.idx)
@@ -176,24 +182,26 @@ fn persisted_static_search_restarts_without_training() {
     assert_ne!(ids(&plain)[0], ids(&reopened)[0]);
     assert_eq!(ids(&reopened)[0], 1);
     let q: QueryVector = [0.8_f32, 1.0].into();
-    let search = |params: Option<&SearchParams>, filter: Option<&Filter>| {
+    let search = |params: Option<&SearchParams>, filter: Option<&Filter>, top: usize| {
         reopened.vector_data[DEFAULT_VECTOR_NAME]
             .vector_index
             .borrow()
-            .search(&[&q], filter, 2, params, &VectorQueryContext::default())
+            .search(&[&q], filter, top, params, &VectorQueryContext::default())
             .unwrap()[0]
             .iter()
             .map(|p| p.idx)
             .collect::<Vec<_>>()
     };
-    assert_eq!(search(Some(&SearchParams::default()), None)[0], 1);
+    // A filled top-1 learned answer differs from the exact answer.
+    assert_eq!(search(Some(&SearchParams::default()), None, 1)[0], 1);
     assert_eq!(
         search(
             Some(&SearchParams {
                 exact: true,
                 ..Default::default()
             }),
-            None
+            None,
+            2
         )[0],
         0
     );
@@ -203,7 +211,7 @@ fn persisted_static_search_restarts_without_training() {
             .collect::<ahash::AHashSet<_>>()
             .into(),
     ));
-    assert_eq!(search(None, Some(&filter)), vec![0]);
+    assert_eq!(search(None, Some(&filter), 2), vec![0]);
     let files = reopened.vector_data[DEFAULT_VECTOR_NAME]
         .vector_index
         .borrow()
@@ -218,9 +226,19 @@ fn persisted_static_search_restarts_without_training() {
     let results = read_only.vector_data[DEFAULT_VECTOR_NAME]
         .vector_index
         .borrow()
-        .search(&[&q], None, 2, None, &VectorQueryContext::default())
+        .search(&[&q], None, 1, None, &VectorQueryContext::default())
         .unwrap();
     assert_eq!(results[0][0].idx, 1);
+    // The read-only index shares the fill invariant: top 3 widens to exact.
+    let widened: Vec<u32> = read_only.vector_data[DEFAULT_VECTOR_NAME]
+        .vector_index
+        .borrow()
+        .search(&[&q], None, 3, None, &VectorQueryContext::default())
+        .unwrap()[0]
+        .iter()
+        .map(|p| p.idx)
+        .collect();
+    assert_eq!(widened, ids_top(&plain, 3));
 }
 
 #[test]
@@ -242,7 +260,10 @@ fn candidate_union_and_probe_count_are_deterministic() {
 }
 
 #[test]
-fn corrupt_persisted_state_fails_open() {
+/// Corrupt or mismatched derived LMI state makes segment load fail (fail closed),
+/// matching upstream semantics for corrupt derived indexes. Previously named
+/// `corrupt_persisted_state_fails_open`, which described the opposite behavior.
+fn corrupt_persisted_state_rejects_segment_load() {
     let _scope = common::ambient::unmeasured_guard(common::reason::reason("LMI v1.20 regression"));
     for case in [
         "missing_router",
@@ -365,5 +386,38 @@ fn deleted_static_candidate_is_filtered_by_current_scorer() {
     let reopened = load_segment(&path, uuid, None, &AtomicBool::new(false), true).unwrap();
     assert_eq!(ids(&reopened), vec![1]);
     reopened.id_tracker.borrow_mut().drop(2.into()).unwrap();
-    assert!(ids(&reopened).is_empty());
+    // The only posting in the learned bucket is now deleted. The search must
+    // not return an empty result while live points exist: the probe widens and
+    // the deleted offset is still excluded by the current scorer.
+    assert_eq!(ids(&reopened), vec![0]);
+}
+
+/// Regression: an unfiltered static LMI search must return `min(top, live)`
+/// hits. The selected bucket holds one posting; `top = 3` previously returned
+/// a single hit from a four-point segment. Widened results equal exact search.
+#[test]
+fn underfilled_learned_probe_widens_to_fill_top() {
+    let _scope = common::ambient::unmeasured_guard(common::reason::reason("LMI v1.20 regression"));
+    let (_root, plain, lmi, config) = fixture();
+    install_state(&lmi, config);
+    let path = lmi.segment_path.clone();
+    let uuid = lmi.uuid;
+    drop(lmi);
+    let reopened = load_segment(&path, uuid, None, &AtomicBool::new(false), true).unwrap();
+    let exact = ids_top(&plain, 3);
+    assert_eq!(exact.len(), 3);
+    assert_eq!(ids_top(&reopened, 3), exact);
+    let index = reopened.vector_data[DEFAULT_VECTOR_NAME].vector_index.borrow();
+    let segment::index::VectorIndexEnum::Lmi(lmi_index) = &*index else {
+        panic!("expected LMI index")
+    };
+    assert_eq!(lmi_index.underfill_widenings_for_test(), 1);
+    // A filled top-1 answer takes the learned route without widening.
+    drop(index);
+    assert_eq!(ids_top(&reopened, 1), vec![1]);
+    // After a deletion the live count is 3: top = 4 fills to 3, never 4.
+    reopened.id_tracker.borrow_mut().drop(4.into()).unwrap();
+    let widened = ids_top(&reopened, 4);
+    assert_eq!(widened.len(), 3);
+    assert!(!widened.contains(&3), "deleted offset must stay excluded");
 }

@@ -51,8 +51,7 @@ pub use state::{
 use crate::common::operation_error::{OperationError, OperationResult};
 use crate::data_types::query_context::VectorQueryContext;
 use crate::data_types::vectors::{QueryVector, VectorInternal, VectorRef};
-use crate::id_tracker::IdTrackerEnum;
-#[cfg(any(not(feature = "lmi-research"), feature = "testing"))]
+use crate::id_tracker::{IdTrackerEnum, IdTrackerRead};
 use crate::index::candidate_scoring::score_candidates;
 use crate::index::plain_vector_index::PlainVectorIndex;
 use crate::index::{VectorIndex, VectorIndexRead};
@@ -78,6 +77,8 @@ pub struct LmiIndex {
     /// Posting offsets selected by successful learned searches, before visibility filtering.
     #[cfg(feature = "testing")]
     selected_candidate_offsets: AtomicU64,
+    #[cfg(feature = "testing")]
+    underfill_widenings: AtomicU64,
     routing_state: Option<LmiRoutingState>,
     routing_distance: Option<Distance>,
     state_files: Vec<PathBuf>,
@@ -109,6 +110,8 @@ impl LmiIndex {
             plain_fallbacks: AtomicU64::new(0),
             #[cfg(feature = "testing")]
             selected_candidate_offsets: AtomicU64::new(0),
+            #[cfg(feature = "testing")]
+            underfill_widenings: AtomicU64::new(0),
             routing_state: None,
             routing_distance: None,
             state_files: Vec::new(),
@@ -175,6 +178,29 @@ impl LmiIndex {
         self.selected_candidate_offsets.load(Ordering::Relaxed)
     }
 
+    fn widen_until_filled(
+        &self,
+        state: &LmiRoutingState,
+        routed_query: &QueryVector,
+        query: &QueryVector,
+        top: usize,
+        result: Vec<ScoredPointOffset>,
+        tracker: &IdTrackerEnum,
+        storage: &VectorStorageEnum,
+        query_context: &VectorQueryContext,
+    ) -> OperationResult<Vec<ScoredPointOffset>> {
+        widen_until_filled(state, routed_query, query, top, result, tracker, storage, query_context, || {
+            #[cfg(feature = "testing")]
+            self.underfill_widenings.fetch_add(1, Ordering::Relaxed);
+        })
+    }
+
+    /// Learned searches that had to widen the probe to fill `top`.
+    #[cfg(feature = "testing")]
+    pub fn underfill_widenings_for_test(&self) -> u64 {
+        self.underfill_widenings.load(Ordering::Relaxed)
+    }
+
     fn supports_candidates(
         &self,
         vectors: &[&QueryVector],
@@ -188,6 +214,52 @@ impl LmiIndex {
                 .iter()
                 .all(|q| matches!(q, QueryVector::Nearest(VectorInternal::Dense(_))))
     }
+}
+
+/// An unfiltered segment search must return `min(top, live points)` hits.
+/// When the configured probe prefix holds fewer live candidates (small or
+/// empty buckets, deleted postings), the probe count is doubled until the
+/// result fills. With every bucket probed, the postings cover all vectors
+/// eligible at build time; a trained segment is immutable except for
+/// deletions, so that final step equals exact search over live points.
+/// Shared by the mutable and read-only LMI indexes.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn widen_until_filled<V, I>(
+    state: &LmiRoutingState,
+    routed_query: &QueryVector,
+    query: &QueryVector,
+    top: usize,
+    mut result: Vec<ScoredPointOffset>,
+    tracker: &I,
+    storage: &V,
+    query_context: &VectorQueryContext,
+    mut on_widen: impl FnMut(),
+) -> OperationResult<Vec<ScoredPointOffset>>
+where
+    V: VectorStorageRead + crate::vector_storage::raw_scorer::RawScorerBuilder,
+    I: IdTrackerRead,
+{
+    let needed = top.min(tracker.available_point_count());
+    let buckets = state.postings().len();
+    let mut nprobe = state.nprobe();
+    while result.len() < needed && nprobe < buckets {
+        nprobe = nprobe.saturating_mul(2).min(buckets);
+        on_widen();
+        let candidates = state
+            .candidates_for_query_with_nprobe(routed_query, nprobe, &query_context.is_stopped())?
+            .ok_or_else(|| {
+                OperationError::service_error("LMI candidate routing received unsupported query")
+            })?;
+        result = crate::index::candidate_scoring::score_candidates_generic(
+            query,
+            &candidates,
+            top,
+            tracker,
+            storage,
+            query_context,
+        )?;
+    }
+    Ok(result)
 }
 
 impl VectorIndexRead for LmiIndex {
@@ -240,7 +312,9 @@ impl VectorIndexRead for LmiIndex {
                                 "route": route, "scoring": scoring,
                                 "segment_total_ns": segment_total_ns,
                             }));
-                            return Ok(result);
+                            return self.widen_until_filled(
+                                state, &routed_query, query, top, result, &*tracker, &*storage, query_context,
+                            );
                         }
                         #[cfg(not(feature = "lmi-research"))]
                         {
@@ -267,7 +341,16 @@ impl VectorIndexRead for LmiIndex {
                                 Ordering::Relaxed,
                             );
                         }
-                        Ok(result)
+                        self.widen_until_filled(
+                            state,
+                            &routed_query,
+                            query,
+                            top,
+                            result,
+                            &*tracker,
+                            &*storage,
+                            query_context,
+                        )
                         }
                     })
                     .collect();

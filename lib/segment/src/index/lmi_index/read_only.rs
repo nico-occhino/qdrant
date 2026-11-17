@@ -123,13 +123,24 @@ impl<S: UniversalReadExt + 'static> VectorIndexRead for ReadOnlyLmiIndex<S> {
                             "LMI candidate routing received unsupported query",
                         )
                     })?;
-                score_candidates_generic(
+                let result = score_candidates_generic(
                     query,
                     &candidates,
                     top,
                     &*tracker,
                     &*storage,
                     query_context,
+                )?;
+                super::widen_until_filled(
+                    &self.routing,
+                    &routed_query,
+                    query,
+                    top,
+                    result,
+                    &*tracker,
+                    &*storage,
+                    query_context,
+                    || {},
                 )
             })
             .collect()

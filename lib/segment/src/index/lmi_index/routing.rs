@@ -340,6 +340,17 @@ impl LmiRoutingState {
         query: &QueryVector,
         stopped: &AtomicBool,
     ) -> OperationResult<Option<Vec<PointOffsetType>>> {
+        self.candidates_for_query_with_nprobe(query, self.nprobe, stopped)
+    }
+
+    /// Same as [`Self::candidates_for_query`] with an explicit probe count
+    /// (`1..=bucket count`). Used to widen an underfilled learned search.
+    pub fn candidates_for_query_with_nprobe(
+        &self,
+        query: &QueryVector,
+        nprobe: usize,
+        stopped: &AtomicBool,
+    ) -> OperationResult<Option<Vec<PointOffsetType>>> {
         check_process_stopped(stopped)?;
         let QueryVector::Nearest(VectorInternal::Dense(vector)) = query else {
             return Ok(None);
@@ -347,7 +358,7 @@ impl LmiRoutingState {
 
         let buckets = self
             .router
-            .top_buckets_with_stop(vector.as_slice(), self.nprobe, stopped)?;
+            .top_buckets_with_stop(vector.as_slice(), nprobe, stopped)?;
 
         let mut candidates = Vec::new();
 
