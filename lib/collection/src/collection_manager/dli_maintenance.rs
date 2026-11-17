@@ -932,7 +932,7 @@ mod worker_lifecycle_tests {
         }
         .into();
         let config = |quantization| SegmentConfig {
-            vector_data: HashMap::from([(String::new().into(), vector(quantization))]),
+            vector_data: HashMap::from([(String::new(), vector(quantization))]),
             sparse_vector_data: Default::default(),
             payload_storage_type: Default::default(),
             id_tracker_memory: None,

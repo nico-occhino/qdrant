@@ -1653,8 +1653,8 @@ async fn dli_recovery_control_body() {
     for threads in [None, Some(1)] {
         let rejected_path = root.path().join(format!("dli_generic_optimizers_{threads:?}"));
         let rejected_snapshots = root.path().join(format!("dli_generic_snapshots_{threads:?}"));
-        std::fs::create_dir(&rejected_path).unwrap();
-        std::fs::create_dir(&rejected_snapshots).unwrap();
+        fs_err::create_dir(&rejected_path).unwrap();
+        fs_err::create_dir(&rejected_snapshots).unwrap();
         let mut rejected_cfg = dli_cfg.clone();
         rejected_cfg.optimizer_config.max_optimization_threads = threads;
         let rejected = Collection::new(

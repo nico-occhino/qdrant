@@ -288,7 +288,7 @@ pub(crate) fn append_jsonl_line(path: &std::path::Path, value: &serde_json::Valu
     use std::io::Write;
     let mut line = value.to_string();
     line.push('\n');
-    if let Ok(mut file) = std::fs::OpenOptions::new()
+    if let Ok(mut file) = fs_err::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
@@ -1718,7 +1718,7 @@ mod tests {
     }
 
     fn read_events(path: &std::path::Path) -> Vec<serde_json::Value> {
-        std::fs::read_to_string(path)
+        fs_err::read_to_string(path)
             .unwrap_or_default()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
