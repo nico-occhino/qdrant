@@ -1824,7 +1824,9 @@ async fn dli_recovery_control_body() {
     drop(reopened_dli);
 
     // Native recovery with one absent quantized member must preserve all native
-    // vectors and route through exact fallback, never count it as learned.
+    // vectors. The member's learned postings and original vectors remain valid,
+    // so it is scored with original vectors (counted as quantization-degraded)
+    // instead of forcing every query into complete exact fallback.
     let missing = &quantized_metadata[0];
     let saved = missing.with_extension("saved");
     std::fs::rename(missing,&saved).unwrap();
@@ -1833,8 +1835,10 @@ async fn dli_recovery_control_body() {
     assert_eq!(hits.len(),dli_expected.len());
     for (id,score) in hits { assert_eq!(score,if dli_expected[&id]==0 {1.0} else {0.0}); }
     let (_,learned,fallback) = shard(&missing_dli).await.local_dli_counts_for_test().await.unwrap();
-    assert_eq!(learned,0); assert!(fallback>0);
-    println!("DLI_COLLECTION_MISSING_QUANTIZATION learned={learned} exact={fallback}");
+    let degraded = shard(&missing_dli).await.local_dli_named_profile_for_test().await.unwrap()
+        ["quantization_degraded_queries"].as_u64().unwrap();
+    assert!(learned>0); assert!(degraded>0);
+    println!("DLI_COLLECTION_MISSING_QUANTIZATION learned={learned} exact={fallback} degraded={degraded}");
     missing_dli.stop_gracefully().await; drop(missing_dli);
     std::fs::rename(saved,missing).unwrap();
     let original_metadata = std::fs::read(missing).unwrap();
@@ -1849,8 +1853,12 @@ async fn dli_recovery_control_body() {
         assert_eq!(hits.len(),dli_expected.len());
         for (id,score) in hits { assert_eq!(score,if dli_expected[&id]==0 {1.0} else {0.0}); }
         let (_,learned,fallback) = shard(&degraded).await.local_dli_counts_for_test().await.unwrap();
-        assert_eq!(learned,0); assert!(fallback>0);
-        println!("DLI_COLLECTION_INVALID_QUANTIZATION incompatible={incompatible} learned={learned} exact={fallback}");
+        let degraded_queries = shard(&degraded).await.local_dli_named_profile_for_test().await.unwrap()
+            ["quantization_degraded_queries"].as_u64().unwrap();
+        // Corrupt or incompatible derived metadata is dropped at load and never
+        // used; the valid learned route is served with original scoring.
+        assert!(learned>0); assert!(degraded_queries>0);
+        println!("DLI_COLLECTION_INVALID_QUANTIZATION incompatible={incompatible} learned={learned} exact={fallback} degraded={degraded_queries}");
         degraded.stop_gracefully().await; drop(degraded);
         std::fs::write(missing,&original_metadata).unwrap();
     }

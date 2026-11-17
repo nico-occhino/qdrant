@@ -634,6 +634,7 @@ impl ShardReplicaSet {
         Some(serde_json::json!({
             "learned_queries": search.learned_queries.load(Relaxed),
             "exact_fallbacks": search.exact_fallbacks.load(Relaxed),
+            "quantization_degraded_queries": search.quantization_degraded_queries.load(Relaxed),
             "routing_and_planning_nanos": search.routing_and_planning_nanos.load(Relaxed),
             "scoring_nanos": search.scoring_nanos.load(Relaxed),
             "resolution_nanos": search.resolution_nanos.load(Relaxed),

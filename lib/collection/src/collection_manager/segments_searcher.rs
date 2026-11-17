@@ -92,6 +92,9 @@ pub struct DliResearchConfig {
     pub routing_policy: parking_lot::RwLock<super::dli_bucket_plan::RoutingPolicy>,
     pub learned_queries: std::sync::atomic::AtomicU64,
     pub exact_fallbacks: std::sync::atomic::AtomicU64,
+    /// Learned queries in which at least one member requested quantized
+    /// scoring but had no derived quantized artifact (scored with originals).
+    pub quantization_degraded_queries: std::sync::atomic::AtomicU64,
     pub selected_postings: std::sync::atomic::AtomicU64,
     pub unique_posting_offsets: std::sync::atomic::AtomicU64,
     pub routing_and_planning_nanos: std::sync::atomic::AtomicU64,
@@ -145,6 +148,7 @@ impl DliResearchConfig {
             routing_policy: Default::default(),
             learned_queries: Default::default(),
             exact_fallbacks: Default::default(),
+            quantization_degraded_queries: Default::default(),
             selected_postings: Default::default(),
             unique_posting_offsets: Default::default(),
             routing_and_planning_nanos: Default::default(),
@@ -710,7 +714,6 @@ impl SegmentsSearcher {
                         }
                         let reason = match &error {
                             segment::common::operation_error::OperationError::ServiceError { description, .. } => match description.as_str() {
-                                "quantized generation unavailable" => "quantization_unavailable",
                                 "quantized physical generation mismatch" => "quantization_generation_mismatch",
                                 "quantized mode requires bounded materialization and nonzero shortlist" => "quantization_configuration",
                                 _ => "routing_error",
@@ -727,6 +730,11 @@ impl SegmentsSearcher {
                         record.routing_event = trace.routing_event;
                     }
                     reject!("no_learned_bucket");
+                }
+                if routed.quantization_degraded_members > 0 {
+                    attempt_config
+                        .quantization_degraded_queries
+                        .fetch_add(1, Ordering::Relaxed);
                 }
                 attempt_config.selected_postings.fetch_add(
                     u64::try_from(routed.posting_candidates).unwrap_or(u64::MAX),
@@ -781,6 +789,7 @@ impl SegmentsSearcher {
                     "routing_ns": routed.routing_and_planning_time.as_nanos(),
                     "scoring_ns": routed.scoring_time.as_nanos(),
                     "materialization_ns": routed.hit_materialization_time.as_nanos(),
+                    "quantization_degraded_members": routed.quantization_degraded_members,
                 }));
                 let resolution_start = Instant::now();
                 let resolution = resolve_pinned_candidates(&members, routed, limit);

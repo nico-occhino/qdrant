@@ -49,6 +49,9 @@ pub struct NativeRouteResult {
     pub unique_posting_offsets: usize,
     /// Optional request-local native scorer measurements for learned members.
     pub learned_scoring: Option<LearnedScoringProfile>,
+    /// Learned members scored with original vectors because quantized scoring
+    /// was requested but their derived quantized artifact is absent.
+    pub quantization_degraded_members: usize,
     /// Live point count, which can exceed the number of vectors in the buffer.
     pub buffer_point_estimate: usize,
     pub per_segment: Vec<(Uuid, Vec<ScoredPoint>)>,
@@ -418,6 +421,7 @@ pub fn route_pinned_traced(
     let mut posting_candidates = 0usize;
     let mut unique_posting_offsets = 0usize;
     let mut buffer_point_estimate = 0usize;
+    let mut quantization_degraded_members = 0usize;
     // Thread-local attribution is sound here because the whole route executes
     // synchronously on this one blocking task; the guard is dropped (and the
     // flag cleared) on every return path, including `?` and unwinding.
@@ -493,9 +497,22 @@ pub fn route_pinned_traced(
                 if shortlist == 0 || materialize_limit == usize::MAX {
                     return Err(fail("quantized mode requires bounded materialization and nonzero shortlist"));
                 }
-                let quantized = data.quantized_vectors.borrow();
-                let quantized = quantized.as_ref().ok_or_else(|| fail("quantized generation unavailable"))?;
+                let quantized_guard = data.quantized_vectors.borrow();
+                match quantized_guard.as_ref() {
+                // The derived compressed scorer is absent (never built for this
+                // member, or dropped as missing/corrupt/incompatible at load).
+                // The member's learned postings and original vectors were
+                // validated independently, so original scoring of exactly the
+                // same candidates is the A0 path: correct, and far cheaper than
+                // complete exact fallback. Counted, never silent.
+                None => {
+                    quantization_degraded_members += 1;
+                    &candidates
+                }
+                Some(quantized) => {
                 let expected_path = segment::segment_constructor::get_vector_storage_path(&segment.segment_path, DEFAULT_VECTOR_NAME);
+                // A present but foreign/incompatible object signals mis-wiring:
+                // fail closed to complete exact fallback.
                 if quantized.storage_path() != expected_path || quantized.config().vector_parameters.dim != query.len() {
                     return Err(fail("quantized physical generation mismatch"));
                 }
@@ -513,6 +530,8 @@ pub fn route_pinned_traced(
                 )? };
                 rerank_candidates = approximate.into_iter().map(|hit| hit.idx).collect::<Vec<_>>();
                 &rerank_candidates
+                }
+                }
             } else { &candidates };
             let offsets = if let Some(profile) = learned_scoring.as_mut() {
                 let tick = Instant::now();
@@ -577,6 +596,7 @@ pub fn route_pinned_traced(
         unique_posting_offsets,
         // Owned by the caller's trace when tracing; see `route_pinned_traced`.
         learned_scoring: None,
+        quantization_degraded_members,
         buffer_point_estimate,
         per_segment,
     })
@@ -1232,7 +1252,7 @@ mod tests {
     }
 
     #[test]
-    fn quantized_learned_generation_reopens_and_rejects_missing_object() {
+    fn quantized_learned_generation_reopens_and_degrades_missing_object() {
         let _scope = common::ambient::test_guard();
         let root = tempfile::tempdir().unwrap();
         let a = trained_configured(root.path(), &[(11,[1.,0.]),(12,[0.8,0.6]),(13,[0.,1.]),(14,[-1.,0.])], 42, true);
@@ -1249,7 +1269,11 @@ mod tests {
         assert_eq!(original.per_segment,quant.per_segment);
         assert!(matches!(resolve_pinned_candidates(&members,quant,3).unwrap(),CandidateResolution::Resolved(_)));
         a.vector_data[DEFAULT_VECTOR_NAME].quantized_vectors.borrow_mut().take();
-        assert!(route_pinned_with_quantized_shortlist(&members,&[1.,0.],2,100,&ctx,RoutingPolicy::PopulationDensity,3,Some(64)).is_err());
+        // Missing derived artifact: the member degrades to original scoring of
+        // the same postings (A0), identical to the original route, and counted.
+        let degraded = route_pinned_with_quantized_shortlist(&members,&[1.,0.],2,100,&ctx,RoutingPolicy::PopulationDensity,3,Some(64)).unwrap();
+        assert_eq!(degraded.quantization_degraded_members, 1);
+        assert_eq!(degraded.per_segment, original.per_segment);
         let quant_path = segment::segment_constructor::get_vector_storage_path(&a.segment_path, DEFAULT_VECTOR_NAME);
         let metadata = quant_path.join("quantized.config.json");
         let saved = std::fs::read(&metadata).unwrap();
@@ -1267,8 +1291,13 @@ mod tests {
         let reopened = segment::segment_constructor::load_segment(&path, uuid, None, &AtomicBool::new(false), true).unwrap();
         assert!(reopened.vector_data[DEFAULT_VECTOR_NAME].quantized_vectors.borrow().is_none());
         let refs = [(1,&reopened),(0,&buffer)];
-        assert!(route_pinned_with_quantized_shortlist(&refs,&[1.,0.],2,100,&ctx,RoutingPolicy::PopulationDensity,3,Some(64)).is_err());
-        assert!(route_pinned_with_policy(&refs,&[1.,0.],2,100,&ctx,RoutingPolicy::PopulationDensity,3).is_ok());
+        // Reopen without quantized metadata: the derived artifact is dropped at
+        // load, and quantized mode degrades this member to original scoring
+        // with results identical to the original route.
+        let degraded = route_pinned_with_quantized_shortlist(&refs,&[1.,0.],2,100,&ctx,RoutingPolicy::PopulationDensity,3,Some(64)).unwrap();
+        let original = route_pinned_with_policy(&refs,&[1.,0.],2,100,&ctx,RoutingPolicy::PopulationDensity,3).unwrap();
+        assert_eq!(degraded.quantization_degraded_members, 1);
+        assert_eq!(degraded.per_segment, original.per_segment);
 
     }
 
@@ -1761,18 +1790,19 @@ mod tests {
         );
     }
 
-    /// Early rejection (unsupported filter) and unavailable quantization each
-    /// produce one final exact-fallback event with the precise reason, the
-    /// partial attempt (if any) and exact work equal to the live population.
+    /// Early rejection (unsupported filter) produces one exact-fallback event
+    /// with the precise reason and exact work equal to the filtered population;
+    /// unavailable derived quantization degrades one member to original scoring.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn dli_request_events_cover_rejection_and_unavailable_quantization() {
+    async fn dli_request_events_cover_rejection_and_degraded_quantization() {
         use crate::collection_manager::segments_searcher::DliResearchConfig;
         use shard::segment_holder::{SegmentHolder, locked::LockedSegmentHolder};
         use std::sync::Arc;
         let _scope = common::ambient::test_guard();
         let root = tempfile::tempdir().unwrap();
         let (learned, plain) = request_event_fixture(root.path());
-        let live = (learned.available_point_count() + plain.available_point_count()) as u64;
+        let learned_live = learned.available_point_count();
+        let plain_live = plain.available_point_count();
         let config = Arc::new(
             DliResearchConfig::new(vec![(learned.uuid, 1), (plain.uuid, 0)], 2, 1_000).unwrap(),
         );
@@ -1810,24 +1840,33 @@ mod tests {
         // The HasId filter admits one point; exact search scores only it.
         assert_eq!(rejected["exact_fallback"]["scored_vectors"].as_u64().unwrap(), 1);
 
-        let unavailable = &events[1];
-        assert_eq!(unavailable["final_outcome"], "exact_fallback");
-        assert_eq!(unavailable["fallback_reason"], "quantization_unavailable");
-        // Routing did not complete, so there is no attempt summary, but the
-        // partial scorer record exists and holds no quantized work.
-        assert!(unavailable["attempt"].is_null());
+        // A missing derived quantized artifact no longer forces complete exact
+        // fallback: the member is scored with original vectors (the A0 path)
+        // over the same postings, and the degradation is counted explicitly.
+        let degraded = &events[1];
+        assert_eq!(degraded["final_outcome"], "learned");
+        assert!(degraded["fallback_reason"].is_null());
+        assert!(degraded["exact_fallback"].is_null());
+        assert_eq!(degraded["attempt"]["quantization_degraded_members"], 1);
+        assert_eq!(degraded["learned_scoring"]["quantized_scored"].as_u64().unwrap(), 0);
         assert_eq!(
-            unavailable["learned_scoring"]["quantized_scored"].as_u64().unwrap(),
-            0
+            degraded["learned_scoring"]["original_scored"].as_u64().unwrap(),
+            learned_live as u64
         );
         assert_eq!(
-            unavailable["exact_fallback"]["scored_vectors"].as_u64().unwrap(),
-            live
+            degraded["learned_scoring"]["plain_scored"].as_u64().unwrap(),
+            plain_live as u64
         );
-        assert_ne!(rejected["request_id"], unavailable["request_id"]);
+        assert_ne!(rejected["request_id"], degraded["request_id"]);
         let reasons = config.fallback_reasons.lock();
         assert_eq!(reasons.get("unsupported_query"), Some(&1));
-        assert_eq!(reasons.get("quantization_unavailable"), Some(&1));
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert_eq!(
+            config
+                .quantization_degraded_queries
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
     }
 
     /// With profiling disabled (the latency-measurement configuration), no
@@ -2222,8 +2261,12 @@ mod tests {
             std::mem::swap(&mut *qa, &mut *qb);
         }
         let saved = a.vector_data[DEFAULT_VECTOR_NAME].quantized_vectors.borrow_mut().take();
-        assert!(route_pinned_with_quantized_shortlist(&members, &[1.,0.], 2, 100,
-            &context, RoutingPolicy::PopulationDensity, 30, Some(30)).is_err());
+        // Absent (not foreign) artifact: only member `a` degrades to original
+        // scoring; `b` keeps quantized scoring; results stay identical.
+        let degraded = route_pinned_with_quantized_shortlist(&members, &[1.,0.], 2, 100,
+            &context, RoutingPolicy::PopulationDensity, 30, Some(30)).unwrap();
+        assert_eq!(degraded.quantization_degraded_members, 1);
+        assert_eq!(degraded.per_segment, original.per_segment);
         *a.vector_data[DEFAULT_VECTOR_NAME].quantized_vectors.borrow_mut() = saved;
         let density = route_pinned_with_policy(
             &members,
