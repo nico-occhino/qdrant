@@ -515,3 +515,9 @@ mod dli_sisap300k_benchmark;
 
 #[cfg(feature = "dli-research")]
 mod dli_sisap_scaling_benchmark;
+
+#[cfg(all(feature = "dli-research", feature = "testing"))]
+mod dli_selection_frontier;
+
+#[cfg(all(feature = "dli-research", feature = "testing"))]
+mod dli_concurrent_workload;
