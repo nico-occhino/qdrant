@@ -49,6 +49,33 @@ fn model_config() -> LmiConfig {
     }
 }
 
+fn directory_file_bytes(path: &Path) -> u64 {
+    std::fs::read_dir(path)
+        .unwrap_or_else(|error| panic!("cannot inspect {}: {error}", path.display()))
+        .map(|entry| entry.unwrap())
+        .map(|entry| {
+            let path = entry.path();
+            let kind = entry.file_type().unwrap();
+            if kind.is_dir() {
+                directory_file_bytes(&path)
+            } else if kind.is_file() {
+                entry.metadata().unwrap().len()
+            } else {
+                0
+            }
+        })
+        .sum()
+}
+
+#[test]
+fn recursive_storage_measurement_includes_nested_mmap_chunks() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("vectors")).unwrap();
+    std::fs::write(root.path().join("quantized.data"), [0; 7]).unwrap();
+    std::fs::write(root.path().join("vectors/chunk_0.mmap"), [0; 13]).unwrap();
+    assert_eq!(directory_file_bytes(root.path()), 20);
+}
+
 fn collection_config(dli: bool) -> CollectionConfigInternal {
     let mut vectors = VectorParamsBuilder::new(DIMENSIONS as u64, Distance::Cosine)
         .with_on_disk(true)
@@ -1401,11 +1428,10 @@ async fn sisap23_65k_multilevel_collection_s0_vs_s2() {
             &segment.segment_path,
             segment::data_types::vectors::DEFAULT_VECTOR_NAME,
         );
-        let vector_storage_bytes: u64 = std::fs::read_dir(&vector_storage_path)
-            .unwrap()
-            .flatten()
-            .filter_map(|entry| entry.metadata().ok().map(|meta| meta.len()))
-            .sum();
+        // Include mmap chunks under `vectors/`; a one-level directory scan
+        // counted only top-level quantized files and understated original
+        // vector storage by nearly the entire Float16 corpus.
+        let vector_storage_bytes = directory_file_bytes(&vector_storage_path);
         let quantized_files: Vec<_> = [
             "quantized.config.json",
             "quantized.data",

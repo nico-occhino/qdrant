@@ -674,7 +674,6 @@ impl SegmentsSearcher {
                     "selected_buckets": routed.plan.buckets.len(),
                     "routing_ns": routed.routing_and_planning_time.as_nanos(),
                     "materialization_ns": routed.hit_materialization_time.as_nanos(),
-                    "plain_scoring_count": null,
                 }));
                 let resolution_start = Instant::now();
                 let resolution = resolve_pinned_candidates(&members, routed, limit);
