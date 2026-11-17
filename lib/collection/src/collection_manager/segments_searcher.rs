@@ -64,7 +64,7 @@ pub struct DliTopologyHint {
 pub struct DliResearchConfig {
     pub members: parking_lot::RwLock<std::collections::HashMap<uuid::Uuid, usize>>,
     pub arity: usize,
-    pub candidate_budget: usize,
+    pub candidate_budget: std::sync::atomic::AtomicUsize,
     pub materialize_topk: std::sync::atomic::AtomicBool,
     pub routing_policy: parking_lot::RwLock<super::dli_bucket_plan::RoutingPolicy>,
     pub learned_queries: std::sync::atomic::AtomicU64,
@@ -79,6 +79,9 @@ pub struct DliResearchConfig {
     pub router_inference_nanos: std::sync::atomic::AtomicU64,
     pub bucket_planning_nanos: std::sync::atomic::AtomicU64,
     pub models_evaluated: std::sync::atomic::AtomicU64,
+    pub selected_buckets: std::sync::atomic::AtomicU64,
+    pub selected_members: std::sync::atomic::AtomicU64,
+    pub materialized_hits: std::sync::atomic::AtomicU64,
 
     pub read_guard_nanos: std::sync::atomic::AtomicU64,
     pub fallback_reasons: parking_lot::Mutex<std::collections::HashMap<&'static str, u64>>,
@@ -103,7 +106,7 @@ impl DliResearchConfig {
         Some(Self {
             members: parking_lot::RwLock::new(members),
             arity,
-            candidate_budget: budget,
+            candidate_budget: budget.into(),
             materialize_topk: Default::default(),
             routing_policy: Default::default(),
             learned_queries: Default::default(),
@@ -118,6 +121,9 @@ impl DliResearchConfig {
             router_inference_nanos: Default::default(),
             bucket_planning_nanos: Default::default(),
             models_evaluated: Default::default(),
+            selected_buckets: Default::default(),
+            selected_members: Default::default(),
+            materialized_hits: Default::default(),
 
             read_guard_nanos: Default::default(),
             fallback_reasons: Default::default(),
@@ -444,6 +450,7 @@ impl SegmentsSearcher {
             CandidateResolution, resolve_pinned_candidates, route_pinned_with_policy,
         };
         use segment::data_types::vectors::{DEFAULT_VECTOR_NAME, VectorInternal};
+        use segment::entry::ReadSegmentEntry;
         use shard::query::query_enum::QueryEnum;
         use std::sync::atomic::Ordering;
 
@@ -576,7 +583,7 @@ impl SegmentsSearcher {
                     &members,
                     query,
                     attempt_config.arity,
-                    attempt_config.candidate_budget,
+                    attempt_config.candidate_budget.load(Ordering::Relaxed),
                     &vector_context,
                     *attempt_config.routing_policy.read(),
                     if attempt_config.materialize_topk.load(Ordering::Relaxed) {
@@ -629,6 +636,16 @@ impl SegmentsSearcher {
                 attempt_config
                     .models_evaluated
                     .fetch_add(routed.models_evaluated as u64, Ordering::Relaxed);
+                attempt_config
+                    .selected_buckets
+                    .fetch_add(routed.plan.buckets.len() as u64, Ordering::Relaxed);
+                attempt_config
+                    .selected_members
+                    .fetch_add(routed.per_segment.len() as u64, Ordering::Relaxed);
+                attempt_config.materialized_hits.fetch_add(
+                    routed.per_segment.iter().map(|(_, h)| h.len() as u64).sum(),
+                    Ordering::Relaxed,
+                );
                 let resolution_start = Instant::now();
                 let resolution = resolve_pinned_candidates(&members, routed, limit);
                 attempt_config.resolution_nanos.fetch_add(
@@ -636,7 +653,17 @@ impl SegmentsSearcher {
                     Ordering::Relaxed,
                 );
                 match resolution {
-                    Ok(CandidateResolution::Resolved(hits)) => Some(hits),
+                    Ok(CandidateResolution::Resolved(hits)) => {
+                        // Deleted posting entries must not consume the ANN budget and
+                        // silently underfill a query when the captured native population
+                        // can supply more hits. Native fallback also handles missing vectors.
+                        let required =
+                            limit.min(members.iter().map(|(_, s)| s.available_point_count()).sum());
+                        if hits.len() < required {
+                            reject!("insufficient_valid_candidates");
+                        }
+                        Some(hits)
+                    }
                     Ok(CandidateResolution::ExactFallback(reason)) => {
                         log::debug!("dli_research: candidate fallback: {reason:?}");
                         use crate::collection_manager::dli_native_route::ResolutionFallback;

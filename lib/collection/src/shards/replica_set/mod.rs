@@ -529,6 +529,55 @@ impl ShardReplicaSet {
     }
 
     #[cfg(all(test, feature = "dli-research"))]
+    pub async fn configure_local_dli_query_for_test(
+        &self,
+        topk: bool,
+        policy: crate::collection_manager::dli_bucket_plan::RoutingPolicy,
+        budget: usize,
+    ) {
+        use crate::shards::shard::Shard;
+        assert!(budget > 0);
+        let local = self.local.read().await;
+        let Some(Shard::Local(local)) = local.as_ref() else {
+            panic!("local shard required")
+        };
+        let search = local.dli_research.read().clone().unwrap();
+        search
+            .materialize_topk
+            .store(topk, std::sync::atomic::Ordering::Relaxed);
+        search
+            .candidate_budget
+            .store(budget, std::sync::atomic::Ordering::Relaxed);
+        *search.routing_policy.write() = policy;
+    }
+
+    /// Diagnostic cache reset is scoped to this fixture's Cold vector files.
+    /// It does not change storage policy, vectors, global drop_caches or metadata.
+    #[cfg(all(test, feature = "dli-research"))]
+    pub async fn clear_local_dli_cold_vectors_for_test(&self) -> Vec<uuid::Uuid> {
+        let holder = self.local_segments_for_test().await.unwrap();
+        let holder = holder.read();
+        let mut cleared = Vec::new();
+        for (_, segment) in holder.iter() {
+            let shard::locked_segment::LockedSegment::Original(segment) = segment else {
+                panic!("frozen cache control cannot run with proxies")
+            };
+            let segment = segment.read();
+            for (name, config) in &segment.segment_config.vector_data {
+                if config.storage_type.memory() == Some(segment::types::Memory::Cold) {
+                    segment.vector_data[name]
+                        .vector_storage
+                        .borrow()
+                        .clear_cache()
+                        .unwrap();
+                    cleared.push(segment.uuid);
+                }
+            }
+        }
+        cleared
+    }
+
+    #[cfg(all(test, feature = "dli-research"))]
     pub async fn local_dli_named_profile_for_test(&self) -> Option<serde_json::Value> {
         use crate::shards::shard::Shard;
         use std::sync::atomic::Ordering::Relaxed;
@@ -549,6 +598,9 @@ impl ShardReplicaSet {
             "router_inference_nanos": search.router_inference_nanos.load(Relaxed),
             "bucket_planning_nanos": search.bucket_planning_nanos.load(Relaxed),
             "models_evaluated": search.models_evaluated.load(Relaxed),
+            "selected_buckets":search.selected_buckets.load(Relaxed),
+            "selected_members":search.selected_members.load(Relaxed),
+            "materialized_hits":search.materialized_hits.load(Relaxed),
             "fallback_reasons": search.fallback_reasons.lock().clone()
         }))
     }

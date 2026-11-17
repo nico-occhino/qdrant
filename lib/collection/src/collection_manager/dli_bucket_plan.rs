@@ -9,9 +9,10 @@ pub enum RoutingPolicy {
     #[default]
     SlotWeighted,
     ReservedPerLevel,
+    PopulationDensity,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct BucketPrediction {
     /// Buffer is level 0, learned levels use paper's one-based numbering.
     pub level: usize,
@@ -111,6 +112,57 @@ pub fn select(
     })
 }
 
+/// Population prior times predicted bucket relevance per unit posting work.
+/// No parameters are fitted to test queries. Population comes from all nonempty
+/// posting occupancies for this pinned generation, not logical slot capacity.
+pub fn select_density(
+    predictions: Vec<BucketPrediction>,
+    arity: usize,
+    budget: usize,
+) -> Result<SelectedBuckets, PlanError> {
+    if budget == 0 {
+        return Err(PlanError::ZeroBudget);
+    }
+    let mut ranked = select(predictions, arity, usize::MAX)?.buckets;
+    let mut populations = HashMap::<Uuid, usize>::new();
+    for p in &ranked {
+        let count = populations.entry(p.physical).or_default();
+        *count = count
+            .checked_add(p.occupancy)
+            .ok_or(PlanError::NumericOverflow)?;
+    }
+    let score = |p: &BucketPrediction| {
+        if p.level == 0 {
+            1.
+        } else {
+            f64::from(p.probability) * populations[&p.physical] as f64 / p.occupancy as f64
+        }
+    };
+    ranked.sort_by(|a, b| {
+        score(b)
+            .total_cmp(&score(a))
+            .then(a.level.cmp(&b.level))
+            .then(a.physical.cmp(&b.physical))
+            .then(a.bucket.cmp(&b.bucket))
+    });
+    let mut count = 0usize;
+    let mut buckets = Vec::new();
+    for p in ranked {
+        if count >= budget {
+            break;
+        }
+        count = count
+            .checked_add(p.occupancy)
+            .ok_or(PlanError::NumericOverflow)?;
+        buckets.push(p);
+    }
+    Ok(SelectedBuckets {
+        requested: budget,
+        estimated_candidates: count,
+        buckets,
+    })
+}
+
 /// Reserve the highest-probability nonempty bucket of each learned physical
 /// member, then fill remaining work in the baseline order. Whole buckets impose
 /// an explicit cost floor; `budget` remains a minimum, never a hard work bound.
@@ -173,6 +225,28 @@ mod tests {
             occupancy,
         }
     }
+    #[test]
+    fn density_uses_physical_population_and_cost_not_logical_slot() {
+        let a = vec![
+            b(1, 1, Some(0), 0.5, 10),
+            b(1, 1, Some(1), 0.5, 90),
+            b(5, 2, Some(0), 0.9, 900),
+            b(5, 2, Some(1), 0.1, 100),
+        ];
+        assert_eq!(
+            select_density(a.clone(), 2, 1).unwrap().buckets[0].physical,
+            Uuid::from_u128(1)
+        );
+        let mut shifted = a;
+        for p in &mut shifted {
+            p.level += 3;
+        }
+        assert_eq!(
+            select_density(shifted, 2, 1).unwrap().buckets[0].physical,
+            Uuid::from_u128(1)
+        );
+    }
+
     #[test]
     fn reserved_coverage_has_explicit_cost_floor_and_no_duplicates() {
         let input = vec![

@@ -253,6 +253,14 @@ fn percentile(values: &mut [f64], p: f64) -> f64 {
     values[index]
 }
 
+fn query_process_counters() -> Option<(u64, u64, u64)> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let (_, tail) = stat.rsplit_once(')')?;
+    let fields: Vec<_> = tail.split_whitespace().collect();
+    let n = |i: usize| fields.get(i)?.parse::<u64>().ok();
+    Some((n(7)?, n(9)?, n(11)?.checked_add(n(12)?)?))
+}
+
 async fn run_queries(
     collection: &Collection,
     query_data: &[u8],
@@ -260,6 +268,12 @@ async fn run_queries(
     query_count: usize,
     deleted_ids: &HashSet<u32>,
 ) -> (f64, f64, f64, f64, f64) {
+    let detailed = std::env::var_os("DLI_DETAILED_QUERY_STATS").is_some();
+    let local_profile = if detailed {
+        Some(replica(collection).await)
+    } else {
+        None
+    };
     let mut timings = Vec::with_capacity(query_count);
     let mut hits10 = 0usize;
     let mut hits30 = 0usize;
@@ -269,6 +283,16 @@ async fn run_queries(
             .chunks_exact(4)
             .map(|f| f32::from_le_bytes([f[0], f[1], f[2], f[3]]))
             .collect();
+        let profile_before = if let Some(local) = &local_profile {
+            local.local_dli_named_profile_for_test().await
+        } else {
+            None
+        };
+        let cpu_before = if detailed {
+            query_process_counters()
+        } else {
+            None
+        };
         let work_before = segment::index::hnsw_index::point_scorer::scoring_work_snapshot();
         let started = Instant::now();
         let result = collection
@@ -291,12 +315,37 @@ async fn run_queries(
             .await
             .unwrap();
         let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let cpu_after = if detailed {
+            query_process_counters()
+        } else {
+            None
+        };
+        let cpu_delta = cpu_before.zip(cpu_after).map(|(a, b)| {
+            (
+                b.0.saturating_sub(a.0),
+                b.1.saturating_sub(a.1),
+                b.2.saturating_sub(a.2),
+            )
+        });
+        let profile_after = if let Some(local) = &local_profile {
+            local.local_dli_named_profile_for_test().await
+        } else {
+            None
+        };
+        let mut phases = serde_json::Map::new();
+        if let Some((a, b)) = profile_before.zip(profile_after) {
+            for (key, v) in b.as_object().unwrap() {
+                if let Some((before, after)) = a[key].as_u64().zip(v.as_u64()) {
+                    phases.insert(key.clone(), serde_json::json!(after.saturating_sub(before)));
+                }
+            }
+        }
         timings.push(latency_ms);
         if let Ok(path) = std::env::var("DLI_QUERY_EVENTS") {
             use std::io::Write;
             let after = segment::index::hnsw_index::point_scorer::scoring_work_snapshot();
             let event = serde_json::json!({"query":query_idx,"latency_ms":latency_ms,
-                "scored_vectors":after[2]-work_before[2],"scorer_calls":after[0]-work_before[0],"returned":result.len()});
+                "scored_vectors":after[2]-work_before[2],"scorer_calls":after[0]-work_before[0],"returned":result.len(),"phases":phases,"process_cpu_ticks":cpu_delta.map(|x|x.2),"process_minor_faults":cpu_delta.map(|x|x.0),"process_major_faults":cpu_delta.map(|x|x.1),"hits":result.iter().map(|h|serde_json::json!({"id":h.id,"score":h.score,"version":h.version})).collect::<Vec<_>>()});
             writeln!(
                 std::fs::OpenOptions::new()
                     .create(true)
@@ -619,4 +668,237 @@ async fn dli_frozen_scaling_reopen_profile() {
         println!("FROZEN_PROFILE {}", rounds.last().unwrap());
     }
     collection.stop_gracefully().await;
+}
+
+/// Optimized frozen-topology pilot. Budgets chosen only from validation rows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "explicit frozen10M held-out routing study; no ingestion or training"]
+async fn dli_frozen_matched_work_study() {
+    use crate::collection_manager::dli_bucket_plan::RoutingPolicy;
+    let _ambient = common::ambient::test_guard();
+    let root = PathBuf::from(std::env::var("DLI_REOPEN_COLLECTION_ROOT").unwrap());
+    let inputs = PathBuf::from(std::env::var("DLI_SISAP_INPUTS").unwrap());
+    let output = PathBuf::from(std::env::var("DLI_SISAP_OUTPUT").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    assert!(
+        !output.join("study.json").exists(),
+        "refuse to overwrite completed evidence"
+    );
+    let collection = Collection::load(
+        "frozen_matched_work".into(),
+        1,
+        &root.join("storage"),
+        &root.join("snapshots"),
+        Arc::new(SharedStorageConfig::default()),
+        ChannelService::default(),
+        dummy_on_replica_failure(),
+        dummy_request_shard_transfer(),
+        dummy_abort_shard_transfer(),
+        None,
+        None,
+        ResourceBudget::default(),
+        None,
+    )
+    .await;
+    assert_eq!(
+        collection
+            .info(&ShardSelectorInternal::All)
+            .await
+            .unwrap()
+            .points_count,
+        Some(FULL_COUNT)
+    );
+    let local = replica(&collection).await;
+    let queries = std::fs::read(inputs.join("queries.f32")).unwrap();
+    let gold = std::fs::read(inputs.join("ground_truth.i32")).unwrap();
+    let validation_count = std::env::var("DLI_STUDY_VALIDATION_COUNT")
+        .ok()
+        .map(|x| x.parse::<usize>().unwrap())
+        .unwrap_or(12);
+    let test_count = std::env::var("DLI_STUDY_TEST_COUNT")
+        .ok()
+        .map(|x| x.parse::<usize>().unwrap())
+        .unwrap_or(24);
+    assert!((1..=100).contains(&validation_count) && (1..=100).contains(&test_count));
+    let policies = [
+        RoutingPolicy::SlotWeighted,
+        RoutingPolicy::ReservedPerLevel,
+        RoutingPolicy::PopulationDensity,
+    ];
+    let mut cases = Vec::<serde_json::Value>::new();
+    let mut ordinal = 0usize;
+    for policy in policies {
+        for budget in [10000usize, 20000, 30000] {
+            local
+                .configure_local_dli_query_for_test(true, policy, budget)
+                .await;
+            // Rehearsal and measured validation use ONLY rows100..199.
+            for pass in ["validation_warmup", "validation"] {
+                let row = study_case(
+                    &collection,
+                    &local,
+                    &queries,
+                    &gold,
+                    100,
+                    validation_count,
+                    policy,
+                    budget,
+                    true,
+                    pass,
+                    &mut ordinal,
+                )
+                .await;
+                cases.push(row);
+                std::fs::write(
+                    output.join("study-partial.json"),
+                    serde_json::to_vec_pretty(&cases).unwrap(),
+                )
+                .unwrap();
+            }
+        }
+    }
+    // Lock selection BEFORE any query from rows200..299 is executed.
+    let mut selected = Vec::new();
+    for policy in policies {
+        let relevant: Vec<_> = cases
+            .iter()
+            .filter(|x| x["pass"] == "validation" && x["policy"] == serde_json::json!(policy))
+            .collect();
+        for objective in ["work30000", "recall060"] {
+            let loss = |x: &&serde_json::Value| {
+                if objective == "work30000" {
+                    (x["mean_scored"].as_f64().unwrap() - 30000.).abs()
+                } else {
+                    (x["recall10"].as_f64().unwrap() - 0.60).abs()
+                }
+            };
+            let chosen = relevant
+                .iter()
+                .min_by(|a, b| loss(a).total_cmp(&loss(b)))
+                .unwrap();
+            let budget = chosen["budget"].as_u64().unwrap() as usize;
+            if !selected.iter().any(|&(p, b)| p == policy && b == budget) {
+                selected.push((policy, budget));
+            }
+        }
+    }
+    std::fs::write(output.join("locked-selection.json"),serde_json::to_vec_pretty(&serde_json::json!({"validation_rows":[100,100+validation_count],"test_rows":[200,200+test_count],"work_target":30000,"recall10_target":0.60,"selected":selected,"rule":"closest validation mean actual scored work / closest validation Recall10; no test tuning"})).unwrap()).unwrap();
+    // Fixed alternating policy order; first-touch timing is never called warm.
+    for (policy, budget) in selected {
+        local
+            .configure_local_dli_query_for_test(true, policy, budget)
+            .await;
+        let cleared = local.clear_local_dli_cold_vectors_for_test().await;
+        for pass in ["test_cache_clear_attempt", "test_warm"] {
+            let mut row = study_case(
+                &collection,
+                &local,
+                &queries,
+                &gold,
+                200,
+                test_count,
+                policy,
+                budget,
+                true,
+                pass,
+                &mut ordinal,
+            )
+            .await;
+            row["cleared_cold_vectors"] = serde_json::json!(cleared);
+            cases.push(row);
+            std::fs::write(
+                output.join("study-partial.json"),
+                serde_json::to_vec_pretty(&cases).unwrap(),
+            )
+            .unwrap();
+        }
+    }
+    // Independent materialization factor on the exact same slot/budget topology.
+    local
+        .configure_local_dli_query_for_test(true, RoutingPolicy::SlotWeighted, 20000)
+        .await;
+    cases.push(
+        study_case(
+            &collection,
+            &local,
+            &queries,
+            &gold,
+            200,
+            test_count,
+            RoutingPolicy::SlotWeighted,
+            20000,
+            true,
+            "materialization_warmup",
+            &mut ordinal,
+        )
+        .await,
+    );
+    for topk in [false, true, false, true] {
+        local
+            .configure_local_dli_query_for_test(topk, RoutingPolicy::SlotWeighted, 20000)
+            .await;
+        cases.push(
+            study_case(
+                &collection,
+                &local,
+                &queries,
+                &gold,
+                200,
+                test_count,
+                RoutingPolicy::SlotWeighted,
+                20000,
+                topk,
+                "materialization_control",
+                &mut ordinal,
+            )
+            .await,
+        );
+        std::fs::write(
+            output.join("study-partial.json"),
+            serde_json::to_vec_pretty(&cases).unwrap(),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        output.join("study.json"),
+        serde_json::to_vec_pretty(&cases).unwrap(),
+    )
+    .unwrap();
+    collection.stop_gracefully().await;
+}
+
+async fn study_case(
+    collection: &Collection,
+    local: &crate::shards::replica_set::ShardReplicaSet,
+    queries: &[u8],
+    gold: &[u8],
+    start: usize,
+    count: usize,
+    policy: crate::collection_manager::dli_bucket_plan::RoutingPolicy,
+    budget: usize,
+    topk: bool,
+    pass: &str,
+    ordinal: &mut usize,
+) -> serde_json::Value {
+    let before = local.local_dli_named_profile_for_test().await.unwrap();
+    let work_before = segment::index::hnsw_index::point_scorer::scoring_work_snapshot();
+    let result = run_queries(
+        collection,
+        &queries[start * DIMENSIONS * 4..],
+        &gold[start * 1000 * 4..],
+        count,
+        &HashSet::new(),
+    )
+    .await;
+    let work_after = segment::index::hnsw_index::point_scorer::scoring_work_snapshot();
+    let after = local.local_dli_named_profile_for_test().await.unwrap();
+    assert_eq!(
+        after["learned_queries"].as_u64().unwrap() - before["learned_queries"].as_u64().unwrap(),
+        count as u64
+    );
+    assert_eq!(after["exact_fallbacks"], before["exact_fallbacks"]);
+    let row = serde_json::json!({"policy":policy,"budget":budget,"topk":topk,"pass":pass,"query_start":start,"query_count":count,"ordinal_begin":*ordinal,"recall10":result.0,"recall30":result.1,"p50_ms":result.2,"p95_ms":result.3,"mean_ms":result.4,"scored_vectors":work_after[2]-work_before[2],"mean_scored":(work_after[2]-work_before[2]) as f64/count as f64,"before":before,"after":after});
+    *ordinal += count;
+    println!("STUDY_CASE {row}");
+    row
 }

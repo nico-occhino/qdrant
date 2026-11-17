@@ -20,7 +20,7 @@ use shard::search_result_aggregator::BatchResultAggregator;
 use uuid::Uuid;
 
 use super::dli_bucket_plan::{
-    BucketPrediction, RoutingPolicy, SelectedBuckets, select, select_reserved,
+    BucketPrediction, RoutingPolicy, SelectedBuckets, select, select_density, select_reserved,
 };
 
 /// Linux task-local counters. CPU is in clock ticks (getconf CLK_TCK), not ns.
@@ -250,10 +250,23 @@ pub fn route_pinned_with_policy(
     let plan = match policy {
         RoutingPolicy::SlotWeighted => select(predictions, arity, budget),
         RoutingPolicy::ReservedPerLevel => select_reserved(predictions, arity, budget),
+        RoutingPolicy::PopulationDensity => select_density(predictions, arity, budget),
     }
     .map_err(|e| fail(&format!("invalid DLI candidate plan: {e:?}")))?;
     let bucket_planning_time = planning_started.elapsed();
     let routing_and_planning_time = start.elapsed();
+    if let Some(path) = std::env::var_os("DLI_ROUTING_EVENTS") {
+        use std::io::Write;
+        let event = serde_json::json!({"policy":policy,"budget":budget,"buckets":plan.buckets,"members":members.iter().map(|(l,s)|(s.uuid,l,s.available_point_count())).collect::<Vec<_>>()});
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = writeln!(f, "{event}");
+        }
+    }
+
     let mut native_scorer_time = Duration::ZERO;
     let mut hit_materialization_time = Duration::ZERO;
     let started_scoring = Instant::now();
@@ -592,6 +605,9 @@ mod tests {
         let config = Arc::new(
             DliResearchConfig::new(vec![(level.uuid, 1), (buffer.uuid, 0)], 2, 100).unwrap(),
         );
+        config
+            .materialize_topk
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         let mut native = SegmentHolder::default();
         native.add_new(level);
         native.add_new(buffer);
@@ -814,6 +830,9 @@ mod tests {
             let config = Arc::new(
                 DliResearchConfig::new(vec![(level.uuid, 1), (buffer.uuid, 0)], 2, 100).unwrap(),
             );
+            config
+                .materialize_topk
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             let mut native = SegmentHolder::default();
             let expected = level.uuid;
             let validated = Arc::new(AtomicBool::new(false));
@@ -1067,6 +1086,250 @@ mod tests {
             resolve_pinned_candidates(&members, selected, 10).unwrap(),
             CandidateResolution::ExactFallback(ResolutionFallback::AmbiguousOccurrence)
         ));
+    }
+
+    #[test]
+    fn dli_topk_adversarial_deleted_shadowed_and_deferred() {
+        let _scope = common::ambient::test_guard();
+        let root = tempfile::tempdir().unwrap();
+        let rows = [
+            (1, [1., 0.]),
+            (2, [0.99, 0.14106736]),
+            (3, [0.95, 0.3122499]),
+            (4, [0.8, 0.6]),
+            (5, [0.6, 0.8]),
+            (6, [0., 1.]),
+            (7, [-0.6, 0.8]),
+            (8, [-1., 0.]),
+        ];
+        let mut learned = trained(root.path(), &rows, 73);
+        let mut buffer = build_simple_segment(root.path(), 2, Distance::Cosine).unwrap();
+        let ctx = VectorQueryContext::default();
+        // More high scoring deletions than k; deletion filtering must precede top-k.
+        for id in [1u64, 2, 3, 4] {
+            learned.delete_point(100 + id, id.into()).unwrap();
+        }
+        for top in [usize::MAX, 3] {
+            let members = [(1, &learned), (0, &buffer)];
+            let routed = route_pinned_with_policy(
+                &members,
+                &[1., 0.],
+                2,
+                100,
+                &ctx,
+                RoutingPolicy::SlotWeighted,
+                top,
+            )
+            .unwrap();
+            let CandidateResolution::Resolved(hits) =
+                resolve_pinned_candidates(&members, routed, 3).unwrap()
+            else {
+                panic!("deleted offsets are not visible candidates")
+            };
+            assert_eq!(
+                hits.iter().map(|h| h.id).collect::<Vec<_>>(),
+                vec![5u64.into(), 6u64.into(), 7u64.into()]
+            );
+            assert!((hits[0].score - 0.6).abs() < 1e-4);
+        }
+        // Upsert/delete-reinsert goes to Plain after old mapping is deleted.
+        buffer
+            .upsert_point(200, 1u64.into(), only_default_vector(&[0., -1.]))
+            .unwrap();
+        // Retained live preimage plus newer Plain occurrence: never trust selected-only versions.
+        buffer
+            .upsert_point(201, 5u64.into(), only_default_vector(&[-1., 0.]))
+            .unwrap();
+        for top in [usize::MAX, 3] {
+            let members = [(1, &learned), (0, &buffer)];
+            let routed = route_pinned_with_policy(
+                &members,
+                &[1., 0.],
+                100,
+                1,
+                &ctx,
+                RoutingPolicy::SlotWeighted,
+                top,
+            )
+            .unwrap();
+            assert!(matches!(
+                resolve_pinned_candidates(&members, routed, 3).unwrap(),
+                CandidateResolution::ExactFallback(ResolutionFallback::AmbiguousOccurrence)
+            ));
+        }
+        let mut third = build_simple_segment(root.path(), 2, Distance::Cosine).unwrap();
+        third
+            .upsert_point(999, 5u64.into(), only_default_vector(&[0., 1.]))
+            .unwrap();
+        let members = [(1, &learned), (0, &buffer), (0, &third)];
+        let routed = route_pinned_with_policy(
+            &members,
+            &[1., 0.],
+            100,
+            1,
+            &ctx,
+            RoutingPolicy::SlotWeighted,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            resolve_pinned_candidates(&members, routed, 3).unwrap(),
+            CandidateResolution::ExactFallback(ResolutionFallback::AmbiguousOccurrence)
+        ));
+        learned.delete_point(202, 5u64.into()).unwrap();
+        for top in [usize::MAX, 3] {
+            let members = [(1, &learned), (0, &buffer)];
+            let routed = route_pinned_with_policy(
+                &members,
+                &[1., 0.],
+                2,
+                100,
+                &ctx,
+                RoutingPolicy::SlotWeighted,
+                top,
+            )
+            .unwrap();
+            let CandidateResolution::Resolved(hits) =
+                resolve_pinned_candidates(&members, routed, 3).unwrap()
+            else {
+                panic!("reinsert resolved")
+            };
+            assert!(
+                hits.iter()
+                    .all(|h| ![2u64.into(), 3u64.into(), 4u64.into()].contains(&h.id))
+            );
+            for hit in hits {
+                if hit.id == 5u64.into() {
+                    assert_eq!(hit.version, 201);
+                    assert!((hit.score + 1.).abs() < 1e-4);
+                }
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dli_topk_underfill_uses_complete_native_fallback() {
+        use crate::collection_manager::segments_searcher::{DliResearchConfig, SegmentsSearcher};
+        use crate::common::adaptive_handle::AdaptiveSearchHandle;
+        use crate::operations::types::CoreSearchRequest;
+        use common::ambient::{AmbientContext, Handoff};
+        use segment::data_types::query_context::QueryContext;
+        use shard::search::CoreSearchRequestBatch;
+        use shard::segment_holder::{SegmentHolder, locked::LockedSegmentHolder};
+        use std::sync::Arc;
+        let _scope = common::ambient::test_guard();
+        let root = tempfile::tempdir().unwrap();
+        let mut learned = trained(
+            root.path(),
+            &[
+                (1, [1., 0.]),
+                (2, [0.8, 0.6]),
+                (3, [-0.8, 0.6]),
+                (4, [-1., 0.]),
+            ],
+            73,
+        );
+        let mut plain = build_simple_segment(root.path(), 2, Distance::Cosine).unwrap();
+        let initial = route_pinned(
+            &[(1, &learned), (0, &plain)],
+            &[1., 0.],
+            100,
+            1,
+            &VectorQueryContext::default(),
+        )
+        .unwrap();
+        for (_, hits) in initial.per_segment {
+            for hit in hits {
+                learned.delete_point(100, hit.id).unwrap();
+            }
+        }
+        for (id, v) in [
+            (99, [1., 0.]),
+            (98, [0.98, 0.19899748]),
+            (97, [0.9, 0.4358899]),
+        ] {
+            plain
+                .upsert_point(101, id.into(), only_default_vector(&v))
+                .unwrap();
+        }
+        let config = Arc::new(
+            DliResearchConfig::new(vec![(learned.uuid, 1), (plain.uuid, 0)], 100, 1).unwrap(),
+        );
+        config
+            .materialize_topk
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut holder = SegmentHolder::default();
+        holder.add_new(learned);
+        holder.add_new(plain);
+        let result = SegmentsSearcher::search_dli_research(
+            LockedSegmentHolder::new(holder),
+            Arc::new(CoreSearchRequestBatch {
+                searches: vec![CoreSearchRequest {
+                    query: vec![1., 0.].into(),
+                    filter: None,
+                    params: None,
+                    limit: 3,
+                    offset: 0,
+                    with_payload: None,
+                    with_vector: None,
+                    score_threshold: None,
+                }],
+            }),
+            &AdaptiveSearchHandle::current_for_tests(),
+            QueryContext::new(
+                shard::optimizers::config::DEFAULT_INDEXING_THRESHOLD_KB,
+                Handoff::Measured(AmbientContext::new()),
+            ),
+            std::time::Duration::from_secs(10),
+            config.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result[0].iter().map(|h| h.id).collect::<Vec<_>>(),
+            vec![99u64.into(), 98u64.into(), 97u64.into()]
+        );
+        assert_eq!(
+            config
+                .fallback_reasons
+                .lock()
+                .get("insufficient_valid_candidates"),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn dli_topk_deferred_member_remains_fail_closed() {
+        let _scope = common::ambient::test_guard();
+        let root = tempfile::tempdir().unwrap();
+        let base = build_simple_segment(root.path(), 2, Distance::Cosine).unwrap();
+        let (mut deferred, _token) =
+            segment::segment_constructor::build_segment(root.path(), base.config(), Some(1), true)
+                .unwrap();
+        deferred
+            .upsert_point(1, 11u64.into(), only_default_vector(&[0., 1.]))
+            .unwrap();
+        deferred
+            .upsert_point(2, 12u64.into(), only_default_vector(&[1., 0.]))
+            .unwrap();
+        assert!(deferred.has_deferred_points());
+        for top in [usize::MAX, 1] {
+            let members = [(0, &deferred)];
+            let route = route_pinned_with_policy(
+                &members,
+                &[1., 0.],
+                2,
+                100,
+                &VectorQueryContext::default(),
+                RoutingPolicy::SlotWeighted,
+                top,
+            )
+            .unwrap();
+            assert!(matches!(
+                resolve_pinned_candidates(&members, route, 1).unwrap(),
+                CandidateResolution::ExactFallback(ResolutionFallback::DeferredState)
+            ));
+        }
     }
 
     #[test]
