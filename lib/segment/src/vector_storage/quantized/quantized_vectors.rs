@@ -57,6 +57,12 @@ pub struct QuantizedVectors {
 }
 
 impl QuantizedVectors {
+    /// Physical directory used when constructing/loading this native representation.
+    /// Used by pinned research callers to reject accidental cross-segment reuse.
+    pub fn storage_path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     pub fn config(&self) -> &QuantizedVectorsConfig {
         &self.config
     }

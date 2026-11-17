@@ -596,7 +596,16 @@ impl SegmentsSearcher {
                     Ok(routed) => routed,
                     Err(error) => {
                         log::debug!("dli_research: routing fallback: {error}");
-                        reject!("routing_error");
+                        let reason = match &error {
+                            segment::common::operation_error::OperationError::ServiceError { description, .. } => match description.as_str() {
+                                "quantized generation unavailable" => "quantization_unavailable",
+                                "quantized physical generation mismatch" => "quantization_generation_mismatch",
+                                "quantized mode requires bounded materialization and nonzero shortlist" => "quantization_configuration",
+                                _ => "routing_error",
+                            },
+                            _ => "routing_error",
+                        };
+                        reject!(reason);
                     }
                 };
                 if !routed.plan.buckets.iter().any(|bucket| bucket.level > 0) {

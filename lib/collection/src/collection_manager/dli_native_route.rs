@@ -356,6 +356,10 @@ pub fn route_pinned_with_quantized_shortlist(
                 }
                 let quantized = data.quantized_vectors.borrow();
                 let quantized = quantized.as_ref().ok_or_else(|| fail("quantized generation unavailable"))?;
+                let expected_path = segment::segment_constructor::get_vector_storage_path(&segment.segment_path, DEFAULT_VECTOR_NAME);
+                if quantized.storage_path() != expected_path || quantized.config().vector_parameters.dim != query.len() {
+                    return Err(fail("quantized physical generation mismatch"));
+                }
                 let approximate = score_candidates_with_quantization(
                     &query_vector, &candidates, shortlist.max(materialize_limit),
                     &*tracker, &*storage, Some(quantized), context,
@@ -999,6 +1003,10 @@ mod tests {
     }
 
     fn trained(root: &std::path::Path, rows: &[(u64, [f32; 2])], seed: u64) -> Segment {
+        trained_configured(root, rows, seed, false)
+    }
+
+    fn trained_configured(root: &std::path::Path, rows: &[(u64, [f32; 2])], seed: u64, quantized: bool) -> Segment {
         let staging = tempfile::tempdir().unwrap();
         let mut src = build_simple_segment(root, 2, Distance::Cosine).unwrap();
         for (id, vector) in rows {
@@ -1021,6 +1029,11 @@ mod tests {
             nprobe: 2,
             seed,
         });
+        if quantized {
+            config.vector_data.get_mut(DEFAULT_VECTOR_NAME).unwrap().quantization_config = Some(segment::types::ScalarQuantizationConfig {
+                memory: None, r#type: Default::default(), quantile: None, always_ram: None,
+            }.into());
+        }
         let mut builder = SegmentBuilder::new(
             staging.path(),
             &config,
@@ -1030,6 +1043,27 @@ mod tests {
         .unwrap();
         builder.update(&[&src], &AtomicBool::new(false)).unwrap();
         builder.build_for_test(root)
+    }
+
+    #[test]
+    fn quantized_learned_generation_reopens_and_rejects_missing_object() {
+        let _scope = common::ambient::test_guard();
+        let root = tempfile::tempdir().unwrap();
+        let a = trained_configured(root.path(), &[(11,[1.,0.]),(12,[0.8,0.6]),(13,[0.,1.]),(14,[-1.,0.])], 42, true);
+        a.flush(true).unwrap();
+        let path = a.segment_path.clone(); let uuid = a.uuid; drop(a);
+        let mut a = segment::segment_constructor::load_segment(&path, uuid, None, &AtomicBool::new(false), true).unwrap();
+        assert!(a.vector_data[DEFAULT_VECTOR_NAME].quantized_vectors.borrow().is_some());
+        a.delete_point(100,11_u64.into()).unwrap();
+        let mut buffer = build_simple_segment(root.path(),2,Distance::Cosine).unwrap();
+        buffer.upsert_point(101,11_u64.into(),only_default_vector(&[0.,1.])).unwrap();
+        let members = [(1,&a),(0,&buffer)]; let ctx = VectorQueryContext::default();
+        let original = route_pinned_with_policy(&members,&[1.,0.],2,100,&ctx,RoutingPolicy::PopulationDensity,3).unwrap();
+        let quant = route_pinned_with_quantized_shortlist(&members,&[1.,0.],2,100,&ctx,RoutingPolicy::PopulationDensity,3,Some(64)).unwrap();
+        assert_eq!(original.per_segment,quant.per_segment);
+        assert!(matches!(resolve_pinned_candidates(&members,quant,3).unwrap(),CandidateResolution::Resolved(_)));
+        a.vector_data[DEFAULT_VECTOR_NAME].quantized_vectors.borrow_mut().take();
+        assert!(route_pinned_with_quantized_shortlist(&members,&[1.,0.],2,100,&ctx,RoutingPolicy::PopulationDensity,3,Some(64)).is_err());
     }
 
     #[test]
@@ -1642,7 +1676,7 @@ mod tests {
             let config: segment::types::QuantizationConfig = segment::types::ScalarQuantizationConfig {
                 memory: None, r#type: Default::default(), quantile: None, always_ram: None,
             }.into();
-            let path = root.path().join(format!("quant-{}", segment.uuid));
+            let path = segment::segment_constructor::get_vector_storage_path(&segment.segment_path, DEFAULT_VECTOR_NAME);
             std::fs::create_dir_all(&path).unwrap();
             let quant = QuantizedVectors::create(&*storage, &config, QuantizedVectorsStorageType::Immutable,
                 &path, 1, &std::sync::atomic::AtomicBool::new(false)).unwrap();
@@ -1656,6 +1690,19 @@ mod tests {
             &context, RoutingPolicy::PopulationDensity, 30).unwrap();
         assert_eq!(quantized.per_segment, original.per_segment);
         assert!(matches!(resolve_pinned_candidates(&members, quantized, 30).unwrap(), CandidateResolution::Resolved(_)));
+        // Same dimension/population is insufficient: another physical generation must fail closed.
+        {
+            let mut qa = a.vector_data[DEFAULT_VECTOR_NAME].quantized_vectors.borrow_mut();
+            let mut qb = b.vector_data[DEFAULT_VECTOR_NAME].quantized_vectors.borrow_mut();
+            std::mem::swap(&mut *qa, &mut *qb);
+        }
+        assert!(route_pinned_with_quantized_shortlist(&members, &[1.,0.], 2, 100,
+            &context, RoutingPolicy::PopulationDensity, 30, Some(30)).is_err());
+        {
+            let mut qa = a.vector_data[DEFAULT_VECTOR_NAME].quantized_vectors.borrow_mut();
+            let mut qb = b.vector_data[DEFAULT_VECTOR_NAME].quantized_vectors.borrow_mut();
+            std::mem::swap(&mut *qa, &mut *qb);
+        }
         let saved = a.vector_data[DEFAULT_VECTOR_NAME].quantized_vectors.borrow_mut().take();
         assert!(route_pinned_with_quantized_shortlist(&members, &[1.,0.], 2, 100,
             &context, RoutingPolicy::PopulationDensity, 30, Some(30)).is_err());
