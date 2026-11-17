@@ -156,3 +156,5 @@ Continuation28 execution preparation: refined offline validation locks12 native 
 Continuation29: offline locality replay covers 144 existing held-out member-query selections and confirms native candidate sorting; projection feasibility control uses 65,536 vectors/32 queries with a local exact Float32 oracle. These are experimental analyses, not native compressed-index correctness or concurrency tests.
 
 Continuation30: segment candidate_scoring_v120 suite9 PASS/1 ignored; explicit ignored native65K scalar shortlist fixture1 PASS. Native create/load/missing-artifact/delete and exact rerank score equality checked; no cross-segment compressed-path or10M latency claim. Logs continuation30/regression.log and native-subset.log.
+
+Continuation31: full feature-gated collection dli_ suite25 PASS/6 ignored after actual learned-posting quantized rerank/deletion/Plain reinsertion/missing-object fixture. Default-path concurrency/publication/reopen regressions retained; they do not establish quantized-specific persisted recovery or concurrent publication. Failed/corrected logs continuation31.

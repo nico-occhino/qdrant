@@ -12,7 +12,7 @@ use segment::data_types::query_context::VectorQueryContext;
 use segment::data_types::vectors::{DEFAULT_VECTOR_NAME, QueryVector};
 use segment::entry::ReadSegmentEntry;
 use segment::id_tracker::IdTrackerRead;
-use segment::index::candidate_scoring::score_candidates;
+use segment::index::candidate_scoring::{score_candidates, score_candidates_with_quantization};
 use segment::index::{VectorIndexEnum, VectorIndexRead};
 use segment::segment::Segment;
 use segment::types::{Distance, PointIdType, ScoredPoint, WithPayload, WithVector};
@@ -173,6 +173,16 @@ pub fn route_pinned_with_policy(
     policy: RoutingPolicy,
     materialize_limit: usize,
 ) -> OperationResult<NativeRouteResult> {
+    route_pinned_with_quantized_shortlist(members, query, arity, budget, context, policy, materialize_limit, None)
+}
+
+/// Explicit experimental two-stage mode. Missing quantization fails closed;
+/// callers retain complete captured-set exact fallback and version resolution.
+pub fn route_pinned_with_quantized_shortlist(
+    members: &[(usize, &Segment)], query: &[f32], arity: usize, budget: usize,
+    context: &VectorQueryContext, policy: RoutingPolicy, materialize_limit: usize,
+    shortlist: Option<usize>,
+) -> OperationResult<NativeRouteResult> {
     let fail = |message: &str| OperationError::service_error(message.to_owned());
     let temperature = match policy {
         RoutingPolicy::TemperatureDensity { temperature_milli } => {
@@ -206,7 +216,7 @@ pub fn route_pinned_with_policy(
             .vector_data
             .get(DEFAULT_VECTOR_NAME)
             .ok_or_else(|| fail("missing default vector storage"))?;
-        if config.multivector_config.is_some() || data.quantized_vectors.borrow().is_some() {
+        if config.multivector_config.is_some() {
             return Err(fail("unsupported DLI vector storage"));
         }
         let index = data.vector_index.borrow();
@@ -339,9 +349,23 @@ pub fn route_pinned_with_policy(
             let tracker = segment.id_tracker.borrow();
             let storage = data.vector_storage.borrow();
             let score_started = Instant::now();
+            let rerank_candidates;
+            let candidates = if let Some(shortlist) = shortlist {
+                if shortlist == 0 || materialize_limit == usize::MAX {
+                    return Err(fail("quantized mode requires bounded materialization and nonzero shortlist"));
+                }
+                let quantized = data.quantized_vectors.borrow();
+                let quantized = quantized.as_ref().ok_or_else(|| fail("quantized generation unavailable"))?;
+                let approximate = score_candidates_with_quantization(
+                    &query_vector, &candidates, shortlist.max(materialize_limit),
+                    &*tracker, &*storage, Some(quantized), context,
+                )?;
+                rerank_candidates = approximate.into_iter().map(|hit| hit.idx).collect::<Vec<_>>();
+                &rerank_candidates
+            } else { &candidates };
             let offsets = score_candidates(
                 &query_vector,
-                &candidates,
+                candidates,
                 candidates.len().min(materialize_limit),
                 &tracker,
                 &storage,
@@ -1611,8 +1635,31 @@ mod tests {
         buffer
             .upsert_point(103, 31_u64.into(), only_default_vector(&[0.6, 0.8]))
             .unwrap();
+        for segment in [&a, &b] {
+            use segment::vector_storage::quantized::quantized_vectors::{QuantizedVectors, QuantizedVectorsStorageType};
+            let data = &segment.vector_data[DEFAULT_VECTOR_NAME];
+            let storage = data.vector_storage.borrow();
+            let config: segment::types::QuantizationConfig = segment::types::ScalarQuantizationConfig {
+                memory: None, r#type: Default::default(), quantile: None, always_ram: None,
+            }.into();
+            let path = root.path().join(format!("quant-{}", segment.uuid));
+            std::fs::create_dir_all(&path).unwrap();
+            let quant = QuantizedVectors::create(&*storage, &config, QuantizedVectorsStorageType::Immutable,
+                &path, 1, &std::sync::atomic::AtomicBool::new(false)).unwrap();
+            *data.quantized_vectors.borrow_mut() = Some(quant);
+        }
         let members = [(1, &a), (2, &b), (0, &buffer)];
         let context = VectorQueryContext::default();
+        let quantized = route_pinned_with_quantized_shortlist(&members, &[1.,0.], 2, 100,
+            &context, RoutingPolicy::PopulationDensity, 30, Some(30)).unwrap();
+        let original = route_pinned_with_policy(&members, &[1.,0.], 2, 100,
+            &context, RoutingPolicy::PopulationDensity, 30).unwrap();
+        assert_eq!(quantized.per_segment, original.per_segment);
+        assert!(matches!(resolve_pinned_candidates(&members, quantized, 30).unwrap(), CandidateResolution::Resolved(_)));
+        let saved = a.vector_data[DEFAULT_VECTOR_NAME].quantized_vectors.borrow_mut().take();
+        assert!(route_pinned_with_quantized_shortlist(&members, &[1.,0.], 2, 100,
+            &context, RoutingPolicy::PopulationDensity, 30, Some(30)).is_err());
+        *a.vector_data[DEFAULT_VECTOR_NAME].quantized_vectors.borrow_mut() = saved;
         let density = route_pinned_with_policy(
             &members,
             &[1., 0.],

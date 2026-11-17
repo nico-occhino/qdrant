@@ -447,7 +447,7 @@ impl SegmentsSearcher {
         config: Arc<DliResearchConfig>,
     ) -> CollectionResult<Vec<Vec<ScoredPoint>>> {
         use crate::collection_manager::dli_native_route::{
-            CandidateResolution, resolve_pinned_candidates, route_pinned_with_policy,
+            CandidateResolution, resolve_pinned_candidates,
         };
         use segment::data_types::vectors::{DEFAULT_VECTOR_NAME, VectorInternal};
         use segment::entry::ReadSegmentEntry;
@@ -579,7 +579,7 @@ impl SegmentsSearcher {
                 }
                 let segment_context = attempt_context.get_segment_query_context();
                 let vector_context = segment_context.get_vector_context(DEFAULT_VECTOR_NAME, None);
-                let routed = match route_pinned_with_policy(
+                let routed = match super::dli_native_route::route_pinned_with_quantized_shortlist(
                     &members,
                     query,
                     attempt_config.arity,
@@ -591,6 +591,7 @@ impl SegmentsSearcher {
                     } else {
                         usize::MAX
                     },
+                    std::env::var("DLI_QUANTIZED_SHORTLIST").ok().map(|value| value.parse::<usize>().unwrap_or(0)),
                 ) {
                     Ok(routed) => routed,
                     Err(error) => {
