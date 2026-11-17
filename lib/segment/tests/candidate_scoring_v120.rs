@@ -279,6 +279,16 @@ fn native_quantized_candidates_rerank_and_delete() {
         &ctx,
     )
     .unwrap();
+    #[cfg(feature = "lmi-research")]
+    {
+        let (profiled, profile) = segment::index::candidate_scoring::score_candidates_quantized_profiled(
+            &query, &[4,3,2,1,0,0], 5, &*tracker, &*storage, Some(&quantized), &ctx,
+        ).unwrap();
+        assert_eq!(profiled, approximate);
+        assert_eq!(profile.input_offsets, 6);
+        assert_eq!(profile.bounded_offsets, 5);
+        assert_eq!(profile.scored_vectors, 5);
+    }
     let shortlist: Vec<_> = approximate.iter().map(|h| h.idx).collect();
     let reranked = score_candidates(&query, &shortlist, 3, &tracker, &storage, &ctx).unwrap();
     let original = score_candidates(&query, &[0, 1, 2, 3, 4], 3, &tracker, &storage, &ctx).unwrap();

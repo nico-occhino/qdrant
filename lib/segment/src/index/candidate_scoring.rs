@@ -135,6 +135,24 @@ where
     V: VectorStorageRead + RawScorerBuilder,
     I: IdTrackerRead,
 {
+    score_candidates_quantized_profiled(query, candidates, top, id_tracker, vector_storage, None, query_context)
+}
+
+/// Request-local successful native scorer accounting, including quantized scoring.
+#[cfg(feature = "lmi-research")]
+pub fn score_candidates_quantized_profiled<V, I>(
+    query: &QueryVector,
+    candidates: &[PointOffsetType],
+    top: usize,
+    id_tracker: &I,
+    vector_storage: &V,
+    quantized: Option<&QuantizedVectors>,
+    query_context: &VectorQueryContext,
+) -> OperationResult<(Vec<ScoredPointOffset>, CandidateScoreProfile)>
+where
+    V: VectorStorageRead + RawScorerBuilder,
+    I: IdTrackerRead,
+{
     use std::time::Instant;
     let tick = Instant::now();
     let input_offsets = candidates.len();
@@ -171,7 +189,7 @@ where
     let scorer = BatchFilteredSearcher::new(
         &[query],
         vector_storage,
-        None::<&QuantizedVectors>,
+        quantized,
         None,
         top,
         deleted_points,
