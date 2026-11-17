@@ -162,3 +162,5 @@ Continuation31: full feature-gated collection dli_ suite25 PASS/6 ignored after 
 Continuation32: partition_oracle.py executed on32 queries/65K pool with actual saved postings and local Float32 oracle; Python compilation passes. Archive extraction paths validated and SHA256/ZIP comments recorded. Native scalar release experiment has been launched but is not counted PASS until completed. No new quantized-publication/recovery guarantee claimed.
 
 Continuation33: completed prior release native scalar smoke1PASS verified from continuation32/release-quantized.log. New learned32-query fixture compilation pending (continuation33/learned-release.log); bucket override unexecuted, no model comparison PASS claimed. Python result analyzer executed on completed smoke and py_compile checks pass.
+
+Continuation34: completed native learned32-query quantization fixture1PASS from prior run, analyzed without duplicateexecution. Python analyzers compile; bucket factorial is running, NOT counted PASS. Default quantization remains off and quantized-specific recovery/publication acceptance not asserted.
