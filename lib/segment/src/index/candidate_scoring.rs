@@ -47,6 +47,33 @@ where
     V: VectorStorageRead + RawScorerBuilder,
     I: IdTrackerRead,
 {
+    score_candidates_with_quantization(
+        query,
+        candidates,
+        top,
+        id_tracker,
+        vector_storage,
+        None,
+        query_context,
+    )
+}
+
+/// Native quantized ranking over the same visible segment-local offsets.
+/// Approximate scores are diagnostic only: callers must rerank before returning scores.
+/// The quantized object must belong to this pinned physical segment generation.
+pub fn score_candidates_with_quantization<V, I>(
+    query: &QueryVector,
+    candidates: &[PointOffsetType],
+    top: usize,
+    id_tracker: &I,
+    vector_storage: &V,
+    quantized: Option<&QuantizedVectors>,
+    query_context: &VectorQueryContext,
+) -> OperationResult<Vec<ScoredPointOffset>>
+where
+    V: VectorStorageRead + RawScorerBuilder,
+    I: IdTrackerRead,
+{
     if top == 0 {
         return Ok(Vec::new());
     }
@@ -65,7 +92,7 @@ where
     let scorer = BatchFilteredSearcher::new(
         &[query],
         vector_storage,
-        None::<&QuantizedVectors>,
+        quantized,
         None,
         top,
         deleted_points,

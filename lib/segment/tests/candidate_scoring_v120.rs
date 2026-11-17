@@ -226,3 +226,172 @@ fn research_profiler_distinguishes_tracker_and_vector_visibility() {
     assert_eq!(profile.scored_vectors, 2);
     assert_eq!(profile.returned_hits, 2);
 }
+
+#[test]
+fn native_quantized_candidates_rerank_and_delete() {
+    use segment::index::candidate_scoring::score_candidates_with_quantization;
+    use segment::types::{QuantizationConfig, ScalarQuantizationConfig};
+    use segment::vector_storage::quantized::quantized_vectors::{
+        QuantizedVectors, QuantizedVectorsStorageType,
+    };
+    let _scope =
+        common::ambient::unmeasured_guard(common::reason::reason("native quantized candidates"));
+    let (_root, segment) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let tracker = segment.id_tracker.borrow();
+    let storage = segment.vector_data[DEFAULT_VECTOR_NAME]
+        .vector_storage
+        .borrow();
+    let config: QuantizationConfig = ScalarQuantizationConfig {
+        memory: None,
+        r#type: Default::default(),
+        quantile: None,
+        always_ram: None,
+    }
+    .into();
+    let quantized = QuantizedVectors::create(
+        &*storage,
+        &config,
+        QuantizedVectorsStorageType::Immutable,
+        dir.path(),
+        1,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let quantized = QuantizedVectors::load(&config, &storage, dir.path(), &AtomicBool::new(false))
+        .unwrap()
+        .expect("native quantization reopens");
+    let missing = tempfile::tempdir().unwrap();
+    assert!(
+        QuantizedVectors::load(&config, &storage, missing.path(), &AtomicBool::new(false))
+            .unwrap()
+            .is_none()
+    );
+    let query: QueryVector = [1.0_f32, 0.0].into();
+    let ctx = VectorQueryContext::default();
+    let approximate = score_candidates_with_quantization(
+        &query,
+        &[4, 3, 2, 1, 0, 0],
+        5,
+        &*tracker,
+        &*storage,
+        Some(&quantized),
+        &ctx,
+    )
+    .unwrap();
+    let shortlist: Vec<_> = approximate.iter().map(|h| h.idx).collect();
+    let reranked = score_candidates(&query, &shortlist, 3, &tracker, &storage, &ctx).unwrap();
+    let original = score_candidates(&query, &[0, 1, 2, 3, 4], 3, &tracker, &storage, &ctx).unwrap();
+    assert_eq!(reranked, original);
+    drop(tracker);
+    segment.id_tracker.borrow_mut().drop(1.into()).unwrap();
+    let tracker = segment.id_tracker.borrow();
+    let approximate = score_candidates_with_quantization(
+        &query,
+        &[0, 1, 2, 3, 4],
+        3,
+        &*tracker,
+        &*storage,
+        Some(&quantized),
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(approximate.len(), 3);
+    assert!(approximate.iter().all(|h| h.idx != 0));
+}
+
+/// Bounded native scalar control. Reads the previously prepared SISAP subset;
+/// does not alter the retained collection or train an LMI model.
+#[test]
+#[ignore]
+fn native_quantized_sisap_subset() {
+    use segment::index::candidate_scoring::score_candidates_with_quantization;
+    use segment::types::{QuantizationConfig, ScalarQuantizationConfig};
+    use segment::vector_storage::quantized::quantized_vectors::{
+        QuantizedVectors, QuantizedVectorsStorageType,
+    };
+    let _scope =
+        common::ambient::unmeasured_guard(common::reason::reason("native scalar SISAP control"));
+    let input = std::path::PathBuf::from(std::env::var("DLI_TEACHER_CONTROL").unwrap());
+    let raw = std::fs::read(input.join("pool.f16")).unwrap();
+    assert_eq!(raw.len(), 65536 * 768 * 2);
+    let root = tempfile::tempdir().unwrap();
+    let mut segment = build_simple_segment(root.path(), 768, Distance::Cosine).unwrap();
+    for (id, bytes) in raw.chunks_exact(768 * 2).enumerate() {
+        let v: Vec<f32> = bytes
+            .chunks_exact(2)
+            .map(|b| half::f16::from_bits(u16::from_le_bytes([b[0], b[1]])).to_f32())
+            .collect();
+        segment
+            .upsert_point(1, (id as u64 + 1).into(), only_default_vector(&v))
+            .unwrap();
+    }
+    let query_bytes = std::fs::read(input.join("queries.f32")).unwrap();
+    let tracker = segment.id_tracker.borrow();
+    let storage = segment.vector_data[DEFAULT_VECTOR_NAME]
+        .vector_storage
+        .borrow();
+    let config: QuantizationConfig = ScalarQuantizationConfig {
+        memory: None,
+        r#type: Default::default(),
+        quantile: None,
+        always_ram: None,
+    }
+    .into();
+    let quantdir = tempfile::tempdir().unwrap();
+    let started = std::time::Instant::now();
+    let quant = QuantizedVectors::create(
+        &*storage,
+        &config,
+        QuantizedVectorsStorageType::Immutable,
+        quantdir.path(),
+        2,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    eprintln!("SCALAR_BUILD_MS={}", started.elapsed().as_millis());
+    let candidates: Vec<u32> = (0..65536).collect();
+    let ctx = VectorQueryContext::default();
+    for (qi, bytes) in query_bytes.chunks_exact(768 * 4).take(4).enumerate() {
+        let query: QueryVector = bytes
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect::<Vec<_>>()
+            .into();
+        let original = score_candidates(&query, &candidates, 30, &tracker, &storage, &ctx).unwrap();
+        for limit in [128, 512, 2048, 65536] {
+            let started = std::time::Instant::now();
+            let approximate = score_candidates_with_quantization(
+                &query,
+                &candidates,
+                limit,
+                &*tracker,
+                &*storage,
+                Some(&quant),
+                &ctx,
+            )
+            .unwrap();
+            let offsets: Vec<_> = approximate.iter().map(|x| x.idx).collect();
+            let reranked =
+                score_candidates(&query, &offsets, 30, &tracker, &storage, &ctx).unwrap();
+            let recall = original
+                .iter()
+                .filter(|h| reranked.iter().any(|r| r.idx == h.idx))
+                .count() as f64
+                / 30.;
+            for hit in &reranked {
+                let score =
+                    score_candidates(&query, &[hit.idx], 1, &tracker, &storage, &ctx).unwrap();
+                assert_eq!(hit.score, score[0].score);
+            }
+            if limit == 65536 {
+                assert_eq!(original, reranked);
+            }
+            eprintln!(
+                "NATIVE_SCALAR query={qi} quantized=65536 original={} recall30={recall} wall_ms={}",
+                offsets.len(),
+                started.elapsed().as_millis()
+            );
+        }
+    }
+}
