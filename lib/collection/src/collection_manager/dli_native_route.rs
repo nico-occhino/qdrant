@@ -58,8 +58,11 @@ pub struct NativeRouteResult {
 pub struct LearnedScoringProfile {
     pub quantized_scored: usize,
     pub original_scored: usize,
+    /// Successful full-dimensional scorer inputs from the native Plain buffer.
+    pub plain_scored: usize,
     pub quantized_elapsed_ns: u128,
     pub original_elapsed_ns: u128,
+    pub plain_elapsed_ns: u128,
     pub shortlist_offsets: usize,
 }
 
@@ -194,6 +197,30 @@ pub fn route_pinned_with_quantized_shortlist(
     context: &VectorQueryContext, policy: RoutingPolicy, materialize_limit: usize,
     shortlist: Option<usize>,
 ) -> OperationResult<NativeRouteResult> {
+    route_pinned_with_quantized_shortlist_profiled(
+        members,
+        query,
+        arity,
+        budget,
+        context,
+        policy,
+        materialize_limit,
+        shortlist,
+        std::env::var_os("DLI_REQUEST_SCORING_PROFILE").is_some(),
+    )
+}
+
+pub fn route_pinned_with_quantized_shortlist_profiled(
+    members: &[(usize, &Segment)],
+    query: &[f32],
+    arity: usize,
+    budget: usize,
+    context: &VectorQueryContext,
+    policy: RoutingPolicy,
+    materialize_limit: usize,
+    shortlist: Option<usize>,
+    profile_request: bool,
+) -> OperationResult<NativeRouteResult> {
     let fail = |message: &str| OperationError::service_error(message.to_owned());
     let temperature = match policy {
         RoutingPolicy::TemperatureDensity { temperature_milli } => {
@@ -291,7 +318,8 @@ pub fn route_pinned_with_quantized_shortlist(
     .map_err(|e| fail(&format!("invalid DLI candidate plan: {e:?}")))?;
     let bucket_planning_time = planning_started.elapsed();
     let routing_and_planning_time = start.elapsed();
-    if let Some(path) = std::env::var_os("DLI_ROUTING_EVENTS") {
+    if profile_request {
+      if let Some(path) = std::env::var_os("DLI_ROUTING_EVENTS") {
         use std::io::Write;
         let event = serde_json::json!({"policy":policy,"budget":budget,"buckets":plan.buckets,"members":members.iter().map(|(l,s)|(s.uuid,l,s.available_point_count())).collect::<Vec<_>>()});
         if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -301,6 +329,7 @@ pub fn route_pinned_with_quantized_shortlist(
         {
             let _ = writeln!(f, "{event}");
         }
+      }
     }
 
     let mut native_scorer_time = Duration::ZERO;
@@ -309,7 +338,10 @@ pub fn route_pinned_with_quantized_shortlist(
     let mut posting_candidates = 0usize;
     let mut unique_posting_offsets = 0usize;
     let mut buffer_point_estimate = 0usize;
-    let mut learned_scoring = std::env::var_os("DLI_REQUEST_SCORING_PROFILE").map(|_| LearnedScoringProfile::default());
+    let mut learned_scoring = profile_request.then(LearnedScoringProfile::default);
+    let _task_scoring_profile = profile_request.then(|| {
+        segment::index::hnsw_index::point_scorer::TaskScoringProfileGuard::begin()
+    });
     let mut per_segment = Vec::new();
     let query_vector: QueryVector = query.to_vec().into();
     let access_trace = std::env::var_os("DLI_NATIVE_ACCESS_EVENTS");
@@ -333,6 +365,9 @@ pub fn route_pinned_with_quantized_shortlist(
             let count = segment.id_tracker.borrow().available_point_count();
             buffer_point_estimate += count;
             let score_started = Instant::now();
+            let task_scored_before = learned_scoring
+                .as_ref()
+                .map(|_| segment::index::hnsw_index::point_scorer::scoring_task_success_snapshot());
             let offsets = index
                 .search(
                     &[&query_vector],
@@ -343,6 +378,16 @@ pub fn route_pinned_with_quantized_shortlist(
                 )?
                 .pop()
                 .expect("one buffer query");
+            if let (Some(profile), Some(before)) =
+                (learned_scoring.as_mut(), task_scored_before)
+            {
+                profile.plain_scored += usize::try_from(
+                    segment::index::hnsw_index::point_scorer::scoring_task_success_snapshot()
+                        .saturating_sub(before),
+                )
+                .unwrap_or(usize::MAX);
+                profile.plain_elapsed_ns += score_started.elapsed().as_nanos();
+            }
             native_scorer_time += score_started.elapsed();
             offsets
         } else {
@@ -1762,16 +1807,21 @@ mod tests {
         }
         let members = [(1, &a), (2, &b), (0, &buffer)];
         let context = VectorQueryContext::default();
-        let quantized = route_pinned_with_quantized_shortlist(&members, &[1.,0.], 2, 100,
-            &context, RoutingPolicy::PopulationDensity, 30, Some(30)).unwrap();
-        let original = route_pinned_with_policy(&members, &[1.,0.], 2, 100,
-            &context, RoutingPolicy::PopulationDensity, 30).unwrap();
+        let quantized = route_pinned_with_quantized_shortlist_profiled(
+            &members, &[1.,0.], 2, 100, &context, RoutingPolicy::PopulationDensity, 30, Some(30), true,
+        ).unwrap();
+        let original = route_pinned_with_quantized_shortlist_profiled(
+            &members, &[1.,0.], 2, 100, &context, RoutingPolicy::PopulationDensity, 30, None, true,
+        ).unwrap();
         if let (Some(q), Some(o)) = (&quantized.learned_scoring, &original.learned_scoring) {
             assert_eq!(q.quantized_scored, 6);
             assert_eq!(q.original_scored, 6);
             assert_eq!(q.shortlist_offsets, 6);
+            assert_eq!(q.plain_scored, 2, "request-local profile includes successful Plain scorer inputs");
+            assert!(q.plain_elapsed_ns > 0);
             assert_eq!(o.quantized_scored, 0);
             assert_eq!(o.original_scored, 6);
+            assert_eq!(o.plain_scored, 2);
         }
         assert_eq!(quantized.per_segment, original.per_segment);
         assert!(matches!(resolve_pinned_candidates(&members, quantized, 30).unwrap(), CandidateResolution::Resolved(_)));

@@ -920,6 +920,10 @@ impl SegmentBuilder {
 
                 let vector_storage_path = get_vector_storage_path(segment_path, vector_name);
 
+                #[cfg(feature = "lmi-research")]
+                let quantization_started = std::env::var_os("DLI_QUANTIZATION_BUILD_EVENTS")
+                    .map(|_| std::time::Instant::now());
+
                 let quantized_vectors = QuantizedVectors::create(
                     &vector_info.vector_storage,
                     quantization_config,
@@ -928,6 +932,29 @@ impl SegmentBuilder {
                     max_threads,
                     stopped,
                 )?;
+
+                #[cfg(feature = "lmi-research")]
+                if let (Some(started), Some(path)) = (
+                    quantization_started,
+                    std::env::var_os("DLI_QUANTIZATION_BUILD_EVENTS"),
+                ) {
+                    use std::io::Write;
+                    let event = serde_json::json!({
+                        "phase": "native_quantization_build",
+                        "vector": vector_name,
+                        "population": vector_info.vector_storage.total_vector_count(),
+                        "dimension": vector_config.size,
+                        "elapsed_ns": started.elapsed().as_nanos(),
+                        "temporary_vector_storage": vector_storage_path,
+                    });
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)
+                    {
+                        let _ = writeln!(file, "{event}");
+                    }
+                }
 
                 quantized_vectors_map.insert(vector_name.to_owned(), quantized_vectors);
 

@@ -551,6 +551,51 @@ impl ShardReplicaSet {
         *search.routing_policy.write() = policy;
     }
 
+    /// Select original (None) or native quantized shortlist scoring for the
+    /// next requests without changing process environment or collection metadata.
+    #[cfg(all(test, feature = "dli-research"))]
+    pub async fn configure_local_dli_quantized_shortlist_for_test(
+        &self,
+        shortlist: Option<usize>,
+    ) {
+        use crate::shards::shard::Shard;
+        use std::sync::atomic::Ordering::Relaxed;
+        assert!(shortlist.is_none_or(|value| value > 0));
+        let local = self.local.read().await;
+        let Some(Shard::Local(local)) = local.as_ref() else {
+            panic!("local shard required")
+        };
+        let search = local.dli_research.read().clone().unwrap();
+        search
+            .quantized_shortlist
+            .store(shortlist.unwrap_or(0), Relaxed);
+    }
+
+    #[cfg(all(test, feature = "dli-research"))]
+    pub async fn configure_local_dli_scoring_profile_for_test(&self, enabled: bool) {
+        use crate::shards::shard::Shard;
+        use std::sync::atomic::Ordering::Relaxed;
+        let local = self.local.read().await;
+        let Some(Shard::Local(local)) = local.as_ref() else {
+            panic!("local shard required")
+        };
+        let search = local.dli_research.read().clone().unwrap();
+        search.profile_scoring.store(enabled, Relaxed);
+    }
+
+    #[cfg(all(test, feature = "dli-research"))]
+    pub async fn local_dli_roles_for_test(&self) -> (usize, Vec<(uuid::Uuid, usize)>) {
+        use crate::shards::shard::Shard;
+        let local = self.local.read().await;
+        let Some(Shard::Local(local)) = local.as_ref() else {
+            panic!("local shard required")
+        };
+        let maintenance = local.update_tracker.dli_maintenance.read().clone().unwrap();
+        let mut roles: Vec<_> = maintenance.members.read().iter().map(|(uuid, level)| (*uuid, *level)).collect();
+        roles.sort_unstable();
+        (maintenance.generation.load(std::sync::atomic::Ordering::Acquire), roles)
+    }
+
     /// Diagnostic cache reset is scoped to this fixture's Cold vector files.
     /// It does not change storage policy, vectors, global drop_caches or metadata.
     #[cfg(all(test, feature = "dli-research"))]

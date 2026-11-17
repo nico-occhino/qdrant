@@ -68,6 +68,8 @@ pub struct DliResearchConfig {
     pub materialize_topk: std::sync::atomic::AtomicBool,
     /// Per-shard research override; zero retains legacy environment/default behavior.
     pub quantized_shortlist: std::sync::atomic::AtomicUsize,
+    /// Opt-in request-local stage timings and scorer attribution.
+    pub profile_scoring: std::sync::atomic::AtomicBool,
     pub routing_policy: parking_lot::RwLock<super::dli_bucket_plan::RoutingPolicy>,
     pub learned_queries: std::sync::atomic::AtomicU64,
     pub exact_fallbacks: std::sync::atomic::AtomicU64,
@@ -111,6 +113,7 @@ impl DliResearchConfig {
             candidate_budget: budget.into(),
             materialize_topk: Default::default(),
             quantized_shortlist: Default::default(),
+            profile_scoring: std::env::var_os("DLI_REQUEST_SCORING_PROFILE").is_some().into(),
             routing_policy: Default::default(),
             learned_queries: Default::default(),
             exact_fallbacks: Default::default(),
@@ -582,7 +585,7 @@ impl SegmentsSearcher {
                 }
                 let segment_context = attempt_context.get_segment_query_context();
                 let vector_context = segment_context.get_vector_context(DEFAULT_VECTOR_NAME, None);
-                let routed = match super::dli_native_route::route_pinned_with_quantized_shortlist(
+                let routed = match super::dli_native_route::route_pinned_with_quantized_shortlist_profiled(
                     &members,
                     query,
                     attempt_config.arity,
@@ -598,6 +601,7 @@ impl SegmentsSearcher {
                         0 => std::env::var("DLI_QUANTIZED_SHORTLIST").ok().map(|value| value.parse::<usize>().unwrap_or(0)),
                         shortlist => Some(shortlist),
                     },
+                    attempt_config.profile_scoring.load(Ordering::Relaxed),
                 ) {
                     Ok(routed) => routed,
                     Err(error) => {

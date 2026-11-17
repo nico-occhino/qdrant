@@ -6,6 +6,45 @@ static SCORING_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 static SCORING_ATTEMPTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static SCORING_SUCCESSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+// Task-local companion to the legacy process counters. The DLI native route
+// executes its pinned Plain and learned scoring synchronously on one blocking
+// task, so it attributes successful Plain scorer inputs without mixing
+// concurrent requests. It is active only while a request profile guard exists.
+std::thread_local! {
+    static TASK_SCORING_PROFILE_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TASK_SCORING_SUCCESSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Enables attribution only on the current search task. Other concurrent
+/// scorer tasks never observe or contribute to this request's count.
+pub struct TaskScoringProfileGuard;
+
+impl TaskScoringProfileGuard {
+    pub fn begin() -> Self {
+        TASK_SCORING_SUCCESSES.with(|value| value.set(0));
+        TASK_SCORING_PROFILE_ACTIVE.with(|active| {
+            assert!(!active.replace(true), "nested task scoring profile")
+        });
+        Self
+    }
+}
+
+impl Drop for TaskScoringProfileGuard {
+    fn drop(&mut self) {
+        TASK_SCORING_PROFILE_ACTIVE.with(|active| active.set(false));
+    }
+}
+
+pub fn scoring_task_success_snapshot() -> u64 {
+    TASK_SCORING_SUCCESSES.with(std::cell::Cell::get)
+}
+
+fn record_scoring_successes(count: usize) {
+    if TASK_SCORING_PROFILE_ACTIVE.with(std::cell::Cell::get) {
+        TASK_SCORING_SUCCESSES.with(|value| value.set(value.get().saturating_add(count as u64)));
+    }
+}
+
 /// Process-wide counters for sequential isolated research workloads. Concurrent
 /// queries must use an external request attribution mechanism.
 pub fn scoring_work_snapshot() -> [u64; 3] {
@@ -599,6 +638,7 @@ impl<'a> BatchFilteredSearcher<'a> {
                     SCORING_SUCCESSES
                         .fetch_add(chunk_size as u64, std::sync::atomic::Ordering::Relaxed);
                 }
+                record_scoring_successes(chunk_size);
 
                 for i in 0..chunk_size {
                     top_k.push(ScoredPointOffset {
@@ -662,6 +702,7 @@ impl<'a> BatchFilteredSearcher<'a> {
                     SCORING_SUCCESSES
                         .fetch_add(chunk_size as u64, std::sync::atomic::Ordering::Relaxed);
                 }
+                record_scoring_successes(chunk_size);
                 score_ns = score_ns.saturating_add(tick.elapsed().as_nanos() as u64);
                 scored = scored.saturating_add(chunk_size);
                 let tick = Instant::now();
@@ -714,6 +755,7 @@ fn score_chunk(
         if *MEASURE_SCORING {
             SCORING_SUCCESSES.fetch_add(chunk.len() as u64, std::sync::atomic::Ordering::Relaxed);
         }
+        record_scoring_successes(chunk.len());
         for i in 0..chunk.len() {
             top_k.push(ScoredPointOffset {
                 idx: chunk[i],
