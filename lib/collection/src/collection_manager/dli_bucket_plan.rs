@@ -123,7 +123,7 @@ pub fn select_density(
     if budget == 0 {
         return Err(PlanError::ZeroBudget);
     }
-    let mut ranked = select(predictions, arity, usize::MAX)?.buckets;
+    let ranked = select(predictions, arity, usize::MAX)?.buckets;
     let mut populations = HashMap::<Uuid, usize>::new();
     for p in &ranked {
         let count = populations.entry(p.physical).or_default();
@@ -138,16 +138,18 @@ pub fn select_density(
             f64::from(p.probability) * populations[&p.physical] as f64 / p.occupancy as f64
         }
     };
-    ranked.sort_by(|a, b| {
-        score(b)
-            .total_cmp(&score(a))
-            .then(a.level.cmp(&b.level))
-            .then(a.physical.cmp(&b.physical))
-            .then(a.bucket.cmp(&b.bucket))
+    // A priority is immutable for a pinned generation/query. Cache it once;
+    // otherwise every sort comparison repeats a UUID hash lookup and division.
+    let mut scored: Vec<_> = ranked.into_iter().map(|p| (score(&p), p)).collect();
+    scored.sort_by(|a, b| {
+        b.0.total_cmp(&a.0)
+            .then(a.1.level.cmp(&b.1.level))
+            .then(a.1.physical.cmp(&b.1.physical))
+            .then(a.1.bucket.cmp(&b.1.bucket))
     });
     let mut count = 0usize;
     let mut buckets = Vec::new();
-    for p in ranked {
+    for (_, p) in scored {
         if count >= budget {
             break;
         }
