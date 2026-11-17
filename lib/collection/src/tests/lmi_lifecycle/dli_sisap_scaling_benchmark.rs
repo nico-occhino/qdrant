@@ -22,6 +22,8 @@ const QUERY_COUNT: usize = 100;
 const DYNAMIC_QUERY_COUNT: usize = 100;
 const DYNAMIC_UPSERTS: usize = 128;
 const DYNAMIC_DELETIONS: usize = 128;
+const SMALL_NATIVE_POPULATION: usize = 65_536;
+const SMALL_NATIVE_BUFFER: usize = 20_000;
 
 async fn replica(collection: &Collection) -> Arc<crate::shards::replica_set::ShardReplicaSet> {
     collection
@@ -94,6 +96,14 @@ fn collection_config(dli: bool) -> CollectionConfigInternal {
 }
 
 async fn create_collection(name: &str, root: &Path, dli: bool) -> Collection {
+    create_collection_with_config(name, root, collection_config(dli)).await
+}
+
+async fn create_collection_with_config(
+    name: &str,
+    root: &Path,
+    config: CollectionConfigInternal,
+) -> Collection {
     let data = root.join("storage");
     let snapshots = root.join("snapshots");
     std::fs::create_dir_all(&data).unwrap();
@@ -103,7 +113,7 @@ async fn create_collection(name: &str, root: &Path, dli: bool) -> Collection {
         1,
         &data,
         &snapshots,
-        &collection_config(dli),
+        &config,
         Arc::new(SharedStorageConfig::default()),
         CollectionShardDistribution {
             shards: AHashMap::from([(0, HashSet::from([1]))]),
@@ -1189,4 +1199,569 @@ fn dli_small_teacher_router_control() {
     .unwrap();
     assert_eq!(reopened.available_point_count(), 65536);
     std::fs::write(output.join("index.json"),serde_json::to_vec_pretty(&serde_json::json!({"path":path,"uuid":uuid,"population":65536,"model":model,"scope":"disposable subset, not reconstruction of original6M teacher"})).unwrap()).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "native 65K multi-level Collection S0/S2 benchmark; requires DLI_65K_INPUT, DLI_65K_ORACLE and DLI_65K_OUTPUT"]
+async fn sisap23_65k_multilevel_collection_s0_vs_s2() {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    use segment::entry::ReadSegmentEntry;
+    use segment::id_tracker::IdTrackerRead;
+    use segment::types::ExtendedPointId;
+
+    let _ambient = common::ambient::test_guard();
+    for name in [
+        "DLI_REQUEST_SCORING_EVENTS",
+        "DLI_ROUTING_EVENTS",
+        "DLI_QUANTIZATION_BUILD_EVENTS",
+    ] {
+        assert!(
+            std::env::var_os(name).is_some(),
+            "required measurement path {name}"
+        );
+    }
+    assert!(
+        std::env::var_os("DLI_QUANTIZED_SHORTLIST").is_none(),
+        "use the shard-local override"
+    );
+    let inputs = PathBuf::from(std::env::var("DLI_65K_INPUT").unwrap());
+    let oracle = PathBuf::from(std::env::var("DLI_65K_ORACLE").unwrap());
+    let output = PathBuf::from(std::env::var("DLI_65K_OUTPUT").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    let mut vectors = std::fs::File::open(inputs.join("pool.f16")).unwrap();
+    assert_eq!(
+        vectors.metadata().unwrap().len(),
+        (SMALL_NATIVE_POPULATION * DIMENSIONS * 2) as u64
+    );
+    let id_bytes = std::fs::read(inputs.join("pool_ids.u64")).unwrap();
+    assert_eq!(id_bytes.len(), SMALL_NATIVE_POPULATION * 8);
+    let pool_ids: Vec<u64> = id_bytes
+        .chunks_exact(8)
+        .map(|v| u64::from_le_bytes(v.try_into().unwrap()))
+        .collect();
+    let expected_ids: HashSet<_> = pool_ids.iter().copied().collect();
+    assert_eq!(expected_ids.len(), SMALL_NATIVE_POPULATION);
+    let queries = std::fs::read(inputs.join("queries.f32")).unwrap();
+    assert_eq!(queries.len(), 64 * DIMENSIONS * 4);
+    let gold_bytes = std::fs::read(oracle.join("gold_ids.u64")).unwrap();
+    assert_eq!(gold_bytes.len(), 64 * 30 * 8);
+    let gold: Vec<u64> = gold_bytes
+        .chunks_exact(8)
+        .map(|v| u64::from_le_bytes(v.try_into().unwrap()))
+        .collect();
+    let gold_score_bytes = std::fs::read(oracle.join("gold_cosines.f64")).unwrap();
+    assert_eq!(gold_score_bytes.len(), 64 * 30 * 8);
+    let gold_scores: Vec<f64> = gold_score_bytes
+        .chunks_exact(8)
+        .map(|v| f64::from_le_bytes(v.try_into().unwrap()))
+        .collect();
+    assert!(gold.iter().all(|id| expected_ids.contains(id)));
+
+    let mut config = collection_config(true);
+    let dli = config.dli_experimental.as_mut().unwrap();
+    dli.buffer_capacity = SMALL_NATIVE_BUFFER;
+    dli.materialize_topk = true;
+    dli.quantized_shortlist = Some(128); // built natively; S0 overrides query use only
+    // Slot weighting ranks Plain at priority 1.0, so include its whole bucket
+    // plus a bounded learned allowance or this fixture would exact-fallback.
+    dli.candidate_budget = 10_000;
+    let root = output.join("collection");
+    assert!(!root.exists(), "use a new output root; preserve prior runs");
+    std::fs::create_dir(&root).unwrap();
+    let collection = create_collection_with_config("sisap23_65k_multilevel", &root, config).await;
+    let local = replica(&collection).await;
+    let mut publications = Vec::new();
+    for (batch, first, end) in [
+        (0usize, 0usize, 20_000usize),
+        (1, 20_000, 40_000),
+        (2, 40_000, 60_000),
+    ] {
+        let mut block = vec![0u8; (end - first) * DIMENSIONS * 2];
+        vectors
+            .seek(SeekFrom::Start((first * DIMENSIONS * 2) as u64))
+            .unwrap();
+        vectors.read_exact(&mut block).unwrap();
+        let points = (first..end)
+            .map(|row| point_from_row(row - first, pool_ids[row], &block))
+            .collect();
+        let before = local
+            .local_dli_publication_events_for_test()
+            .await
+            .unwrap()
+            .len();
+        let write = apply_points(&collection, points).await;
+        wait_for_dli_publications(&local, before + 1).await;
+        let events = local.local_dli_publication_events_for_test().await.unwrap();
+        let event = events.last().unwrap();
+        publications.push(serde_json::json!({"batch":batch,"first":first,"end":end,"insert_wait_ms":write.as_secs_f64()*1000.0,
+            "target_level":event.target_level,"source_uuids":event.source_uuids,"destination_uuid":event.destination_uuid,
+            "expected_output_points":event.expected_output_points,"published_output_points":event.published_output_points,
+            "optimizer_micros":event.optimizer_micros}));
+    }
+    // 5,536 new points remain in the native appendable Plain buffer.
+    let first = 60_000;
+    let end = SMALL_NATIVE_POPULATION;
+    let mut block = vec![0u8; (end - first) * DIMENSIONS * 2];
+    vectors
+        .seek(SeekFrom::Start((first * DIMENSIONS * 2) as u64))
+        .unwrap();
+    vectors.read_exact(&mut block).unwrap();
+    let points = (first..end)
+        .map(|row| point_from_row(row - first, pool_ids[row], &block))
+        .collect();
+    let _insert_wait = apply_points(&collection, points).await;
+    assert_eq!(
+        collection
+            .info(&ShardSelectorInternal::All)
+            .await
+            .unwrap()
+            .points_count,
+        Some(SMALL_NATIVE_POPULATION)
+    );
+
+    // Inspect the active holder, not scheduler expectations. Prove every live
+    // external ID is owned exactly once and each learned member owns its own index.
+    let holder = local.local_segments_for_test().await.unwrap();
+    let guard = holder.read();
+    assert_eq!(
+        guard.iter().count(),
+        guard.iter_original().count(),
+        "no active optimizer proxies"
+    );
+    let (hierarchy_generation, roles) = local.local_dli_roles_for_test().await;
+    let roles_by_uuid: std::collections::HashMap<_, _> = roles.iter().copied().collect();
+    assert_eq!(roles_by_uuid.len(), guard.iter_original().count());
+    assert_eq!(
+        roles_by_uuid.values().copied().collect::<HashSet<_>>(),
+        HashSet::from([0, 1, 2])
+    );
+    let mut actual_ids = HashSet::new();
+    let mut topology = Vec::new();
+    let mut learned = 0;
+    let mut plain = 0;
+    for (_, member) in guard.iter_original() {
+        let segment = member.read();
+        let level = *roles_by_uuid
+            .get(&segment.uuid)
+            .expect("active physical UUID has logical role");
+        let data = &segment.vector_data[segment::data_types::vectors::DEFAULT_VECTOR_NAME];
+        let index = data.vector_index.borrow();
+        let (kind, learned_population) = match &*index {
+            VectorIndexEnum::Lmi(lmi) => {
+                assert!(lmi.routing_state().is_some());
+                assert!(!segment.is_appendable());
+                assert!(level > 0);
+                assert_eq!(lmi.routing_state().unwrap().postings().len(), 548);
+                let quant = data.quantized_vectors.borrow();
+                let quant = quant
+                    .as_ref()
+                    .expect("each learned physical generation has native scalar data");
+                let expected_path = segment::segment_constructor::get_vector_storage_path(
+                    &segment.segment_path,
+                    segment::data_types::vectors::DEFAULT_VECTOR_NAME,
+                );
+                assert_eq!(
+                    quant.storage_path(),
+                    expected_path,
+                    "quantizer belongs to active segment generation"
+                );
+                learned += 1;
+                ("lmi", segment.available_point_count())
+            }
+            VectorIndexEnum::Plain(_) => {
+                assert!(segment.is_appendable());
+                assert!(
+                    segment.available_point_count() > 0,
+                    "Plain member is not empty"
+                );
+                assert_eq!(level, 0);
+                plain += 1;
+                ("plain", segment.available_point_count())
+            }
+            _ => panic!("unexpected active index type"),
+        };
+        let tracker = segment.id_tracker.borrow();
+        for (point_id, offset) in tracker.point_mappings().iter_from(None) {
+            let ExtendedPointId::NumId(id) = point_id else {
+                panic!("expected numeric IDs")
+            };
+            if !segment.has_point(id.into(), common::types::DeferredBehavior::VisibleOnly) {
+                continue;
+            }
+            assert!(actual_ids.insert(id), "duplicate active physical ID {id}");
+            assert_eq!(tracker.external_id(offset), Some(id.into()));
+        }
+        let vector_storage_path = segment::segment_constructor::get_vector_storage_path(
+            &segment.segment_path,
+            segment::data_types::vectors::DEFAULT_VECTOR_NAME,
+        );
+        let vector_storage_bytes: u64 = std::fs::read_dir(&vector_storage_path)
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| entry.metadata().ok().map(|meta| meta.len()))
+            .sum();
+        let quantized_files: Vec<_> = [
+            "quantized.config.json",
+            "quantized.data",
+            "quantized.meta.json",
+            "quantized.offsets.data",
+        ]
+        .into_iter()
+        .filter_map(|name| {
+            let path = vector_storage_path.join(name);
+            path.metadata()
+                .ok()
+                .map(|meta| serde_json::json!({"name":name,"bytes":meta.len()}))
+        })
+        .collect();
+        let quantized_bytes: u64 = quantized_files
+            .iter()
+            .filter_map(|file| file["bytes"].as_u64())
+            .sum();
+        let index_path = segment.segment_path.join("vector_index");
+        let learned_index_bytes: u64 = std::fs::read_dir(index_path)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("lmi_"))
+            .filter_map(|entry| entry.metadata().ok().map(|meta| meta.len()))
+            .sum();
+        topology.push(serde_json::json!({"uuid":segment.uuid,"logical_level":level,"kind":kind,"population":learned_population,
+            "segment_path":segment.segment_path,"vector_storage_path":vector_storage_path,"vector_storage_total_bytes":vector_storage_bytes,
+            "scalar_quantized_files":quantized_files,"scalar_quantized_bytes":quantized_bytes,"learned_model_posting_bytes":learned_index_bytes}));
+    }
+    assert_eq!(learned, 2, "expected exactly two learned physical levels");
+    assert_eq!(plain, 1, "expected one nonempty Plain buffer");
+    assert!(
+        topology
+            .iter()
+            .filter(|row| row["kind"] == "lmi")
+            .all(|row| row["scalar_quantized_bytes"].as_u64().unwrap_or(0) > 0),
+        "quantized storage files must be present on learned members"
+    );
+    assert_eq!(
+        actual_ids, expected_ids,
+        "active Collection population differs from oracle"
+    );
+    drop(guard);
+    drop(holder);
+    assert_eq!(
+        local.local_dli_counts_for_test().await.unwrap().0,
+        3,
+        "three automatic native publications"
+    );
+
+    let scorer_events = output.join("request-scoring.jsonl");
+    let routing_events = output.join("routing.jsonl");
+    let query_events = output.join("collection-queries.jsonl");
+    for p in [&scorer_events, &routing_events, &query_events] {
+        let _ = std::fs::remove_file(p);
+    }
+    // Warm each mode first. Profiling runs are separate from latency runs so
+    // per-stage timers and JSONL writes do not contaminate Collection latency.
+    local
+        .configure_local_dli_scoring_profile_for_test(false)
+        .await;
+    for mode in [Some(128), None] {
+        local
+            .configure_local_dli_quantized_shortlist_for_test(mode)
+            .await;
+        for qid in 0..4 {
+            let _ = run_65k_query(&collection, &queries, qid, 30).await;
+        }
+    }
+    let mut profiles = Vec::new();
+    for qid in 0..64 {
+        for mode in [None, Some(128)] {
+            local
+                .configure_local_dli_quantized_shortlist_for_test(mode)
+                .await;
+            local
+                .configure_local_dli_scoring_profile_for_test(true)
+                .await;
+            let before_profile = local.local_dli_named_profile_for_test().await.unwrap();
+            let before_route_bytes = std::fs::metadata(&routing_events)
+                .map(|m| m.len())
+                .unwrap_or(0);
+            let before_score_bytes = std::fs::metadata(&scorer_events)
+                .map(|m| m.len())
+                .unwrap_or(0);
+            let hits = run_65k_query(&collection, &queries, qid, 30).await;
+            assert_native_scores_match_oracle(&hits, &gold, &gold_scores, qid);
+            let after_profile = local.local_dli_named_profile_for_test().await.unwrap();
+            let route_data = std::fs::read(&routing_events).unwrap_or_default();
+            assert!(
+                route_data.len() as u64 > before_route_bytes,
+                "profiled request omitted its routing plan"
+            );
+            let route_line = route_data[before_route_bytes as usize..]
+                .split(|b| *b == b'\n')
+                .next()
+                .unwrap();
+            let plan = serde_json::from_slice::<serde_json::Value>(route_line).unwrap();
+            let score_data = std::fs::read(&scorer_events).unwrap_or_default();
+            assert!(
+                score_data.len() as u64 > before_score_bytes,
+                "profiled request omitted its request-local event"
+            );
+            let score_line = score_data[before_score_bytes as usize..]
+                .split(|b| *b == b'\n')
+                .next()
+                .unwrap();
+            let request_profile = serde_json::from_slice::<serde_json::Value>(score_line).unwrap();
+            let learned_delta = after_profile["learned_queries"].as_u64().unwrap()
+                - before_profile["learned_queries"].as_u64().unwrap();
+            let fallback_delta = after_profile["exact_fallbacks"].as_u64().unwrap()
+                - before_profile["exact_fallbacks"].as_u64().unwrap();
+            assert_eq!(
+                learned_delta, 1,
+                "this configuration must execute learned routing"
+            );
+            assert_eq!(
+                fallback_delta, 0,
+                "do not count exact fallback as learned success"
+            );
+            assert_eq!(request_profile["candidate_resolution"], "resolved");
+            let lp = &request_profile["learned_scoring"];
+            assert!(
+                lp["plain_scored"].as_u64().unwrap() > 0,
+                "the selected plan must account for Plain scoring"
+            );
+            assert!(lp["original_scored"].as_u64().unwrap() > 0);
+            assert_eq!(lp["quantized_scored"].as_u64().unwrap() > 0, mode.is_some());
+            let attributed = lp["quantized_scored"].as_u64().unwrap()
+                + lp["original_scored"].as_u64().unwrap()
+                + lp["plain_scored"].as_u64().unwrap();
+            let profile_row = serde_json::json!({"query":qid,"mode":if mode.is_some(){"S2"}else{"S0"},"learned_delta":learned_delta,"exact_fallback_delta":fallback_delta,"attributed_successful_scorer_inputs":attributed,"request_profile":request_profile,"plan":plan,"profile_pass_returned":hits});
+            profiles.push(profile_row);
+        }
+    }
+    // Scoring-stage instrumentation, including its event writes, is disabled
+    // during latency passes. Only the per-shard scoring override changes.
+    local
+        .configure_local_dli_scoring_profile_for_test(false)
+        .await;
+    let mut query_rows = Vec::new();
+    for qid in 0..64 {
+        let order = if qid % 2 == 0 {
+            [None, Some(128), Some(128), None]
+        } else {
+            [Some(128), None, None, Some(128)]
+        };
+        for (pass, mode) in order.into_iter().enumerate() {
+            local
+                .configure_local_dli_quantized_shortlist_for_test(mode)
+                .await;
+            let before_task = query_process_counters();
+            let started = Instant::now();
+            let hits = run_65k_query(&collection, &queries, qid, 30).await;
+            let elapsed_ns = started.elapsed().as_nanos();
+            let after_task = query_process_counters();
+            assert_native_scores_match_oracle(&hits, &gold, &gold_scores, qid);
+            let expected = &gold[qid * 30..(qid + 1) * 30];
+            let recall10 = hits
+                .iter()
+                .take(10)
+                .filter(|hit| expected[..10].contains(&hit["id"].as_u64().unwrap()))
+                .count();
+            let recall30 = hits
+                .iter()
+                .take(30)
+                .filter(|hit| expected.contains(&hit["id"].as_u64().unwrap()))
+                .count();
+            let faults = before_task.zip(after_task).map(|(a,b)| serde_json::json!({"minor_faults":b.0.saturating_sub(a.0),"major_faults":b.1.saturating_sub(a.1),"process_cpu_ticks":b.2.saturating_sub(a.2)}));
+            let profile = profiles
+                .iter()
+                .find(|row| {
+                    row["query"] == qid && row["mode"] == if mode.is_some() { "S2" } else { "S0" }
+                })
+                .unwrap();
+            let row = serde_json::json!({"query":qid,"split":if qid<32{"validation"}else{"test"},"pass":pass,"mode":if mode.is_some(){"S2"}else{"S0"},"shortlist":mode,"warm_elapsed_ns":elapsed_ns,"recall10_hits":recall10,"recall30_hits":recall30,"process_faults_cpu":faults,"matched_profile":profile["request_profile"],"hits":hits});
+            writeln!(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&query_events)
+                    .unwrap(),
+                "{row}"
+            )
+            .unwrap();
+            query_rows.push(row);
+        }
+    }
+    assert_eq!(profiles.len(), 64 * 2);
+    for qid in 0..64 {
+        let a = profiles
+            .iter()
+            .find(|row| row["query"] == qid && row["mode"] == "S0")
+            .unwrap();
+        let b = profiles
+            .iter()
+            .find(|row| row["query"] == qid && row["mode"] == "S2")
+            .unwrap();
+        assert_eq!(a["plan"], b["plan"], "S0/S2 postings must be identical");
+    }
+    let (generation, mut roles) = (hierarchy_generation, roles);
+    roles.sort_unstable();
+    let quantization_events_path =
+        PathBuf::from(std::env::var("DLI_QUANTIZATION_BUILD_EVENTS").unwrap());
+    let quantization_events: Vec<serde_json::Value> =
+        std::fs::read_to_string(&quantization_events_path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+    assert_eq!(
+        quantization_events.len(),
+        3,
+        "each of the three native destinations quantizes once"
+    );
+    let quantized_bytes_total: u64 = topology
+        .iter()
+        .map(|row| row["scalar_quantized_bytes"].as_u64().unwrap_or(0))
+        .sum();
+    let original_vector_storage_bytes: u64 = topology
+        .iter()
+        .map(|row| {
+            row["vector_storage_total_bytes"]
+                .as_u64()
+                .unwrap_or(0)
+                .saturating_sub(row["scalar_quantized_bytes"].as_u64().unwrap_or(0))
+        })
+        .sum();
+    let mut summary = serde_json::json!({"population":SMALL_NATIVE_POPULATION,"dimensions":DIMENSIONS,"model":model_config(),"buffer_capacity":SMALL_NATIVE_BUFFER,"candidate_budget":10_000,"hierarchy_generation":generation,"logical_roles":roles,"topology":topology,"publications":publications,"profiled_queries":profiles,"timed_queries":query_rows,"warm_only":true,"counterbalance":"per-query ABBA/BAAB","official_query_rows":"900-963; validation 900-931; test 932-963 (selection manifest says not used in continuations 26-38)","oracle":"continuation-39 full-pool FP16 corpus; Float64 cosine, ID tie break; exact oracle generated outside timed search","source_sha":std::process::Command::new("git").args(["rev-parse","HEAD"]).output().ok().map(|o|String::from_utf8_lossy(&o.stdout).trim().to_owned()),"raw_original_vector_bytes":SMALL_NATIVE_POPULATION*DIMENSIONS*2,"persisted_original_vector_storage_bytes":original_vector_storage_bytes,"persisted_scalar_quantized_bytes":quantized_bytes_total,"quantization_build_events":quantization_events,"process_peak_rss_kib":peak_rss_kib()});
+    local.force_flush_local_for_test().await;
+    drop(local);
+    collection.stop_gracefully().await;
+
+    let reopen_started = Instant::now();
+    let reopened = Collection::load(
+        "sisap23_65k_multilevel".into(),
+        1,
+        &root.join("storage"),
+        &root.join("snapshots"),
+        Arc::new(SharedStorageConfig::default()),
+        ChannelService::default(),
+        dummy_on_replica_failure(),
+        dummy_request_shard_transfer(),
+        dummy_abort_shard_transfer(),
+        None,
+        None,
+        ResourceBudget::default(),
+        None,
+    )
+    .await;
+    let reopen_elapsed = reopen_started.elapsed();
+    assert_eq!(
+        reopened
+            .info(&ShardSelectorInternal::All)
+            .await
+            .unwrap()
+            .points_count,
+        Some(SMALL_NATIVE_POPULATION)
+    );
+    let reopened_local = replica(&reopened).await;
+    let reopened_holder = reopened_local.local_segments_for_test().await.unwrap();
+    for (_, member) in reopened_holder.read().iter_original() {
+        let segment = member.read();
+        let data = &segment.vector_data[segment::data_types::vectors::DEFAULT_VECTOR_NAME];
+        if matches!(&*data.vector_index.borrow(), VectorIndexEnum::Lmi(_)) {
+            assert!(
+                data.quantized_vectors.borrow().is_some(),
+                "quantized files loaded for the right recovered generation"
+            );
+        }
+    }
+    reopened_local
+        .configure_local_dli_scoring_profile_for_test(false)
+        .await;
+    reopened_local
+        .configure_local_dli_quantized_shortlist_for_test(Some(128))
+        .await;
+    let before = reopened_local.local_dli_counts_for_test().await.unwrap();
+    let reopened_hits = run_65k_query(&reopened, &queries, 63, 30).await;
+    let after = reopened_local.local_dli_counts_for_test().await.unwrap();
+    assert_eq!(
+        after.1 - before.1,
+        1,
+        "reopened collection must resume learned routing"
+    );
+    assert_eq!(
+        after.2 - before.2,
+        0,
+        "reopen query must not use exact fallback"
+    );
+    let reopen_record = serde_json::json!({"load_ms":reopen_elapsed.as_secs_f64()*1000.0,"points":SMALL_NATIVE_POPULATION,"learned_query_delta":after.1-before.1,"fallback_delta":after.2-before.2,"sample_query":63,"sample_result_count":reopened_hits.len()});
+    summary["reopen"] = reopen_record;
+    std::fs::write(
+        output.join("summary.json"),
+        serde_json::to_vec_pretty(&summary).unwrap(),
+    )
+    .unwrap();
+    reopened.stop_gracefully().await;
+}
+
+fn dli_65k_query_vector(bytes: &[u8], query: usize) -> Vec<f32> {
+    let begin = query * DIMENSIONS * 4;
+    bytes[begin..begin + DIMENSIONS * 4]
+        .chunks_exact(4)
+        .map(|v| f32::from_le_bytes(v.try_into().unwrap()))
+        .collect()
+}
+
+fn assert_native_scores_match_oracle(
+    hits: &[serde_json::Value],
+    gold_ids: &[u64],
+    gold_scores: &[f64],
+    query: usize,
+) {
+    let ids = &gold_ids[query * 30..(query + 1) * 30];
+    let scores = &gold_scores[query * 30..(query + 1) * 30];
+    for hit in hits {
+        let id = hit["id"].as_u64().unwrap();
+        if let Some(rank) = ids.iter().position(|candidate| *candidate == id) {
+            let actual = hit["score"].as_f64().unwrap();
+            assert!(
+                (actual - scores[rank]).abs() < 2e-3,
+                "native cosine score differs from independent Float16 oracle: query={query}, id={id}, native={actual}, oracle={}",
+                scores[rank]
+            );
+        }
+    }
+}
+
+async fn run_65k_query(
+    collection: &Collection,
+    query_data: &[u8],
+    query: usize,
+    limit: usize,
+) -> Vec<serde_json::Value> {
+    let result = collection
+        .search(
+            CoreSearchRequest {
+                query: QueryEnum::Nearest(NamedQuery::default_dense(dli_65k_query_vector(
+                    query_data, query,
+                ))),
+                filter: None,
+                params: None,
+                limit,
+                offset: 0,
+                with_payload: None,
+                with_vector: None,
+                score_threshold: None,
+            },
+            None,
+            None,
+            &ShardSelectorInternal::All,
+            None,
+        )
+        .await
+        .unwrap();
+    result.into_iter().map(|hit| serde_json::json!({
+        "id": match hit.id { segment::types::ExtendedPointId::NumId(id) => id, _ => panic!("numeric IDs expected") },
+        "score": hit.score,
+        "version": hit.version,
+    })).collect()
 }
