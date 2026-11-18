@@ -121,3 +121,55 @@ Every effect points the same way. These are 1M offline coverage results. Tier 2 
 - 1M prefix of the corpus.
 - No latency in this tier.
 - The routing cap in D3 is a preregistered design choice that favours moderate B. A coarse quantizer (for example HNSW over centroids) would relax it, but that is out of scope here.
+
+## Tier 2: 10M offline confirmation on MetaCentrum
+
+**Status:** complete, 2026-11-18.
+
+**Jobs.** All exited 0, wrote `COMPLETE.json`, and verified their checksums. The `job.log` mismatch is the known pattern: its final line is appended after `SHA256SUMS`, and the prefix hash matches.
+
+| Job | Node | Wall time | CPU-hours |
+|---|---|---|---|
+| 25718516 (F1) | alfrid3 | 12 min | 2.5 |
+| 25718517 (F2+F3) | tyra17 | 1 h 26 min | 21.1 |
+| 25718522 (F4) | adan4 | 1 h 04 min | 10.7 |
+
+**Evidence**
+- Local copy: `hpc-tier2/` (read-only).
+- Remote: `static-lmi-ivf-20261118/results/T2-*`.
+- Analysis: `analysis/tier2-{val,test}.{json,txt}`.
+- Code: frozen at commit `1641abb22` (`code.tar`, sha256 in `code.tar.sha256`).
+- Corpus: the full 10,120,191 Float16 vectors, staged to `$SCRATCHDIR` and re-hashed.
+- Oracle: official SISAP23 top-30 (coverage recall). 2,000 validation and 2,000 test queries.
+
+**Test results.** Work needed to reach R@10 = 0.95: scored vectors, routing vector-equivalents, and their total. Validation gives the same ordering; validation-locked points reach test R@10 of 0.948–0.954.
+
+| Configuration | Scored [95% CI] | Routing | Total | R@30 = 0.90 scored |
+|---|---|---|---|---|
+| **IVF, B 8,192, converged teacher (F2)** | **29,332** [26,172, 32,326] | 8,192 | **37,524** | 16,571 |
+| Linear router, B 8,192 (F4) | 42,231 [37,652, 47,535] | 8,192 | 50,423 | 22,848 |
+| LMI, B 8,192, converged teacher (F3) | 49,236 [43,408, 55,281] | 5,973 | 55,209 | 25,567 |
+| IVF, B 3,162, native teacher | 58,537 [52,459, 65,044] | 3,162 | 61,699 | 33,036 |
+| **Native LMI (accepted configuration, B 3,162)** | 85,949 [75,422, 96,969] | 2,620 | 88,569 | 45,939 |
+
+**Paired ratios, IVF over LMI with the same teacher and B**
+
+| B | R@10 | R@30 |
+|---|---|---|
+| 3,162 | 0.681 [0.633, 0.741] | 0.719 [0.685, 0.756] |
+| 8,192 | 0.596 [0.550, 0.642] | 0.648 [0.620, 0.681] |
+
+The router effect at a fixed partition (centroid over MLP) is 0.83 at B = 3,162 and 0.74 at B = 8,192. The partition effect at a fixed centroid router is 0.82 and 0.80.
+
+**MLP versus Voronoi agreement over all 10M points:** 0.773 at B = 3,162 and 0.764 at B = 8,192. The MLP fits its training sample at 0.994 and 0.997.
+
+**Linear router (F4).** It beats the MLP. On its own partition, centroid routing is slightly worse than the linear router (ratio 1.06 [1.00, 1.12]). It still needs 35% more total work than F2.
+
+**Construction (lab, 16 cores):**
+
+| Configuration | Teacher | MLP training | Assignment over 10M |
+|---|---|---|---|
+| F2+F3 (B 8,192, S 524K) | 188 s | 4,446 s | 159 s centroid / 225 s MLP |
+| F1 (B 3,162, S 250K) | 13 s | 471 s | — |
+
+**Promotion (Tier 2 rule).** F2, IVF B 8,192 with the converged teacher (S 524,288, 20 iterations), goes to Tier 3 together with the native LMI baseline. On these offline coverage measurements it needs about **58% less total work** than the accepted native LMI at R@10 = 0.95.
