@@ -460,3 +460,36 @@ Remaining risks:
 - Smoke 25677616 reached COMPLETE: offline vendored build in 7 min 56 s on an EPYC 9474F, 6/6 regressions, binary sha256 `4b3d5bf5…`.
 - Ingestion harness validated on the current source at 1M (`continuation-44/ingest-1m-validation`: 380 s, 4 publications). The full ingest → static → frontier → analysis chain was rehearsed at 1M (`frontier-1m-chain`).
 - Preregistered H-10M job **25677858** submitted at 21:12:49 CET and **queued** (`q_1d`), not running at handoff. See `hpc-bundle-20261117/H10M_PREREGISTRATION.md` and `HANDOFF_25677858.md`.
+
+## Continuation45 — H-10M results analysis (Claude Code, 2026-11-18, read-only)
+
+**Job and copy.** Job 25677858 finished in state F with exit 0: 71 min on `alfrid1`, `cput` 1:26:34. Smoke 25677616 also exited 0.
+- Raw outputs were copied byte-for-byte to `hpc-results-25677858/` (read-only, `hpc-results-25677858.SHA256SUMS`).
+- All 19 job checksums verify. `job.log` differs only by its final line, which is appended after `SHA256SUMS` is written.
+- Source `072be2e0c` was verified by the in-job `rev-parse` guard. The binary (`09224072…`) differs from smoke's because of different scratch paths (likely cause).
+
+**Completeness.** All 8,064 rows are present (288 queries × 4 policies × 7 budgets), with no duplicates and 0 invariant violations.
+
+**H-10M: SUPPORTED** (`selection_frontier/TEN_MILLION_VECTOR_ANALYSIS.md`).
+
+| Policy | W(R@30 = 0.90) | Static saving |
+|---|---|---|
+| static | 166K | — |
+| slot | 305K | 45.4% [32.3, 50.9] |
+| proportional | 285K | 41.7% [30.4, 47.4] |
+| tdensity2 | 217K | 23.3% [7.2, 34.0] |
+
+- No crossing.
+- The direction holds without interpolation; the magnitude depends on the 2× budget grid.
+
+**Mechanism.**
+- Proportional equals static at equal budget, plus exactly 120,191 Plain vectors.
+- Slot selects the Plain buffer (priority 1.0) from 40K, which gives a mid-range plateau.
+- Learned levels match static at equal learned work.
+- Router ranking (about 3× over the oracle) is shared by static.
+
+**65K reinterpretation.** The same corrected analysis on continuation42 gives the same Plain-dominated decomposition. The report has an addendum. `analyze_frontier.py` clamping bias is documented: at 10M it credits proportional with 150K-work recall at 20K–80K.
+
+**Resources.** The reported 7% CPU is `cpupercent` 118 over 16 cores. The measurement phases are serial by design: `tch::set_num_threads(1)`, one native job at a time, serial replay. Peak RSS 47.3 GB; PBS mem 76.6 GiB (likely includes page cache); no memory events.
+
+**No jobs submitted, no implementation changes.**

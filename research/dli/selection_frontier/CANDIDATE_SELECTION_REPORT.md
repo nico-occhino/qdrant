@@ -103,3 +103,18 @@ The run completed in 182 s with 11.9 GB RSS. Local timing is meaningless: 283K m
 - The 10M Plain buffer is about 125K vectors, which `proportional` scores on every query.
 
 This motivated the preregistered H-10M HPC job: `hpc-bundle-20261117/dli-10m-frontier.pbs`.
+
+## Addendum 2026-11-18: reinterpretation after the 10M analysis
+
+The analysis of H-10M job 25677858 ([TEN_MILLION_VECTOR_ANALYSIS.md](TEN_MILLION_VECTOR_ANALYSIS.md)) re-ran this 65K data with a corrected script, `ten_million/analyze_10m.py`, which uses mean-curve interpolation without extrapolation and pairs every comparison. The original text above is kept unchanged.
+
+**Conclusion 1 stands.** Static needs 39.5% [33.0, 46.0] less work than slot at R@30 0.90, and 28.5% [20.0, 35.7] less at 0.95.
+
+**Conclusions 2–3 are revised.**
+- Router ranking is far from the oracle for static too: 5.1× ranked/oracle at top-10, versus 3.5× for DLI. It is therefore not the source of the static–DLI gap.
+- The 1.8× "allocation" figure divided a covered-queries-only mean by an all-queries mean.
+- At equal budget, `proportional` matches static recall to within 0.008, and its extra work is exactly the 1,536-vector Plain buffer. A Plain / (W_static + Plain) model predicts a 34.9% saving against the observed 32.7%.
+
+**What explains the gap.** The DLI penalty here is the exhaustively scored Plain buffer, plus, for `slot`, when its fixed priority 1.0 selects it. The independently trained level models are not a measurable source of it.
+
+**Method caveat.** `analyze_frontier.py` clamps per-query interpolation below the measured range, which assigns higher-work recall to lower work. At 65K the effect is small. At 10M it is large: see §5.2 of the 10M report.

@@ -207,3 +207,10 @@ Continuation42–44 (`--locked --offline`, features `testing,lmi-training,dli-re
 - **Collection, dev:** `dli_`, `native_exact`, `destination_quantization`, `lmi_lifecycle`, `worker_lifecycle` — 35 PASS / 0 FAIL / 9 ignored (`collection-suite-f12.log`); `local_shard` 18 PASS. Includes the F7 runtime-update rejection and an unchanged `config.json`.
 - **Concurrent workload** (ignored test, perf): readers 1/4/8 × 1,500 operations, all PASS, 0 violations, graceful reopen 16/16 learned (`continuation-43/workload/`). F12 fix verified 3/3 without a test-side flush.
 - **Selection frontier** (ignored, perf): 65K, 320 queries × 11 budgets × 6 configurations, PASS in 166 s (`continuation-42/frontier-run.log`). 10M harness validation PASS (`frontier-10m-validation.log`).
+
+Continuation45 (H-10M analysis, no new runs):
+- PBS 25677858 (`dli-10m-frontier`, `072be2e0c`, binary `09224072…`, perf profile, features `testing,lmi-training,dli-research`):
+  - ingestion `sisap23_scaling_static_lmi_vs_temporal_dli` exit 0, 40 publications;
+  - `dli_65k_selection_frontier` 1 PASS (1,079 s), 8,064 rows complete.
+- `analyze_10m.py` integrity checks: 0 violations on 10M and 65K data.
+- Not run: HNSW, A2, latency, Collection search, replicates.

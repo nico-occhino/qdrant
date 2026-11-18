@@ -53,3 +53,18 @@ Continuation38: generated exact65K pool oracle for32 previously used diagnostic 
    - Concurrent visibility verified for the Tier A fixture.
    - Crash-restart rebuild and F8 contention at scale remain open.
 4. **10M.** A preregistered, bounded negative-scaling study (H-10M: static versus DLI selection efficiency at 10M, A0 scorer, HNSW and A2 excluded) is justified. It is gated on the HPC smoke job passing.
+
+## Continuation45 decision — after H-10M
+
+1. **H-10M supported.** Static LMI needs 45% less work than slot (CI 32–51%) and 42% less than proportional (30–47%) to reach test R@30 = 0.90 at 10.12M. Curves do not cross. Single replicate; the magnitude depends on interpolation.
+2. **Revised diagnosis (10M and re-analysed 65K).**
+   - The static–DLI selection gap is accounted for by the exhaustively scored Plain buffer and slot's fixed buffer priority.
+   - It is not accounted for by independent level models: proportional ≈ static at equal learned work.
+   - Router ranking overhead is common to both indexes.
+   - The 65K "router ranking + 1.8× allocation" interpretation is superseded.
+3. **Next gate (proposed, not started).**
+   - Offline replay of Plain-handling interventions on 65K, then the retained 10M topology: cost-aware Plain priority, provisional Plain partitioning, smaller buffer.
+   - A buffer-fill sweep.
+   - ≥ 3 replicates in one 16-core job, which fits the measured 1.2 h, 80 GB footprint.
+   - A finer budget grid near the target.
+4. **Unchanged.** `slot` stays the default and T=2 experimental. No HNSW, A2 or latency claims at 10M. Request walltime ≈ 4 h, not 24 h.
