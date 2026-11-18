@@ -121,10 +121,14 @@ impl LmiStateMetadata {
                 "LMI persisted router/postings dimensions mismatch",
             ));
         }
-        if !matches!(router.layers.as_slice(),
+        // Two accepted architectures: the trained MLP (Linear, ReLU, Linear with the configured
+        // hidden width) and the single-Linear exact centroid router built under
+        // `LMI_RESEARCH_ROUTER=centroid` (input and output dimensions are checked above).
+        let mlp = matches!(router.layers.as_slice(),
             [super::RouterLayer::Linear(first), super::RouterLayer::ReLU, super::RouterLayer::Linear(last)]
-            if first.out_features == config.hidden_dim && last.in_features == config.hidden_dim)
-        {
+            if first.out_features == config.hidden_dim && last.in_features == config.hidden_dim);
+        let centroid = matches!(router.layers.as_slice(), [super::RouterLayer::Linear(_)]);
+        if !(mlp || centroid) {
             return Err(OperationError::service_error(
                 "LMI persisted MLP architecture mismatch",
             ));

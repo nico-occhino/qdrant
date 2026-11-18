@@ -20,13 +20,21 @@ fn torch_error(err: tch::TchError) -> OperationError {
 pub(super) struct TrainedRouter {
     pub(super) native: MlpRouter,
     first: nn::Linear,
-    last: nn::Linear,
+    /// `None` for the single-layer exact spherical-centroid router (research IVF).
+    last: Option<nn::Linear>,
     _store: nn::VarStore,
     input_dim: usize,
     bucket_count: usize,
 }
 
 impl TrainedRouter {
+    fn logits(&self, x: &Tensor) -> Tensor {
+        tch::no_grad(|| match &self.last {
+            Some(last) => last.forward(&self.first.forward(x).relu()),
+            None => self.first.forward(x),
+        })
+    }
+
     #[cfg(test)]
     pub(super) fn from_native_for_test(native: MlpRouter) -> OperationResult<Self> {
         let [
@@ -89,7 +97,7 @@ impl TrainedRouter {
         Ok(Self {
             native,
             first,
-            last,
+            last: Some(last),
             _store: store,
             input_dim,
             bucket_count,
@@ -111,7 +119,7 @@ impl TrainedRouter {
         let x = Tensor::f_from_slice(inputs)
             .and_then(|t| t.f_reshape([rows as i64, self.input_dim as i64]))
             .map_err(torch_error)?;
-        let logits = tch::no_grad(|| self.last.forward(&self.first.forward(&x).relu()));
+        let logits = self.logits(&x);
         let ids = Vec::<i64>::try_from(logits.argmax(-1, false)).map_err(torch_error)?;
         let ids = ids.into_iter().map(|v| v as usize).collect();
         let values =
@@ -141,7 +149,7 @@ impl TrainedRouter {
         let x = Tensor::f_from_slice(inputs)
             .and_then(|t| t.f_reshape([rows as i64, dim as i64]))
             .map_err(torch_error)?;
-        let logits = tch::no_grad(|| self.last.forward(&self.first.forward(&x).relu()));
+        let logits = self.logits(&x);
         if logits.size() != [rows as i64, buckets as i64]
             || logits.isfinite().all().int64_value(&[]) == 0
         {
@@ -204,7 +212,7 @@ impl TrainedRouter {
         let x = Tensor::f_from_slice(inputs)
             .and_then(|t| t.f_reshape([rows as i64, dim as i64]))
             .map_err(torch_error)?;
-        let logits = tch::no_grad(|| self.last.forward(&self.first.forward(&x).relu()));
+        let logits = self.logits(&x);
         if logits.size() != [rows as i64, buckets as i64]
             || logits.isfinite().all().int64_value(&[]) == 0
         {
@@ -320,6 +328,90 @@ pub(super) fn train(
     train_with_tch(data, dim, config, distance, stopped).map(|trained| trained.native)
 }
 
+/// Research-only router selection, read once per build from `LMI_RESEARCH_ROUTER`.
+/// Unset (or `mlp`) keeps the trained MLP. `centroid` replaces it with one Linear layer whose
+/// rows are the unit spherical teacher centres and whose bias is zero: logits are `q . c_b`,
+/// so routing ranks buckets exactly by centroid similarity and argmax postings are the
+/// teacher's Voronoi assignment (IVF-Flat). The persisted `LmiConfig` is unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ResearchRouter {
+    Mlp,
+    Centroid,
+}
+
+impl ResearchRouter {
+    fn from_env() -> OperationResult<Self> {
+        match std::env::var("LMI_RESEARCH_ROUTER").as_deref() {
+            Err(_) | Ok("mlp") => Ok(Self::Mlp),
+            Ok("centroid") => Ok(Self::Centroid),
+            Ok(other) => Err(OperationError::service_error(format!(
+                "LMI_RESEARCH_ROUTER must be mlp or centroid, got {other}"
+            ))),
+        }
+    }
+}
+
+/// The only Torch consumer in Qdrant. Set the process-wide inter-op policy once.
+/// Intra-op settings are applied on each builder thread; never exceed one CPU.
+fn torch_thread_policy() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| tch::set_num_interop_threads(1));
+    tch::set_num_threads(1);
+}
+
+/// Exact spherical-centroid router: native single Linear layer and its tch mirror.
+pub(super) fn centroid_router(centers: &[Vec<f64>], dim: usize) -> OperationResult<TrainedRouter> {
+    let bucket_count = centers.len();
+    let mut weights = Vec::with_capacity(bucket_count * dim);
+    for center in centers {
+        if center.len() != dim {
+            return Err(OperationError::service_error(
+                "LMI centroid dimension mismatch",
+            ));
+        }
+        weights.extend(center.iter().map(|&v| v as f32));
+    }
+    let bias = vec![0.0f32; bucket_count];
+    let native = MlpRouter {
+        layers: vec![RouterLayer::Linear(LinearLayer {
+            in_features: dim,
+            out_features: bucket_count,
+            weights: weights.clone(),
+            bias: bias.clone(),
+        })],
+    };
+    native.validate()?;
+    // Same Torch thread policy as the MLP path, which posting assignment relies on.
+    torch_thread_policy();
+    let store = nn::VarStore::new(Device::Cpu);
+    let mut first = nn::linear(
+        &store.root() / "centroids",
+        dim as i64,
+        bucket_count as i64,
+        Default::default(),
+    );
+    tch::no_grad(|| -> Result<(), tch::TchError> {
+        first.ws.f_copy_(
+            &Tensor::f_from_slice(&weights)?.f_reshape([bucket_count as i64, dim as i64])?,
+        )?;
+        first
+            .bs
+            .as_mut()
+            .unwrap()
+            .f_copy_(&Tensor::f_from_slice(&bias)?)?;
+        Ok(())
+    })
+    .map_err(torch_error)?;
+    Ok(TrainedRouter {
+        native,
+        first,
+        last: None,
+        _store: store,
+        input_dim: dim,
+        bucket_count,
+    })
+}
+
 pub(super) fn train_with_tch(
     data: &[f32],
     dim: usize,
@@ -328,7 +420,9 @@ pub(super) fn train_with_tch(
     stopped: &AtomicBool,
 ) -> OperationResult<TrainedRouter> {
     check_process_stopped(stopped)?;
+    let research_router = ResearchRouter::from_env()?;
     let cluster_started = std::time::Instant::now();
+    let mut teacher_centers = None;
     let labels = match distance {
         Distance::Cosine => {
             let (labels, centers, stats) =
@@ -357,6 +451,7 @@ pub(super) fn train_with_tch(
                 stats.sizes.iter().min().copied().unwrap_or(0),
                 stats.sizes.iter().max().copied().unwrap_or(0),
             );
+            teacher_centers = Some(centers);
             labels
         }
         // Preserve the existing teacher for non-cosine fields in this phase.
@@ -365,6 +460,18 @@ pub(super) fn train_with_tch(
         }
     };
     let cluster_seconds = cluster_started.elapsed().as_secs_f64();
+    if research_router == ResearchRouter::Centroid {
+        let centers = teacher_centers.ok_or_else(|| {
+            OperationError::service_error(
+                "LMI centroid router requires the cosine spherical teacher",
+            )
+        })?;
+        log::info!("LMI research router: centroid (IVF), teacher_seconds={cluster_seconds:.6}");
+        super::build::record_profile(serde_json::json!({"stage":"teacher_and_mlp",
+            "router":"centroid","sample":labels.len(),"dimensions":dim,
+            "buckets":config.n_buckets,"cluster_seconds":cluster_seconds,"mlp_export_seconds":0.0}));
+        return centroid_router(&centers, dim);
+    }
     let mlp_started = std::time::Instant::now();
     let trained = train_labeled_with_tch(data, &labels, dim, config, stopped, None)?;
     let mlp_seconds = mlp_started.elapsed().as_secs_f64();
@@ -410,11 +517,7 @@ fn train_labeled_with_tch(
     mut observer: Option<&mut dyn FnMut(usize, f64, f64, f64)>,
 ) -> OperationResult<TrainedRouter> {
     check_process_stopped(stopped)?;
-    // The only Torch consumer in Qdrant. Set the process-wide inter-op policy once.
-    // Intra-op settings are applied on each builder thread; never exceed one CPU.
-    static INIT: Once = Once::new();
-    INIT.call_once(|| tch::set_num_interop_threads(1));
-    tch::set_num_threads(1);
+    torch_thread_policy();
     let initialization_started = std::time::Instant::now();
     let store = nn::VarStore::new(Device::Cpu);
     let options = nn::LinearConfig {
@@ -551,7 +654,7 @@ fn train_labeled_with_tch(
     Ok(TrainedRouter {
         native: router,
         first,
-        last,
+        last: Some(last),
         _store: store,
         input_dim: dim,
         bucket_count: config.n_buckets,
@@ -561,6 +664,42 @@ fn train_labeled_with_tch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn centroid_router_ranks_by_centroid_similarity_and_assigns_voronoi_cells() {
+        // Three unit centres in 3-D; logits must be exact dot products and the batch
+        // (tch) assignment must equal the native argmax with the smaller-ID tie rule.
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let centers = vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0], vec![s, s, 0.0]];
+        let trained = centroid_router(&centers, 3).unwrap();
+        assert_eq!(trained.native.layers.len(), 1);
+        let rows: [[f32; 3]; 4] = [
+            [1.0, 0.1, 0.0],
+            [0.1, 1.0, 0.0],
+            [0.7, 0.7, 0.1],
+            [0.0, 0.0, 1.0],
+        ];
+        for row in &rows {
+            let logits = trained.native.forward(row).unwrap();
+            for (b, c) in centers.iter().enumerate() {
+                let dot: f32 = row.iter().zip(c).map(|(&x, &y)| x * y as f32).sum();
+                assert!((logits[b] - dot).abs() < 1e-6);
+            }
+        }
+        let flat: Vec<f32> = rows.iter().flatten().copied().collect();
+        let stopped = AtomicBool::new(false);
+        let mut native =
+            super::super::routing::BuildRouter::new(&trained.native, &stopped).unwrap();
+        let (assigned, _) = trained
+            .top_buckets_tie_safe(&flat, &stopped, &mut native)
+            .unwrap();
+        // Row 3 ties all centres at 0: the smaller bucket ID wins.
+        assert_eq!(assigned, vec![0, 1, 2, 0]);
+        assert_eq!(
+            trained.native.top_buckets(&rows[2], 3).unwrap(),
+            vec![2, 0, 1]
+        );
+    }
 
     #[test]
     fn trained_export_has_finite_weights_and_torch_native_logits_agree() {
