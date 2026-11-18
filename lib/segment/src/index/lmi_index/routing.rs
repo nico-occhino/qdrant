@@ -6,6 +6,8 @@ use common::types::PointOffsetType;
 use super::CompactPostings;
 use crate::common::operation_error::{OperationError, OperationResult, check_process_stopped};
 use crate::data_types::vectors::{QueryVector, VectorInternal};
+use crate::spaces::metric::Metric;
+use crate::spaces::simple::DotProductMetric;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LinearLayer {
@@ -82,6 +84,41 @@ impl MlpRouter {
         Ok((first.in_features, dim))
     }
 
+    /// Dimension-only check for the per-query path. The full `validate` (including the
+    /// finite-parameter scan) runs when a router is built or loaded. Per query, a non-finite
+    /// parameter still surfaces through the per-output finiteness check in
+    /// `forward_validated`: NaN or infinity always propagates into that output's sum.
+    fn shapes(&self) -> OperationResult<(usize, usize)> {
+        let Some(RouterLayer::Linear(first)) = self.layers.first() else {
+            return Err(OperationError::service_error(
+                "LMI router must start with Linear",
+            ));
+        };
+        if !matches!(self.layers.last(), Some(RouterLayer::Linear(_))) {
+            return Err(OperationError::service_error(
+                "LMI router must end with Linear logits",
+            ));
+        }
+        let mut dim = first.in_features;
+        for layer in &self.layers {
+            if let RouterLayer::Linear(linear) = layer {
+                if linear.in_features == 0
+                    || linear.out_features == 0
+                    || linear.in_features != dim
+                    || Some(linear.weights.len())
+                        != linear.in_features.checked_mul(linear.out_features)
+                    || linear.bias.len() != linear.out_features
+                {
+                    return Err(OperationError::service_error(
+                        "LMI router has zero or incompatible layer dimensions",
+                    ));
+                }
+                dim = linear.out_features;
+            }
+        }
+        Ok((first.in_features, dim))
+    }
+
     pub fn output_dim(&self) -> OperationResult<usize> {
         self.validate().map(|(_, output)| output)
     }
@@ -92,7 +129,7 @@ impl MlpRouter {
 
     fn forward_with_stop(&self, query: &[f32], stopped: &AtomicBool) -> OperationResult<Vec<f32>> {
         check_process_stopped(stopped)?;
-        let (input_dim, _) = self.validate()?;
+        let (input_dim, _) = self.shapes()?;
         self.forward_validated(query, input_dim, stopped)
     }
 
@@ -119,10 +156,8 @@ impl MlpRouter {
                         .zip(&linear.bias)
                     {
                         check_process_stopped(stopped)?;
-                        let mut sum = bias;
-                        for (&weight, &value) in row.iter().zip(&values) {
-                            sum += weight * value;
-                        }
+                        // SIMD dot product (the kernel the spherical teacher assignment uses).
+                        let sum = bias + DotProductMetric::similarity(row, &values);
                         // Check before ReLU so it cannot hide NaNs or -infinity.
                         if !sum.is_finite() {
                             return Err(OperationError::service_error(
@@ -150,24 +185,14 @@ impl MlpRouter {
         stopped: &AtomicBool,
     ) -> OperationResult<Vec<usize>> {
         check_process_stopped(stopped)?;
-        let count = self.output_dim()?;
+        let (_, count) = self.shapes()?;
         if nprobe == 0 || nprobe > count {
             return Err(OperationError::service_error(format!(
                 "LMI nprobe must be in 1..={count}, got {nprobe}"
             )));
         }
         let logits = self.forward_with_stop(query, stopped)?;
-        let mut bucket_ids: Vec<usize> = (0..count).collect();
-        // Finite logits suffice: softmax preserves order. Equal logits (including
-        // signed zero) prefer the smaller bucket ID; tch need not share that tie rule.
-        bucket_ids.sort_by(|&a, &b| {
-            if logits[a] == logits[b] {
-                a.cmp(&b)
-            } else {
-                logits[b].total_cmp(&logits[a])
-            }
-        });
-        bucket_ids.truncate(nprobe);
+        let bucket_ids = top_ids(&logits, nprobe);
         check_process_stopped(stopped)?;
         Ok(bucket_ids)
     }
@@ -198,15 +223,7 @@ impl MlpRouter {
         let logits = self.forward_validated(query, forward_input_dim, stopped)?;
         let inference_ns = tick.elapsed().as_nanos() as u64;
         let tick = Instant::now();
-        let mut ids: Vec<usize> = (0..count).collect();
-        ids.sort_by(|&a, &b| {
-            if logits[a] == logits[b] {
-                a.cmp(&b)
-            } else {
-                logits[b].total_cmp(&logits[a])
-            }
-        });
-        ids.truncate(nprobe);
+        let ids = top_ids(&logits, nprobe);
         check_process_stopped(stopped)?;
         Ok((
             ids,
@@ -215,6 +232,26 @@ impl MlpRouter {
             tick.elapsed().as_nanos() as u64,
         ))
     }
+}
+
+/// The `nprobe` best bucket IDs in rank order: descending logit; equal logits (including
+/// signed zero) prefer the smaller ID. The comparator is a total order, so the result equals
+/// a full sort truncated to `nprobe`, in O(B + nprobe log nprobe) instead of O(B log B).
+fn top_ids(logits: &[f32], nprobe: usize) -> Vec<usize> {
+    let cmp = |a: &usize, b: &usize| {
+        if logits[*a] == logits[*b] {
+            a.cmp(b)
+        } else {
+            logits[*b].total_cmp(&logits[*a])
+        }
+    };
+    let mut ids: Vec<usize> = (0..logits.len()).collect();
+    if nprobe < ids.len() {
+        ids.select_nth_unstable_by(nprobe - 1, cmp);
+        ids.truncate(nprobe);
+    }
+    ids.sort_unstable_by(cmp);
+    ids
 }
 
 // ============================================================
@@ -684,6 +721,116 @@ mod build_router_tests {
 
     use super::*;
     use crate::types::Distance;
+
+    /// The pre-optimization query path: full finite validation, scalar forward, full sort.
+    fn reference_top_buckets(router: &MlpRouter, query: &[f32], nprobe: usize) -> (Vec<usize>, Vec<f32>) {
+        router.validate().unwrap();
+        let mut values = query.to_vec();
+        for layer in &router.layers {
+            match layer {
+                RouterLayer::Linear(l) => {
+                    values = l
+                        .weights
+                        .chunks_exact(l.in_features)
+                        .zip(&l.bias)
+                        .map(|(row, &b)| {
+                            let mut s = b;
+                            for (&w, &v) in row.iter().zip(&values) {
+                                s += w * v;
+                            }
+                            s
+                        })
+                        .collect();
+                }
+                RouterLayer::ReLU => values.iter_mut().for_each(|v| *v = v.max(0.0)),
+            }
+        }
+        let mut ids: Vec<usize> = (0..values.len()).collect();
+        ids.sort_by(|&a, &b| {
+            if values[a] == values[b] {
+                a.cmp(&b)
+            } else {
+                values[b].total_cmp(&values[a])
+            }
+        });
+        ids.truncate(nprobe);
+        (ids, values)
+    }
+
+    #[test]
+    fn top_ids_equals_full_sort_including_ties_and_signed_zero() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+        for len in [1usize, 2, 3, 17, 548, 3162] {
+            for _ in 0..20 {
+                // Coarse values force many exact ties; include +0.0 and -0.0.
+                let logits: Vec<f32> = (0..len)
+                    .map(|_| match rng.random_range(0..10) {
+                        0 => 0.0,
+                        1 => -0.0,
+                        _ => rng.random_range(-4i32..4) as f32 * 0.5,
+                    })
+                    .collect();
+                for nprobe in [1, len.div_ceil(3), len] {
+                    let mut full: Vec<usize> = (0..len).collect();
+                    full.sort_by(|&a, &b| {
+                        if logits[a] == logits[b] {
+                            a.cmp(&b)
+                        } else {
+                            logits[b].total_cmp(&logits[a])
+                        }
+                    });
+                    full.truncate(nprobe);
+                    assert_eq!(top_ids(&logits, nprobe), full, "len={len} nprobe={nprobe}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn optimized_query_routing_matches_reference_up_to_summation_order() {
+        // MLP (768 -> 64 -> 548) and single-layer centroid routers (768 -> 1024).
+        let mut rng = rand::rngs::StdRng::seed_from_u64(11);
+        let linear = |i: usize, o: usize, rng: &mut rand::rngs::StdRng| {
+            RouterLayer::Linear(LinearLayer {
+                in_features: i,
+                out_features: o,
+                weights: (0..i * o).map(|_| rng.random_range(-0.05f32..0.05)).collect(),
+                bias: (0..o).map(|_| rng.random_range(-0.05f32..0.05)).collect(),
+            })
+        };
+        let routers = [
+            MlpRouter { layers: vec![linear(768, 64, &mut rng), RouterLayer::ReLU, linear(64, 548, &mut rng)] },
+            MlpRouter { layers: vec![linear(768, 1024, &mut rng)] },
+        ];
+        for router in &routers {
+            let buckets = router.output_dim().unwrap();
+            for _ in 0..50 {
+                let query: Vec<f32> = (0..768).map(|_| rng.random_range(-1f32..1.0)).collect();
+                for nprobe in [1, 8, 64, buckets] {
+                    let actual = router.top_buckets(&query, nprobe).unwrap();
+                    let (expected, logits) = reference_top_buckets(router, &query, nprobe);
+                    assert_eq!(actual.len(), expected.len());
+                    for (a, e) in actual.iter().zip(&expected) {
+                        // Identical except where float summation order swaps a near-tie.
+                        assert!(
+                            a == e || (logits[*a] - logits[*e]).abs() <= 1e-5 * (1.0 + logits[*e].abs()),
+                            "rank differs beyond rounding: {a} vs {e}"
+                        );
+                    }
+                }
+            }
+        }
+        // Per-query errors are unchanged: bad dimensions, nprobe range, non-finite input.
+        assert!(routers[1].top_buckets(&[0.0; 3], 1).is_err());
+        assert!(routers[1].top_buckets(&vec![0.0; 768], 0).is_err());
+        assert!(routers[1].top_buckets(&vec![f32::NAN; 768], 1).is_err());
+        // A non-finite weight still fails the query through the per-output check.
+        let mut bad = routers[1].clone();
+        if let RouterLayer::Linear(l) = &mut bad.layers[0] {
+            l.weights[5] = f32::INFINITY;
+        }
+        assert!(bad.top_buckets(&vec![0.1; 768], 1).is_err());
+    }
 
     #[cfg(feature = "lmi-research")]
     #[test]
