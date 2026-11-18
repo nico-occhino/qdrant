@@ -1,0 +1,110 @@
+#!/bin/bash
+#PBS -N ann-10m-native
+#PBS -l select=1:ncpus=16:mem=96gb:scratch_ssd=200gb:cpu_vendor=amd
+#PBS -l walltime=__WALLTIME__
+#PBS -j oe
+#
+# Tier 3 (preregistered in TIER3_PREREGISTRATION.md): native Qdrant v1.20 index-level
+# latency/throughput for Plain, HNSW (m16/efc100), baseline static LMI and the Tier 2
+# finalists (native IVF via LMI_RESEARCH_ROUTER=centroid). One node, one process at a time,
+# warm protocol, identical queries. Finalists are listed in tier3-configs.tsv
+# (name<TAB>kind<TAB>router<TAB>index-json<TAB>settings).
+set -euo pipefail
+: "${PBS_JOBID:?must run under PBS}"
+: "${SCRATCHDIR:?scratch_ssd allocation required}"
+
+ROOT=/storage/budejovice1/home/nico/lmi-metacentrum/static-lmi-ivf-20261118
+CORPUS=/storage/budejovice1/home/nico/lmi-metacentrum/results/sisap23-matched-final-20261028-01/corpus.f16le
+OUT="$ROOT/results/ann-10m-$PBS_JOBID"
+EXPECTED_COMMIT=__COMMIT__
+declare -A SHA=(
+  [source.bundle]=__BUNDLE_SHA__
+  [vendor.tar]=c35ad341a64547d724b643510d573e901b21d0d74c70bd2f643d2413db813250
+  [corpus]=f5868d6e002a6e73aea47491ee040a70a151406fe9e4552292428e2bfe0616e5
+  [val.queries.f32]=__VAL_SHA__
+  [test.queries.f32]=__TEST_SHA__
+  [tier3-configs.tsv]=__CONFIGS_SHA__
+)
+mkdir "$OUT"
+exec > >(tee "$OUT/job.log") 2>&1
+phase=start
+finish() {
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    printf '{"job":"%s","phase":"%s","exit":%d,"utc":"%s"}\n' "$PBS_JOBID" "$phase" "$rc" "$(date -u +%FT%TZ)" > "$OUT/FAILED.json"
+    for f in "$SCRATCHDIR"/work/ann/*/*.json "$SCRATCHDIR"/work/ann/*/queries.jsonl "$SCRATCHDIR"/work/*.log; do
+      [[ -f "$f" ]] && cp -n "$f" "$OUT/partial-$(basename "$(dirname "$f")")-$(basename "$f")" || true
+    done
+  fi
+  rm -rf "$SCRATCHDIR/work"
+  exit $rc
+}
+trap finish EXIT
+echo "START $(date -u +%FT%TZ) host=$(hostname) job=$PBS_JOBID"
+{ lscpu; free -g; df -h "$SCRATCHDIR"; } > "$OUT/hardware.txt"
+
+phase=verify_inputs
+for f in source.bundle vendor.tar val.queries.f32 test.queries.f32 tier3-configs.tsv; do
+  echo "${SHA[$f]}  $ROOT/$f" | sha256sum -c -
+done
+
+phase=environment
+source /storage/budejovice1/home/nico/lmi-metacentrum/development-search-timeout-24900597-20261026/sisap23-build-environment-v1.sh
+sisap23_export_build_environment
+sisap23_load_build_modules
+sisap23_check_build_environment | tee "$OUT/toolchain.txt"
+
+phase=stage
+git() { command git -c filter.lfs.smudge= -c filter.lfs.clean= -c filter.lfs.process= -c filter.lfs.required=false "$@"; }
+export GIT_LFS_SKIP_SMUDGE=1
+W="$SCRATCHDIR/work"; mkdir -p "$W/data" "$W/ann"
+git clone --quiet --no-checkout "$ROOT/source.bundle" "$W/qdrant"
+git -C "$W/qdrant" checkout --quiet --detach "$EXPECTED_COMMIT"
+test "$(git -C "$W/qdrant" rev-parse HEAD)" = "$EXPECTED_COMMIT"
+test -z "$(git -C "$W/qdrant" status --porcelain)"
+tar -C "$W" -xf "$ROOT/vendor.tar"
+mkdir -p "$W/qdrant/.cargo"
+sed "s|__VENDOR_DIR__|$W/vendor|" "$ROOT/cargo-config.toml" > "$W/qdrant/.cargo/config.toml"
+/usr/bin/time -v cp "$CORPUS" "$W/data/vectors.f16" 2> "$OUT/stage-corpus.time"
+echo "${SHA[corpus]}  $W/data/vectors.f16" | sha256sum -c -
+cp "$ROOT"/{val,test}.queries.f32 "$ROOT/tier3-configs.tsv" "$W/data/"
+
+phase=build_binary
+cd "$W/qdrant"
+export CARGO_TARGET_DIR="$W/target" CARGO_BUILD_JOBS=16
+/usr/bin/time -v cargo test --locked --offline --profile perf -p segment --features testing,lmi-training \
+    --test ann_matched_v120 --no-run > "$OUT/build.stdout" 2> "$OUT/build.stderr"
+BIN=$(ls -t "$W/target/perf/deps"/ann_matched_v120-* | grep -v '\.d$' | head -1)
+sha256sum "$BIN" | tee "$OUT/binary.sha256"
+run() { /usr/bin/time -v "$BIN" --ignored --exact ann_matched_v120 --nocapture; }
+export ANN_ROOT="$W/ann"
+
+phase=source
+ANN_PHASE=source ANN_N=10120191 ANN_CORPUS="$W/data/vectors.f16" run > "$W/source.log" 2>&1
+cp "$W/source.log" "$W/ann/source/source.json" "$OUT/"
+
+# One index at a time: build, search (val then test), copy summaries, delete the index.
+while IFS=$'\t' read -r name kind router index settings; do
+  [[ -z "$name" || "$name" == \#* ]] && continue
+  phase="build_$name"
+  LMI_RESEARCH_ROUTER="$router" ANN_PHASE=build ANN_NAME="$name" ANN_INDEX="$index" run > "$W/build-$name.log" 2>&1
+  mkdir -p "$OUT/$name"; cp "$W/build-$name.log" "$W/ann/build-$name/build.json" "$OUT/$name/"
+  for set in val test; do
+    phase="search_${name}_$set"
+    threads=1; reps=1
+    [[ "$set" == test ]] && { threads=1,4,8,16; reps=3; }
+    ANN_PHASE=search ANN_NAME="$name" ANN_KIND="$kind" ANN_SETTINGS="$settings" ANN_REPS=$reps \
+      ANN_THREADS=$threads ANN_TAG="$set" ANN_QUERIES="$W/data/$set.queries.f32" run > "$W/search-$name-$set.log" 2>&1
+    cp "$W/search-$name-$set.log" "$W/ann/search-$name-$set"/{summary.json,queries.jsonl} "$OUT/$name/"
+    mv "$OUT/$name/summary.json" "$OUT/$name/summary-$set.json"; mv "$OUT/$name/queries.jsonl" "$OUT/$name/queries-$set.jsonl"
+  done
+  rm -rf "$W/ann/build-$name"
+done < "$W/data/tier3-configs.tsv"
+
+phase=persist
+( cd "$OUT" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS )
+( cd "$OUT" && sha256sum -c --quiet SHA256SUMS )
+printf '{"job":"%s","commit":"%s","binary_sha256":"%s","utc":"%s","status":"complete"}\n' \
+  "$PBS_JOBID" "$EXPECTED_COMMIT" "$(cut -d' ' -f1 "$OUT/binary.sha256")" "$(date -u +%FT%TZ)" > "$OUT/COMPLETE.json"
+phase=done
+echo "COMPLETE $(date -u +%FT%TZ)"

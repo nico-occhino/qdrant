@@ -92,6 +92,11 @@ def unit(C):
     return C / np.where(n == 0, 1.0, n)
 
 
+def rows_for(B):
+    """Row chunk keeping a (rows x B) Float32 score block near 1 GiB."""
+    return int(min(100_000, max(4096, (1 << 28) // B)))
+
+
 def kmeans(Xs, B, iters, seed):
     rng = np.random.default_rng(seed + 1)
     order = rng.permutation(len(Xs))
@@ -99,7 +104,7 @@ def kmeans(Xs, B, iters, seed):
     labels = np.full(len(Xs), -1)
     for it in range(iters):
         Cf = C.astype(F32); cn = (Cf * Cf).sum(1)
-        new = np.concatenate([assign(Xs[s:e], Cf, cn) for s, e in chunks(len(Xs), 65536)])
+        new = np.concatenate([assign(Xs[s:e], Cf, cn) for s, e in chunks(len(Xs), rows_for(B))])
         changed = int((new != labels).sum()); labels = new
         sizes = np.bincount(labels, minlength=B)
         nz = sizes > 0
@@ -115,7 +120,7 @@ def kmeans(Xs, B, iters, seed):
         if changed == 0:
             break
     Cf = C.astype(F32); cn = (Cf * Cf).sum(1)
-    final = np.concatenate([assign(Xs[s:e], Cf, cn) for s, e in chunks(len(Xs), 65536)])
+    final = np.concatenate([assign(Xs[s:e], Cf, cn) for s, e in chunks(len(Xs), rows_for(B))])
     return Cf, final
 
 
@@ -212,7 +217,7 @@ def traces(order, labels, sizes, gold, budgets, probes):
     return out
 
 
-def router_order(kind, Q, C, cn, mlp, batch=512):
+def router_order(kind, Q, C, cn, mlp, batch=256):
     orders = []
     for s, e in chunks(len(Q), batch):
         q = Q[s:e]
@@ -267,13 +272,15 @@ def cmd_run(a):
     parts = {}
     for p in a.partition.split(","):
         t0 = time.time(); lab = np.empty(a.n, np.int32)
-        for s, e in chunks(a.n, 100_000):
+        for s, e in chunks(a.n, rows_for(a.B)):
             x = X[s:e].astype(F32)
             lab[s:e] = assign(x, C, cn) if p == "centroid" else np.argmax(mlp.logits(x), axis=1)
         timing[f"assign_{p}_s"] = time.time() - t0
         parts[p] = lab
         if p == "mlp":   # agreement of MLP-assigned postings with the teacher's Voronoi assignment
-            meta["mlp_teacher_agreement_sample"] = float((np.argmax(mlp.logits(Xs), 1) == tl).mean())
+            m = min(len(Xs), 50_000)
+            meta["mlp_teacher_agreement_sample"] = float(np.mean(np.concatenate(
+                [np.argmax(mlp.logits(Xs[s:e]), 1) == tl[s:e] for s, e in chunks(m, rows_for(a.B))])))
     if "mlp" in parts and "centroid" in parts:
         meta["partition_agreement_all"] = float((parts["mlp"] == parts["centroid"]).mean())
     sets = {}

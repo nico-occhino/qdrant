@@ -1,0 +1,77 @@
+#!/bin/bash
+#PBS -j oe
+# Tier 2 / preflight: one offline lab.py configuration over the SISAP23 corpus.
+# Submit with:  qsub -N <name> -l select=1:ncpus=16:mem=<M>gb:scratch_ssd=40gb:cpu_vendor=amd \
+#                    -l walltime=<HH:MM:SS> -v CFG_NAME=<name>,LAB_ARGS="<lab run args>",N=<rows> lab-10m.pbs
+# Code is frozen as a git-archive tarball of research/lmi/ivf_ablation at $COMMIT (sha256 checked).
+set -euo pipefail
+: "${PBS_JOBID:?must run under PBS}"; : "${SCRATCHDIR:?scratch_ssd allocation required}"
+: "${CFG_NAME:?}"; : "${LAB_ARGS:?}"; : "${N:?}"
+ROOT=/storage/budejovice1/home/nico/lmi-metacentrum/static-lmi-ivf-20261118
+CORPUS=/storage/budejovice1/home/nico/lmi-metacentrum/results/sisap23-matched-final-20261028-01/corpus.f16le
+CORPUS_SHA=f5868d6e002a6e73aea47491ee040a70a151406fe9e4552292428e2bfe0616e5
+PY=/storage/budejovice1/home/nico/lmi-metacentrum/envs/py312-torch251/bin/python
+OUT="$ROOT/results/$CFG_NAME-$PBS_JOBID"
+mkdir "$OUT"                                   # never reuse a result directory
+exec > >(tee "$OUT/job.log") 2>&1
+phase=start
+finish() {
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    printf '{"job":"%s","config":"%s","phase":"%s","exit":%d,"utc":"%s"}\n' "$PBS_JOBID" "$CFG_NAME" "$phase" "$rc" "$(date -u +%FT%TZ)" > "$OUT/FAILED.json"
+    [[ -d "$SCRATCHDIR/run" ]] && cp -rn "$SCRATCHDIR/run" "$OUT/partial-run" 2>/dev/null || true
+  fi
+  rm -rf "$SCRATCHDIR/run" "$SCRATCHDIR/data" "$SCRATCHDIR/code"
+  exit $rc
+}
+trap finish EXIT
+echo "START $(date -u +%FT%TZ) host=$(hostname) job=$PBS_JOBID config=$CFG_NAME N=$N"
+echo "LAB_ARGS=$LAB_ARGS"
+{ lscpu; free -g; df -h "$SCRATCHDIR"; } > "$OUT/hardware.txt"
+NCPU=${PBS_NCPUS:-$(nproc)}
+export OMP_NUM_THREADS=$NCPU OPENBLAS_NUM_THREADS=$NCPU MKL_NUM_THREADS=$NCPU NUMEXPR_NUM_THREADS=$NCPU
+
+phase=verify_inputs
+( cd "$ROOT" && sha256sum -c inputs.sha256 )
+COMMIT=$(cat "$ROOT/code.commit")
+$PY -c "import sys,numpy;print('python',sys.version.split()[0],'numpy',numpy.__version__);numpy.show_config()" > "$OUT/toolchain.txt" 2>&1
+cat "$ROOT/code.commit" "$ROOT/code.tar.sha256" >> "$OUT/toolchain.txt"
+
+phase=stage
+mkdir -p "$SCRATCHDIR/code" "$SCRATCHDIR/data" "$SCRATCHDIR/run"
+tar -C "$SCRATCHDIR/code" -xf "$ROOT/code.tar"
+cp -r "$ROOT/gold-10m" "$ROOT/gold-1m" "$SCRATCHDIR/data/"
+if [[ "$N" -le 1000000 ]]; then          # preflight: only the first N rows are needed
+  head -c $((N * 1536)) "$CORPUS" > "$SCRATCHDIR/data/vectors.f16"
+else
+  /usr/bin/time -v cp "$CORPUS" "$SCRATCHDIR/data/vectors.f16" 2> "$OUT/stage-corpus.time"
+  echo "$CORPUS_SHA  $SCRATCHDIR/data/vectors.f16" | sha256sum -c -
+fi
+GOLD=$([[ "$N" -le 1000000 ]] && echo gold-1m || echo gold-10m)
+
+phase=run
+L="$SCRATCHDIR/code/research/lmi/ivf_ablation/lab.py"
+/usr/bin/time -v $PY -I "$L" run --vectors "$SCRATCHDIR/data/vectors.f16" --n "$N" \
+  --gold "$SCRATCHDIR/data/$GOLD/val,$SCRATCHDIR/data/$GOLD/test,$SCRATCHDIR/data/$GOLD/bridge" \
+  --cache "$SCRATCHDIR/run/cache" --out "$SCRATCHDIR/run/$CFG_NAME" $LAB_ARGS > "$OUT/lab.log" 2>&1
+
+phase=validate
+$PY -I - "$SCRATCHDIR/run/$CFG_NAME" <<'EOF'
+import json, sys, glob, numpy as np
+d = sys.argv[1]; m = json.load(open(f"{d}/meta.json")); tr = sorted(glob.glob(f"{d}/trace-*.npz"))
+assert tr, "no traces"
+for f in tr:
+    z = np.load(f); nq = z["b_work"].shape[0]
+    assert z["b_r30"].max() <= 30 and z["b_r10"].max() <= 10 and (np.diff(z["b_work"], axis=1) >= 0).all(), f
+    assert nq in (2000, 256), f
+print("VALID", len(tr), "traces", m["stats"])
+EOF
+
+phase=persist
+cp -r "$SCRATCHDIR/run/$CFG_NAME" "$OUT/result"
+cp -r "$SCRATCHDIR/run/cache" "$OUT/model-cache"           # teacher centres / MLP weights (reusable)
+( cd "$OUT" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS )
+( cd "$OUT" && sha256sum -c --quiet SHA256SUMS )
+printf '{"job":"%s","config":"%s","commit":"%s","utc":"%s","status":"complete"}\n' "$PBS_JOBID" "$CFG_NAME" "$COMMIT" "$(date -u +%FT%TZ)" > "$OUT/COMPLETE.json"
+phase=done
+echo "COMPLETE $(date -u +%FT%TZ)"
