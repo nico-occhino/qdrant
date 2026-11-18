@@ -78,6 +78,8 @@ BIN=$(ls -t "$W/target/perf/deps"/ann_matched_v120-* | grep -v '\.d$' | head -1)
 sha256sum "$BIN" | tee "$OUT/binary.sha256"
 run() { /usr/bin/time -v "$BIN" --ignored --exact ann_matched_v120 --nocapture; }
 export ANN_ROOT="$W/ann"
+# Native large-sample opt-in (build_plan.rs): 2 GB covers S=524,288 x 768 x 4 B = 1.61 GB.
+export QDRANT_LMI_SAMPLE_BUDGET_BYTES=2000000000
 
 phase=source
 ANN_PHASE=source ANN_N=10120191 ANN_CORPUS="$W/data/vectors.f16" run > "$W/source.log" 2>&1

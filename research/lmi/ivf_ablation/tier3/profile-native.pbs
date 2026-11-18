@@ -14,10 +14,12 @@
 # Each build is then searched once at a small grid as a native correctness check (val split).
 set -euo pipefail
 : "${PBS_JOBID:?must run under PBS}"; : "${SCRATCHDIR:?scratch_ssd allocation required}"
-ROOT=/storage/budejovice1/home/nico/lmi-metacentrum/static-lmi-ivf-20261118
+ROOT=/storage/budejovice1/home/nico/lmi-metacentrum/static-lmi-ivf-20261118   # results
+IN="${PBS_O_WORKDIR:?}"   # per-revision input directory (qsub is run from it); hash-verified below
+case "$IN" in "$ROOT"/native-*) ;; *) echo "qsub must be run from $ROOT/native-<commit>" >&2; exit 2;; esac
 CORPUS=/storage/budejovice1/home/nico/lmi-metacentrum/results/sisap23-matched-final-20261028-01/corpus.f16le
 OUT="$ROOT/results/native-profile-$PBS_JOBID"
-EXPECTED_COMMIT=$(cat "$ROOT/native.commit")
+EXPECTED_COMMIT=$(cat "$IN/native.commit")
 mkdir "$OUT"
 exec > >(tee "$OUT/job.log") 2>&1
 phase=start
@@ -35,7 +37,7 @@ echo "START $(date -u +%FT%TZ) host=$(hostname) job=$PBS_JOBID commit=$EXPECTED_
 { lscpu; free -g; df -h "$SCRATCHDIR"; } > "$OUT/hardware.txt"
 
 phase=verify_inputs
-( cd "$ROOT" && sha256sum -c native-inputs.sha256 )
+( cd "$IN" && sha256sum -c native-inputs.sha256 )
 
 phase=environment
 source /storage/budejovice1/home/nico/lmi-metacentrum/development-search-timeout-24900597-20261026/sisap23-build-environment-v1.sh
@@ -47,15 +49,15 @@ phase=stage
 git() { command git -c filter.lfs.smudge= -c filter.lfs.clean= -c filter.lfs.process= -c filter.lfs.required=false "$@"; }
 export GIT_LFS_SKIP_SMUDGE=1
 W="$SCRATCHDIR/work"; mkdir -p "$W/data" "$W/ann"
-git clone --quiet --no-checkout "$ROOT/source.bundle" "$W/qdrant"
+git clone --quiet --no-checkout "$IN/source.bundle" "$W/qdrant"
 git -C "$W/qdrant" checkout --quiet --detach "$EXPECTED_COMMIT"
 test "$(git -C "$W/qdrant" rev-parse HEAD)" = "$EXPECTED_COMMIT"
 test -z "$(git -C "$W/qdrant" status --porcelain)"
-tar -C "$W" -xf "$ROOT/vendor.tar"
+tar -C "$W" -xf "$IN/vendor.tar"
 mkdir -p "$W/qdrant/.cargo"
-sed "s|__VENDOR_DIR__|$W/vendor|" "$ROOT/cargo-config.toml" > "$W/qdrant/.cargo/config.toml"
+sed "s|__VENDOR_DIR__|$W/vendor|" "$IN/cargo-config.toml" > "$W/qdrant/.cargo/config.toml"
 head -c $((1000000 * 1536)) "$CORPUS" > "$W/data/vectors.f16"
-cp "$ROOT/val.queries.f32" "$W/data/"
+cp "$IN/val.queries.f32" "$W/data/"
 
 phase=build_binary
 cd "$W/qdrant"
@@ -66,6 +68,8 @@ BIN=$(ls -t "$W/target/perf/deps"/ann_matched_v120-* | grep -v '\.d$' | head -1)
 sha256sum "$BIN" | tee "$OUT/binary.sha256"
 run() { /usr/bin/time -v "$BIN" --ignored --exact ann_matched_v120 --nocapture; }
 export ANN_ROOT="$W/ann"
+# Native large-sample opt-in (build_plan.rs): 2 GB covers S=524,288 x 768 x 4 B = 1.61 GB.
+export QDRANT_LMI_SAMPLE_BUDGET_BYTES=2000000000
 
 phase=source
 ANN_PHASE=source ANN_N=1000000 ANN_CORPUS="$W/data/vectors.f16" run > "$OUT/source.log" 2>&1

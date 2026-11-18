@@ -9,7 +9,10 @@ use crate::utils::mem::Mem;
 const COMPONENT_BUDGET_BYTES: u64 = 128_000_000;
 // The explicit scale gate may opt in to one larger sample component only.
 // The aggregate plan must also leave a substantial measured-memory reserve.
-const MAX_EXPERIMENT_SAMPLE_BYTES: u64 = 1_000_000_000;
+// Ceiling = the largest sample `LmiConfig` admits (1,000,000 rows) at 768 Float32 dimensions,
+// so a validated configuration is never rejected by this gate alone; memory admission still
+// applies.
+const MAX_EXPERIMENT_SAMPLE_BYTES: u64 = 3_072_000_000;
 const EXPERIMENT_HEADROOM_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 fn sample_ceiling() -> OperationResult<u64> {
@@ -20,7 +23,7 @@ fn sample_ceiling() -> OperationResult<u64> {
             })?;
             if !(COMPONENT_BUDGET_BYTES..=MAX_EXPERIMENT_SAMPLE_BYTES).contains(&value) {
                 return Err(OperationError::service_error(
-                    "QDRANT_LMI_SAMPLE_BUDGET_BYTES must be between 128000000 and 1000000000",
+                    "QDRANT_LMI_SAMPLE_BUDGET_BYTES must be between 128000000 and 3072000000",
                 ));
             }
             Ok(value)
