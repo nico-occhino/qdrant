@@ -41,8 +41,13 @@ Written 2026-11-18, after Tier 1 selection and before any Tier 2 run.
 
 | Job | ncpus | mem | scratch | walltime | Dominant cost |
 |---|---|---|---|---|---|
-| T2-F1 | 16 | 48 GB | 40 GB | 6 h | MLP training ≈ 9·10¹³ FLOP; two 10M assignments |
-| T2-F23 | 16 | 48 GB | 40 GB | 12 h | MLP training ≈ 4.3·10¹⁴ FLOP at numpy small-batch efficiency |
-| T2-F4 | 16 | 48 GB | 40 GB | 6 h | Linear training plus assignment |
+| T2-F1 | 16 | 48 GB | 40 GB | 4 h | MLP training ≈ 9·10¹³ FLOP; two 10M assignments |
+| T2-F23 | 16 | 48 GB | 40 GB | 8 h | MLP training ≈ 4.3·10¹⁴ FLOP at numpy small-batch efficiency |
+| T2-F4 | 16 | 48 GB | 40 GB | 4 h | Linear training plus assignment |
 
 **Preflight:** N = 1M, B = 256, native teacher, 2 epochs, 8 CPUs, 16 GB, 45 min. It must reach `COMPLETE.json` before any T2 job is submitted.
+
+**Preflight result.** Job 25718487 (alfrid2, 8 CPUs) reached COMPLETE: 12 valid traces, 57 s wall, 4.2 GB.
+- The remote numpy uses OpenBLAS 0.3.34 (pthreads build).
+- The HPC and local B=256 native teachers agree on 99.994% of labels (max |Δcentre| 0.0018). They are reproducible up to BLAS summation order, not bitwise.
+- Walltimes were reduced to 4/8/4 h from measured Tier 1 throughput before submission.
