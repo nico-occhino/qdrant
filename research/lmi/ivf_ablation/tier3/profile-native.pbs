@@ -1,0 +1,94 @@
+#!/bin/bash
+#PBS -N ann-native-profile
+#PBS -l select=1:ncpus=16:mem=32gb:scratch_ssd=60gb:cpu_vendor=amd
+#PBS -l walltime=06:00:00
+#PBS -j oe
+#
+# Tier 3 gate: profile native build stages before any 10M native allocation.
+# N = 1,000,000 source rows. Teacher and MLP-training cost depend only on (S, B, iterations,
+# epochs), so they equal their 10M cost exactly; posting assignment scales linearly in N.
+# Builds (one at a time, events recorded via QDRANT_LMI_BUILD_EVENTS):
+#   ivf8192  LMI_RESEARCH_ROUTER=centroid  B=8192 S=524288 iters=20   (Tier 2 F2 mapping)
+#   lmi3162  MLP baseline                  B=3162 S=250000 iters=5 H=512 E=30
+#   hnsw     m=16 ef_construct=100, 16 threads
+# Each build is then searched once at a small grid as a native correctness check (val split).
+set -euo pipefail
+: "${PBS_JOBID:?must run under PBS}"; : "${SCRATCHDIR:?scratch_ssd allocation required}"
+ROOT=/storage/budejovice1/home/nico/lmi-metacentrum/static-lmi-ivf-20261118
+CORPUS=/storage/budejovice1/home/nico/lmi-metacentrum/results/sisap23-matched-final-20261028-01/corpus.f16le
+OUT="$ROOT/results/native-profile-$PBS_JOBID"
+EXPECTED_COMMIT=$(cat "$ROOT/native.commit")
+mkdir "$OUT"
+exec > >(tee "$OUT/job.log") 2>&1
+phase=start
+finish() {
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    printf '{"job":"%s","phase":"%s","exit":%d,"utc":"%s"}\n' "$PBS_JOBID" "$phase" "$rc" "$(date -u +%FT%TZ)" > "$OUT/FAILED.json"
+    cp -n "$SCRATCHDIR"/work/*.log "$SCRATCHDIR"/work/*.jsonl "$OUT/" 2>/dev/null || true
+  fi
+  rm -rf "$SCRATCHDIR/work"
+  exit $rc
+}
+trap finish EXIT
+echo "START $(date -u +%FT%TZ) host=$(hostname) job=$PBS_JOBID commit=$EXPECTED_COMMIT"
+{ lscpu; free -g; df -h "$SCRATCHDIR"; } > "$OUT/hardware.txt"
+
+phase=verify_inputs
+( cd "$ROOT" && sha256sum -c native-inputs.sha256 )
+
+phase=environment
+source /storage/budejovice1/home/nico/lmi-metacentrum/development-search-timeout-24900597-20261026/sisap23-build-environment-v1.sh
+sisap23_export_build_environment
+sisap23_load_build_modules
+sisap23_check_build_environment | tee "$OUT/toolchain.txt"
+
+phase=stage
+git() { command git -c filter.lfs.smudge= -c filter.lfs.clean= -c filter.lfs.process= -c filter.lfs.required=false "$@"; }
+export GIT_LFS_SKIP_SMUDGE=1
+W="$SCRATCHDIR/work"; mkdir -p "$W/data" "$W/ann"
+git clone --quiet --no-checkout "$ROOT/source.bundle" "$W/qdrant"
+git -C "$W/qdrant" checkout --quiet --detach "$EXPECTED_COMMIT"
+test "$(git -C "$W/qdrant" rev-parse HEAD)" = "$EXPECTED_COMMIT"
+test -z "$(git -C "$W/qdrant" status --porcelain)"
+tar -C "$W" -xf "$ROOT/vendor.tar"
+mkdir -p "$W/qdrant/.cargo"
+sed "s|__VENDOR_DIR__|$W/vendor|" "$ROOT/cargo-config.toml" > "$W/qdrant/.cargo/config.toml"
+head -c $((1000000 * 1536)) "$CORPUS" > "$W/data/vectors.f16"
+cp "$ROOT/val.queries.f32" "$W/data/"
+
+phase=build_binary
+cd "$W/qdrant"
+export CARGO_TARGET_DIR="$W/target" CARGO_BUILD_JOBS=16
+/usr/bin/time -v cargo test --locked --offline --profile perf -p segment --features testing,lmi-training \
+    --test ann_matched_v120 --no-run > "$OUT/build.stdout" 2> "$OUT/build.stderr"
+BIN=$(ls -t "$W/target/perf/deps"/ann_matched_v120-* | grep -v '\.d$' | head -1)
+sha256sum "$BIN" | tee "$OUT/binary.sha256"
+run() { /usr/bin/time -v "$BIN" --ignored --exact ann_matched_v120 --nocapture; }
+export ANN_ROOT="$W/ann"
+
+phase=source
+ANN_PHASE=source ANN_N=1000000 ANN_CORPUS="$W/data/vectors.f16" run > "$OUT/source.log" 2>&1
+
+b() { # name router index-json kind settings
+  phase="build_$1"
+  LMI_RESEARCH_ROUTER="$2" QDRANT_LMI_BUILD_EVENTS="$OUT/events-$1.jsonl" ANN_PHASE=build ANN_NAME="$1" ANN_INDEX="$3" \
+    run > "$OUT/build-$1.log" 2>&1
+  cp "$W/ann/build-$1/build.json" "$OUT/build-$1.json"
+  phase="search_$1"
+  ANN_PHASE=search ANN_NAME="$1" ANN_KIND="$4" ANN_SETTINGS="$5" ANN_REPS=1 ANN_THREADS=1,16 ANN_TAG=val \
+    ANN_QUERIES="$W/data/val.queries.f32" run > "$OUT/search-$1.log" 2>&1
+  cp "$W/ann/search-$1-val/summary.json" "$OUT/search-$1-summary.json"
+  cp "$W/ann/search-$1-val/queries.jsonl" "$OUT/search-$1-queries.jsonl"
+  rm -rf "$W/ann/build-$1"
+}
+b ivf8192 centroid '{"lmi":{"n_buckets":8192,"sample_size":524288,"hidden_dim":512,"epochs":30,"batch_size":256,"routing_batch_size":256,"kmeans_iterations":20,"nprobe":8,"seed":42}}' lmi 8,32,128
+b lmi3162 mlp '{"lmi":{"n_buckets":3162,"sample_size":250000,"hidden_dim":512,"epochs":30,"batch_size":256,"routing_batch_size":256,"kmeans_iterations":5,"nprobe":4,"seed":42}}' lmi 4,16,64
+b hnsw mlp '{"hnsw":{"m":16,"ef_construct":100,"threads":16}}' hnsw 32,128,512
+
+phase=persist
+( cd "$OUT" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS )
+( cd "$OUT" && sha256sum -c --quiet SHA256SUMS )
+printf '{"job":"%s","commit":"%s","utc":"%s","status":"complete"}\n' "$PBS_JOBID" "$EXPECTED_COMMIT" "$(date -u +%FT%TZ)" > "$OUT/COMPLETE.json"
+phase=done
+echo "COMPLETE $(date -u +%FT%TZ)"
