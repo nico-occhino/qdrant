@@ -24,5 +24,5 @@ case "${1:?preflight|tier2}" in
     [[ -n "$ok" ]] || { echo "preflight has not completed; refusing" >&2; exit 1; }
     sub T2-F1 16 48 04:00:00 10120191 "--B 3162 --teacher native --sample 250000 --iters 5 --hidden 512 --epochs 30"
     sub T2-F23 16 48 08:00:00 10120191 "--B 8192 --teacher converged --sample 524288 --iters 20 --hidden 512 --epochs 30"
-    sub T2-F4 16 48 04:00:00 10120191 "--B 8192 --teacher native --sample 262144 --iters 5 --hidden 0 --epochs 30 --partition mlp --router mlp,centroid" ;;
+    sub T2-F4 16 48 04:00:00 10120191 "--B 8192 --teacher native --sample 262144 --iters 5 --hidden 0 --epochs 30 --partition mlp" ;;  # router default mlp,centroid; commas break qsub -v
 esac
