@@ -59,7 +59,7 @@ mkdir -p "$W/qdrant/.cargo"
 sed "s|__VENDOR_DIR__|$W/vendor|" "$IN/cargo-config.toml" > "$W/qdrant/.cargo/config.toml"
 /usr/bin/time -v cp "$CORPUS" "$W/data/vectors.f16" 2> "$OUT/stage-corpus.time"
 echo "$CORPUS_SHA  $W/data/vectors.f16" | sha256sum -c -
-cp "$IN"/{val,test}.queries.f32 "$IN/tier3-configs.tsv" "$W/data/"
+cp "$IN"/{val,test}.queries.f32 "$IN"/{val,test}.q256.f32 "$IN/tier3-configs.tsv" "$W/data/"
 
 phase=build_binary
 cd "$W/qdrant"
@@ -81,14 +81,20 @@ cp "$W/source.log" "$W/ann/source/source.json" "$OUT/"
 while IFS=$'\t' read -r name kind router index settings; do
   [[ -z "$name" || "$name" == \#* ]] && continue
   phase="build_$name"
-  LMI_RESEARCH_ROUTER="$router" ANN_PHASE=build ANN_NAME="$name" ANN_INDEX="$index" run > "$W/build-$name.log" 2>&1
-  mkdir -p "$OUT/$name"; cp "$W/build-$name.log" "$W/ann/build-$name/build.json" "$OUT/$name/"
+  mkdir -p "$OUT/$name"
+  # stdin from /dev/null: the loop itself reads tier3-configs.tsv on stdin.
+  LMI_RESEARCH_ROUTER="$router" QDRANT_LMI_BUILD_EVENTS="$OUT/$name/build-events.jsonl" ANN_PHASE=build \
+    ANN_NAME="$name" ANN_INDEX="$index" run > "$W/build-$name.log" 2>&1 < /dev/null
+  cp "$W/build-$name.log" "$W/ann/build-$name/build.json" "$OUT/$name/"
   for set in val test; do
     phase="search_${name}_$set"
     threads=1; reps=1
     [[ "$set" == test ]] && { threads=1,4,8,16; reps=3; }
+    qfile="$W/data/$set.queries.f32"
+    # Plain (exact, about 0.5 s/query at 10M) uses the first 256 queries of each split.
+    [[ "$kind" == plain ]] && { qfile="$W/data/$set.q256.f32"; [[ "$set" == test ]] && threads=1,16; }
     ANN_PHASE=search ANN_NAME="$name" ANN_KIND="$kind" ANN_SETTINGS="$settings" ANN_REPS=$reps \
-      ANN_THREADS=$threads ANN_TAG="$set" ANN_QUERIES="$W/data/$set.queries.f32" run > "$W/search-$name-$set.log" 2>&1
+      ANN_THREADS=$threads ANN_TAG="$set" ANN_QUERIES="$qfile" run > "$W/search-$name-$set.log" 2>&1 < /dev/null
     cp "$W/search-$name-$set.log" "$W/ann/search-$name-$set"/{summary.json,queries.jsonl} "$OUT/$name/"
     mv "$OUT/$name/summary.json" "$OUT/$name/summary-$set.json"; mv "$OUT/$name/queries.jsonl" "$OUT/$name/queries-$set.jsonl"
   done

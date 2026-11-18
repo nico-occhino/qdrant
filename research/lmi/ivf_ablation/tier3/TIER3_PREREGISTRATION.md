@@ -52,3 +52,53 @@ Resources come from the native profile (25718667):
 - the HNSW 1M build rate gives an indicative 10M estimate.
 
 The 10M job is submitted only if the predicted walltime, with 50% headroom, fits within 24 h. Otherwise ivf-promoted is dropped first.
+
+## Amendment A (2026-11-18 23:30, before any Tier 3 submission)
+
+**Profiling evidence.** Job 25718749 (zenon51, 1M source, commit f2f6f27d8) reached COMPLETE.
+
+| Index | Build at 1M | Index size |
+|---|---|---|
+| IVF-8192 (S = 524,288, 20 iterations) | k-means 14,492 s single-threaded, plus postings 379 s | 29.3 MB |
+| LMI-3162 | k-means 733 s, MLP 2,404 s, postings 120 s | 12.1 MB |
+| HNSW m16/efc100 | 168 s on 16 threads | 40.3 MB |
+
+Native search on 2,000 validation queries (returned recall against the 1M gold):
+
+| Index | Setting | R@10 | p50 | Routing p50 |
+|---|---|---|---|---|
+| LMI-3162 | nprobe 64 | 0.964 | 14.96 ms | 5.08 ms |
+| IVF-8192 | nprobe 32 | 0.949 | 16.68 ms | 14.30 ms |
+| HNSW | ef 128 | 0.966 | 0.98 ms | — |
+
+**A1. Router constant-factor fix (implementation, not algorithm).** Native routing ran at about 0.44 GMAC/s for both the MLP and the centroid router. The causes:
+- every query re-validated every parameter;
+- the matrix-vector product was a scalar loop;
+- all B logits were fully sorted.
+
+Commit `research/static-lmi-ivf-router-fix` changes three things, without changing the ranking rule (descending logit, smaller ID on ties):
+- a shape-only check per query (the full finite check still runs at load, and non-finite parameters still fail through the per-output check);
+- Qdrant's SIMD dot product per row;
+- a partial top-nprobe selection.
+
+Tests:
+- `top_ids` equals the full sort, including ties and signed zeros;
+- the optimized routing equals the scalar reference except for near-ties within float summation order;
+- the error behaviour is unchanged.
+
+The router fix applies to both lmi-native and ivf-3162. Tier 3 therefore measures the index design with a reasonable router implementation; the profile above is the pre-fix reference.
+
+**A2. Systems.** Tier 3A runs plain, hnsw (ef up to 1,024), lmi-native and ivf-3162.
+
+IVF-8192 is deferred to Tier 3B. Its native single-threaded teacher alone takes 4.0 h, so the 10M build would idle 15 of 16 cores for about 5 h. Tier 3B runs after the assignment step of spherical k-means is parallelised, with hnsw and ivf-3162 rebuilt on the same node for matched comparison. IVF-8192's offline advantage (Tier 2) and its native build cost are reported as findings.
+
+**A3. Plain** uses the first 256 queries of each split (`{val,test}.q256.f32`): 1 repetition, with throughput at 1 and 16 threads.
+
+**A4. Resources.** 16 CPUs, 96 GB, 200 GB scratch. Walltime 10 h, against a predicted ≈ 4.5 h:
+- source ingestion ≈ 2 min;
+- HNSW 10M build ≈ 20–40 min;
+- lmi-native ≈ 70 min (733 s k-means, 2,404 s MLP, about 1,200 s postings);
+- ivf-3162 ≈ 35 min;
+- searches ≈ 25 min per learned index.
+
+Each configuration's results are copied to persistent storage as soon as it finishes, so a walltime kill loses only the configuration in progress.
