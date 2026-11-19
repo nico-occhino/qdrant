@@ -252,3 +252,30 @@ Peak RSS was 16.9–18.9 GB for all systems, dominated by the 15.8 GB Float16 ve
 - **Thread scaling of IVF and LMI is poor and non-monotone.** For example, LMI at nprobe 16 reaches 194 QPS at 16 threads but 668 at nprobe 8. The likely cause is memory bandwidth or allocation contention on the shared node. Treat the 16-thread throughput figures for these two indexes as indicative only.
 - **Settings grid (deviation).** The run used the grid in `tier3-configs.tsv`: nprobe {8, 16, 30, 64, 128} for IVF and LMI and ef {32, …, 1,024} for HNSW. The preregistration lists nprobe {4, …, 256}, and Amendment A does not record the narrower grid. Every system crossed both recall targets inside the grid, so no locked point is affected. The coarser steps do make the locked comparison less precise (see Q1).
 - **IVF-8192.** Deferred to Tier 3B (Amendment A2).
+
+## Files and locations (Tier 3)
+
+Repository paths are relative to the repository root on branch `research/static-lmi-ivf-router-fix`.
+
+| File | Role | Commit |
+|---|---|---|
+| `lib/segment/src/index/lmi_index/routing.rs` | Router constant-factor fix: shape-only per-query check, SIMD dot product, partial top-nprobe | `aaca97f24` |
+| `lib/segment/src/index/lmi_index/spherical_kmeans.rs` | Parallel k-means assignment on the build CPU permit; bit-identity test; ignored 50K benchmark | `3e49dabcd` |
+| `lib/segment/src/index/lmi_index/training.rs`, `build.rs` | Pass the CPU permit to the teacher | `3e49dabcd` |
+| `lib/segment/tests/ann_matched_v120.rs` | Native index-level harness; optional top-level `"threads"` for LMI | `3e49dabcd` |
+| `research/lmi/ivf_ablation/tier3/TIER3_PREREGISTRATION.md` | Preregistration plus Amendments A (3A) and B (3B) | `ec557c427`, `891fa7b87` |
+| `research/lmi/ivf_ablation/tier3/tier3-configs.tsv` | Systems and settings grids; the 3A version is at `ec557c427`, the 3B version at `891fa7b87` | — |
+| `research/lmi/ivf_ablation/tier3/ann-10m-native.pbs` | 10M PBS job script, shared by 3A and 3B | `ec557c427` |
+| `research/lmi/ivf_ablation/tier3/profile-native.pbs` | 1M native profiling job script | `1473f76ce`, `f2f6f27d8` |
+| `research/lmi/ivf_ablation/tier3/analyze_tier3.py` | Recall against the official gold, validation-locked points, paired CIs | `305a97223`, `891fa7b87` |
+
+**Local evidence**, under `research-admin/experiments/2026-11-18-static-lmi-ivf/` (copies are read-only):
+- `hpc-native-profile/`: profile job 25718749.
+- `hpc-tier3a/`: Tier 3A job 25738234.
+- `analysis/tier3a.{json,txt}`: Tier 3A analysis output.
+- `native-staging-ec557c427/` and `native-staging-891fa7b87/`: the staged inputs for 3A and 3B.
+- `hpc-submissions/submitted.log`: the submission log.
+
+**Remote (MetaCentrum)**, under `/storage/budejovice1/home/nico/lmi-metacentrum/static-lmi-ivf-20261118/`:
+- `native-<commit>/`: inputs for each revision.
+- `results/ann-10m-<job>/`: outputs, with 3A in `ann-10m-25738234…` and 3B (job 25743351, pending) in `ann-10m-25743351…`.
