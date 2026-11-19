@@ -102,3 +102,40 @@ IVF-8192 is deferred to Tier 3B. Its native single-threaded teacher alone takes 
 - searches ≈ 25 min per learned index.
 
 Each configuration's results are copied to persistent storage as soon as it finishes, so a walltime kill loses only the configuration in progress.
+
+## Amendment B (2026-11-19, after Tier 3A results, before any Tier 3B submission)
+
+**Context.** Tier 3A (job 25738234) is complete and reported in `LMI_VS_IVF_ROUTING_ABLATION.md`. Its systems, operating points and answers are final and are not re-run here. Tier 3B was defined in A2. Its precondition, parallelising the spherical k-means assignment step, is met by commit `3e49dabcd`:
+- Per-row assignment, in every iteration and in the final pass, runs on a rayon pool sized by the build CPU permit.
+- Labels and centers are bit-identical for any thread count. A unit test checks 1, 2, 3 and 8 threads.
+- A bounded benchmark (50K × 768, B 2,048) gives 6.0 s → 0.69 s per assignment pass at 16 threads.
+- MLP training and posting assignment are unchanged and stay single-threaded.
+
+**B1. Systems.** All three are built in one job on one node:
+- **hnsw:** m16/efc100 with 16 threads, unchanged from 3A.
+- **ivf-3162:** the 3A configuration, now with a 16-CPU permit. Only its k-means wall time can change.
+- **ivf-8192:** the Tier 2 F2 configuration, built with `LMI_RESEARCH_ROUTER=centroid` and a 16-CPU permit: B 8,192, S 524,288, 20 iterations.
+
+Plain and lmi-native are not rebuilt. Their 3A results stand, and the Plain–gold agreement comes from 3A.
+
+**B2. Settings grids.** These are finer than 3A near the R@10 = 0.95 operating points, because the coarse 3A grid made the locked comparison lumpy.
+- hnsw: ef {64, 128, 160, 192, 256, 512}.
+- ivf-3162: nprobe {8, 12, 16, 20, 24, 30, 64}.
+- ivf-8192: nprobe {12, 16, 20, 24, 32, 40, 48, 64, 128}. Tier 2 predicts R@10 = 0.95 at about 24 buckets (29.3K scored ÷ 1,235 per bucket).
+
+The grids are in `tier3-configs.tsv`.
+
+**B3. Protocol and analysis.** These are unchanged from the preregistration and 3A:
+- warm protocol, 1 validation repetition, and 3 test repetitions at 1, 4, 8 and 16 threads;
+- validation-locked operating points at R@10 ≥ 0.95 and at R@30 ≥ 0.90;
+- `analyze_tier3.py`, extended only to accept the 3B system list.
+
+**Decision question Q4.** Does the converged, finer IVF-8192 beat IVF-3162 natively at the locked R@10 = 0.95 point in p50 latency and in candidates? What do the extra routing cost and build time amount to? Q2 is re-answered with the best IVF of 3B against HNSW on the same node.
+
+**B4. Resources.** 16 CPUs, 96 GB and 200 GB scratch. Walltime is 8 h, against a predicted ≈ 3.7 h:
+- **Staging and binary:** ≈ 10 min.
+- **hnsw:** build ≈ 10 min; searches ≈ 10 min.
+- **ivf-3162:** build ≈ 10 min (postings 567 s); searches ≈ 55 min.
+- **ivf-8192:** build ≈ 55 min (teacher 14,492 s ÷ about 9, plus postings ≈ 567 s × 8,192/3,162); searches ≈ 50–70 min.
+
+As in 3A, each system's results are persisted as soon as it finishes.

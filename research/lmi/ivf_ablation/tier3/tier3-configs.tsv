@@ -1,7 +1,4 @@
-# name	kind	router	index-json	settings  (Tier 3A; cheapest builds first)
-plain	plain	mlp	{"plain":{}}	0
-hnsw	hnsw	mlp	{"hnsw":{"m":16,"ef_construct":100,"threads":16}}	32,64,128,256,512,1024
-lmi-native	lmi	mlp	{"lmi":{"n_buckets":3162,"sample_size":250000,"kmeans_iterations":5,"nprobe":30,"hidden_dim":512,"epochs":30,"batch_size":256,"routing_batch_size":256,"seed":42}}	8,16,30,64,128
-ivf-3162	lmi	centroid	{"lmi":{"n_buckets":3162,"sample_size":250000,"kmeans_iterations":5,"nprobe":30,"hidden_dim":512,"epochs":30,"batch_size":256,"routing_batch_size":256,"seed":42}}	8,16,30,64,128
-# ivf-8192 deferred (Tier 3B): native single-threaded spherical k-means took 14,492 s at S=524,288/B=8,192
-# (profile job 25718749), so its 10M build would leave 15 of 16 cores idle for ~5 h.
+# name	kind	router	index-json	settings  (Tier 3B, Amendment B; cheapest builds first)
+hnsw	hnsw	mlp	{"hnsw":{"m":16,"ef_construct":100,"threads":16}}	64,128,160,192,256,512
+ivf-3162	lmi	centroid	{"lmi":{"n_buckets":3162,"sample_size":250000,"kmeans_iterations":5,"nprobe":30,"hidden_dim":512,"epochs":30,"batch_size":256,"routing_batch_size":256,"seed":42},"threads":16}	8,12,16,20,24,30,64
+ivf-8192	lmi	centroid	{"lmi":{"n_buckets":8192,"sample_size":524288,"kmeans_iterations":20,"nprobe":24,"hidden_dim":512,"epochs":30,"batch_size":256,"routing_batch_size":256,"seed":42},"threads":16}	12,16,20,24,32,40,48,64,128

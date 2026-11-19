@@ -1,4 +1,4 @@
-"""Tier 3A analysis (TIER3_PREREGISTRATION.md + Amendment A).
+"""Tier 3 analysis (TIER3_PREREGISTRATION.md + Amendments A and B; 3A and 3B jobs).
 
 Usage: python3 -I analyze_tier3.py <job-results-dir> <gold-10m-dir> <out-prefix>
 
@@ -13,7 +13,9 @@ from pathlib import Path
 
 import numpy as np
 
-SYSTEMS = ["plain", "hnsw", "lmi-native", "ivf-3162"]
+ORDER = ["plain", "hnsw", "lmi-native", "ivf-3162", "ivf-8192"]
+# Paired comparisons (a over b): Q1 in 3A, Q4 in 3B. Run when both systems are present.
+PAIRS = [("ivf-3162", "lmi-native"), ("ivf-8192", "ivf-3162")]
 TARGETS = {"r10": 0.95, "r30": 0.90}
 B = 10_000
 rng = np.random.default_rng(20261119)
@@ -60,15 +62,17 @@ def ratio_ci(a, b):
 def main():
     res, gold_dir, prefix = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
     gold = {t: np.load(gold_dir / t / "gold.npy") for t in ("val", "test")}
+    systems = [s for s in ORDER if (res / s / "build.json").exists()]
     report = {"job": res.name, "systems": {}}
     per_query = {}
-    for s in SYSTEMS:
+    for s in systems:
         build = json.load(open(res / s / "build.json"))
         events = []
         ev = res / s / "build-events.jsonl"
         if ev.exists():
             events = [json.loads(l) for l in open(ev)]
-        sysrep = {"build": {k: build[k] for k in ("seconds_total", "seconds_index", "threads", "index_bytes", "segment_bytes", "peak_rss_kib")},
+        sysrep = {"n_buckets": build["spec"].get("lmi", {}).get("n_buckets"),
+                  "build": {k: build[k] for k in ("seconds_total", "seconds_index", "threads", "index_bytes", "segment_bytes", "peak_rss_kib")},
                   "build_events": {e["stage"]: {k: v for k, v in e.items() if k.endswith("seconds") or k == "posting_pass_seconds"} for e in events},
                   "curves": {}}
         for t in ("val", "test"):
@@ -110,28 +114,38 @@ def main():
         report["systems"][s] = sysrep
 
     # Plain = exact search over stored Float16: agreement with the official gold.
-    report["plain_vs_official"] = {t: {"r10": c["r10"], "r30": c["r30"], "queries": c["queries"]}
-                                   for t in ("val", "test") for c in report["systems"]["plain"]["curves"][t]}
+    if "plain" in report["systems"]:
+        report["plain_vs_official"] = {t: {"r10": c["r10"], "r30": c["r30"], "queries": c["queries"]}
+                                       for t in ("val", "test") for c in report["systems"]["plain"]["curves"][t]}
 
-    # Q1: IVF vs LMI. Paired on the same test queries at each one's validation-locked setting.
-    q1 = {}
-    for key in TARGETS:
-        a, b = report["systems"]["ivf-3162"]["locked"][key], report["systems"]["lmi-native"]["locked"][key]
-        if a and b:
-            pa, pb = per_query[("ivf-3162", "test", a["setting"])], per_query[("lmi-native", "test", b["setting"])]
-            q1[key] = {"ivf_setting": a["setting"], "lmi_setting": b["setting"],
-                       "candidates_ratio": a["candidates_mean"] / b["candidates_mean"], "candidates_ratio_ci": ratio_ci(pa["cand"], pb["cand"]),
-                       "p50_ratio": a["p50_ms"] / b["p50_ms"], "recall_diff": a["test"] - b["test"], "recall_diff_ci": ci(pa[key] - pb[key])}
-    # Same-nprobe paired comparison (same routing width, different router).
-    same = []
-    for c in report["systems"]["ivf-3162"]["curves"]["test"]:
-        st = c["setting"]
-        pa, pb = per_query[("ivf-3162", "test", st)], per_query[("lmi-native", "test", st)]
-        lc = next(x for x in report["systems"]["lmi-native"]["curves"]["test"] if x["setting"] == st)
-        same.append({"nprobe": st, "r10_ivf": c["r10"], "r10_lmi": lc["r10"], "r10_diff_ci": ci(pa["r10"] - pb["r10"]),
-                     "cand_ratio": c["candidates_mean"] / lc["candidates_mean"], "p50_ratio": c["p50_ms"] / lc["p50_ms"],
-                     "route_ms_ivf": c["route_p50_ms"], "route_ms_lmi": lc["route_p50_ms"]})
-    report["q1"] = {"locked": q1, "same_nprobe": same}
+    # Paired comparisons on the same test queries at each one's validation-locked setting,
+    # plus same-setting comparisons when both use the same grid unit (same B).
+    report["pairs"] = {}
+    for a_name, b_name in PAIRS:
+        if a_name not in report["systems"] or b_name not in report["systems"]:
+            continue
+        sa, sb = report["systems"][a_name], report["systems"][b_name]
+        locked = {}
+        for key in TARGETS:
+            a, b = sa["locked"][key], sb["locked"][key]
+            if a and b:
+                pa, pb = per_query[(a_name, "test", a["setting"])], per_query[(b_name, "test", b["setting"])]
+                locked[key] = {"a_setting": a["setting"], "b_setting": b["setting"],
+                               "candidates_ratio": a["candidates_mean"] / b["candidates_mean"], "candidates_ratio_ci": ratio_ci(pa["cand"], pb["cand"]),
+                               "p50_ratio": a["p50_ms"] / b["p50_ms"], "recall_diff": a["test"] - b["test"], "recall_diff_ci": ci(pa[key] - pb[key])}
+        same = []
+        if sa["n_buckets"] is not None and sa["n_buckets"] == sb["n_buckets"]:
+            bset = {c["setting"]: c for c in sb["curves"]["test"]}
+            for c in sa["curves"]["test"]:
+                st = c["setting"]
+                if st not in bset:
+                    continue
+                pa, pb = per_query[(a_name, "test", st)], per_query[(b_name, "test", st)]
+                lc = bset[st]
+                same.append({"nprobe": st, "r10_a": c["r10"], "r10_b": lc["r10"], "r10_diff_ci": ci(pa["r10"] - pb["r10"]),
+                             "cand_ratio": c["candidates_mean"] / lc["candidates_mean"], "p50_ratio": c["p50_ms"] / lc["p50_ms"],
+                             "route_ms_a": c["route_p50_ms"], "route_ms_b": lc["route_p50_ms"]})
+        report["pairs"][f"{a_name}/{b_name}"] = {"locked": locked, "same_setting": same}
 
     Path(prefix + ".json").write_text(json.dumps(report, indent=1))
     Path(prefix + ".txt").write_text(render(report))
@@ -139,7 +153,7 @@ def main():
 
 
 def render(r):
-    L = [f"Tier 3A — {r['job']}", ""]
+    L = [f"Tier 3 — {r['job']}", ""]
     L.append("Build (index-only):")
     for s, x in r["systems"].items():
         b = x["build"]
@@ -162,15 +176,18 @@ def render(r):
             L.append(f"  {s:11s} set={lk['setting']:5d} val={lk['val']:.3f} test={lk['test']:.3f} [{lk['test_ci'][0]:.3f},{lk['test_ci'][1]:.3f}] "
                      f"cand={lk['candidates_mean']:.0f} p50={lk['p50_ms']:.2f} p95={lk['p95_ms']:.2f} p99={lk['p99_ms']:.2f} ms "
                      f"qps1={lk['qps'].get(1, float('nan')):.0f} qps16={lk['qps'].get(16, float('nan')):.0f}")
-    L += ["", "Plain (exact Float16) vs official gold:"] + [f"  {t}: R@10={v['r10']:.4f} R@30={v['r30']:.4f} (n={v['queries']})" for t, v in r["plain_vs_official"].items()]
-    L += ["", "Q1 IVF vs LMI at locked points (IVF/LMI):"]
-    for key, v in r["q1"]["locked"].items():
-        L.append(f"  {key}: nprobe {v['ivf_setting']} vs {v['lmi_setting']}: candidates x{v['candidates_ratio']:.3f} [{v['candidates_ratio_ci'][0]:.3f},{v['candidates_ratio_ci'][1]:.3f}], "
-                 f"p50 x{v['p50_ratio']:.3f}, recall diff {v['recall_diff']:+.3f} [{v['recall_diff_ci'][0]:+.3f},{v['recall_diff_ci'][1]:+.3f}]")
-    L += ["", "Q1 same nprobe (test):"]
-    for v in r["q1"]["same_nprobe"]:
-        L.append(f"  nprobe {v['nprobe']:4d}: R@10 {v['r10_ivf']:.3f} vs {v['r10_lmi']:.3f} diff CI [{v['r10_diff_ci'][0]:+.3f},{v['r10_diff_ci'][1]:+.3f}]  "
-                 f"cand x{v['cand_ratio']:.3f}  p50 x{v['p50_ratio']:.3f}  route {v['route_ms_ivf']:.2f}/{v['route_ms_lmi']:.2f} ms")
+    if "plain_vs_official" in r:
+        L += ["", "Plain (exact Float16) vs official gold:"] + [f"  {t}: R@10={v['r10']:.4f} R@30={v['r30']:.4f} (n={v['queries']})" for t, v in r["plain_vs_official"].items()]
+    for pair, p in r["pairs"].items():
+        L += ["", f"{pair} at locked points (ratios a/b):"]
+        for key, v in p["locked"].items():
+            L.append(f"  {key}: setting {v['a_setting']} vs {v['b_setting']}: candidates x{v['candidates_ratio']:.3f} [{v['candidates_ratio_ci'][0]:.3f},{v['candidates_ratio_ci'][1]:.3f}], "
+                     f"p50 x{v['p50_ratio']:.3f}, recall diff {v['recall_diff']:+.3f} [{v['recall_diff_ci'][0]:+.3f},{v['recall_diff_ci'][1]:+.3f}]")
+        if p["same_setting"]:
+            L.append(f"  {pair} same nprobe (test):")
+        for v in p["same_setting"]:
+            L.append(f"  nprobe {v['nprobe']:4d}: R@10 {v['r10_a']:.3f} vs {v['r10_b']:.3f} diff CI [{v['r10_diff_ci'][0]:+.3f},{v['r10_diff_ci'][1]:+.3f}]  "
+                     f"cand x{v['cand_ratio']:.3f}  p50 x{v['p50_ratio']:.3f}  route {v['route_ms_a']:.2f}/{v['route_ms_b']:.2f} ms")
     return "\n".join(L) + "\n"
 
 
