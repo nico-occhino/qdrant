@@ -184,3 +184,55 @@ evaluation. Each router is calibrated on its own validation records with the sam
 - The payload estimate's error interacts with binning; it is recorded per query.
 - The correlated family is a single synthetic construction.
 - Calibration tables are tied to this partition and are not persisted with segments in this study.
+
+## Amendment 1 (2026-11-19, after the pilot, before any full-run data)
+
+**Pilot (protocol step 0).** 100 validation queries; *s* ∈ {100, 3, 0.1}%; all *p*; both routers and both
+families. Pilot outputs are kept under `probing/pilot/` and are not analysed.
+
+**What the pilot showed**
+- Every grid record was complete, and every exact cell had recall 1.0.
+- The native/simulation check found 0 mismatches over 36,000 policy calls.
+- B0 reproduced `result-nprobe16.json` exactly on rows 0..999: 18/18 cells had identical plans, identical
+  widenings and recall equal to within 1e-12. The research Baseline path equalled production `search()` on
+  all 18,000 queries, and the native builds are deterministic.
+- Peak RSS was 3.4 GB. The extrapolated full runtime is about 5 h.
+
+**Changes, decided on pilot data only**
+
+1. **Cost-model fitting.** The fits use relative-error least squares (weights 1/y²). A negative coefficient is
+   fixed at 0 and the remaining terms are refitted. Reason: latencies span four orders of magnitude, and an
+   unweighted fit is dominated by the largest cells.
+2. **Model form.**
+   - The pilot shows that exact-plan latency is not linear in matches: about 67, 487 and 764 ns per match at
+     0.1%, 3% and 100%, all through payload-index iteration.
+   - The linear routed model ignores widening work. Predicted/measured ratios ranged from 0.08 to 1.86.
+   - **C1 keeps the preregistered linear form** and is evaluated as registered, with its prediction errors reported.
+   - **R1/R2 use an empirical cost table:**
+     - exact plans: mean validation latency against each filter's estimated matches;
+     - routed plans: mean validation latency per *p* against estimated selectivity;
+     - the tables are interpolated log-log, clamped at the ends, and evaluated at the runtime estimate only.
+   - The tables are added as optional fields of `CostModel`.
+3. **Bin keys.** Calibration bins are keyed by each validation filter's **estimated** selectivity
+   (ĉ_exp / available), the quantity the runtime policy sees, rather than the nominal grid value.
+   - In the pilot, nominal keys sent a 3% filter (ŝ = 2.9993%) into the 0.1% bin.
+   - Rounding down remains the rule for any other estimate.
+4. **Exact reference in the native pass.** The native policy pass includes an `EXACT` reference: a calibrated
+   table with one empty bin, so it always runs the exact plan. The exact filtered baseline is therefore measured
+   in the same pass and under the same protocol as the policies.
+5. **Warm-up.** For each (router, family, *s*, split), every cell or policy runs over the first 50 subsample
+   queries, and those runs are discarded.
+6. **B1 fallback.** If no grid *p* reaches τ on the 100% filter, B1 uses *p* = 256. This did not occur in the pilot.
+7. **Oracle O.** Per test timing-subsample query, O takes the cheapest measured cell (median latency) whose recall
+   is ≥ τ. The exact cell always qualifies.
+8. **Adoption, "no worse than B1 at matched recall".** This is checked at every *s* where both the policy and B1
+   have mean recall ≥ τ − 0.01.
+9. **Phase order.** prepare → grid → timing → stages → calibrate → policies → report → b0repro. Calibration needs
+   the stage pass (in the pilot it was first run before it, and the stage estimate was missing).
+10. **Pilot policy phase.** The pilot exercised the policy phase on validation rows, labelled as such.
+
+**Observations to examine, not results**
+- Every exact plan iterates a payload index. The per-match cost growth is consistent with the matching set
+  staying cache-resident under repeated queries with the same filter, so the reported latencies are warm-cache.
+- The stage pass puts filter evaluation at 13–18 ns per candidate. That is far below the ≈2.2 ms extra latency
+  of the 100% filter in the baseline (8,760 candidates × ~15 ns ≈ 0.13 ms), so that extra latency has another source.
