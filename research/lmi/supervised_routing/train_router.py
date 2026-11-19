@@ -108,14 +108,16 @@ class Targets:
 
 
 def ranking(logits):
-    """Native order: descending logit, equal logits -> smaller bucket id (stable sort)."""
+    """Native order: descending logit, equal logits -> smaller bucket id (stable sort).
+    Truncated to min(MAX_PROBE, buckets) probes."""
     return torch.sort(logits, dim=1, descending=True, stable=True).indices[:, :MAX_PROBE]
 
 
 def coverage_curves(logits, targets, occupancy, chunk=1000):
-    """Mean coverage and mean candidates for nprobe = 1..MAX_PROBE."""
-    cov = torch.zeros(MAX_PROBE, dtype=torch.float64)
-    cand = torch.zeros(MAX_PROBE, dtype=torch.float64)
+    """Mean coverage and mean candidates for nprobe = 1..min(MAX_PROBE, buckets)."""
+    probes = min(MAX_PROBE, logits.shape[1])
+    cov = torch.zeros(probes, dtype=torch.float64)
+    cand = torch.zeros(probes, dtype=torch.float64)
     occ = occupancy.to(torch.float64)
     for s in range(0, logits.shape[0], chunk):
         idx = torch.arange(s, min(s + chunk, logits.shape[0]))
