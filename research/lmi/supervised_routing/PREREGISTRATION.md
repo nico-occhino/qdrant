@@ -183,3 +183,15 @@ Recall targets 0.90, 0.97, 0.98 and 0.99 are reported descriptively wherever the
 
 HNSW re-measurement, DLI/CLI, e-means, teacher optimisation, partition learning, replication, filtering, quantization,
 new scorers, architecture search, 100M, and any modification of accepted artifacts.
+
+## Amendment 1 (2026-11-19, before any job was submitted)
+
+**1M partition check tolerance.** The accepted 1M profile job 25718749 ran at `f2f6f27d8`, which predates the
+router constant-factor fix `aaca97f24` (SIMD dot product in the router). Router logits, and therefore near-tie bucket
+choices at query time and in build-time posting assignment, can differ in the last floating-point bits.
+
+The 1M rebuild is therefore accepted if at most 1% of the (query, nprobe) checks differ in candidate count or IDs.
+Exact counts are reported. The 10M check against Tier 3B, which was built after the fix, remains exact (0 mismatches).
+
+**Partition fingerprint.** At each scale, the pilot job records the canonical postings fingerprint. Later jobs at the
+same scale must reproduce it exactly.

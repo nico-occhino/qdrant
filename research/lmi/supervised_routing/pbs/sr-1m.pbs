@@ -1,0 +1,87 @@
+#!/bin/bash
+#PBS -l select=1:ncpus=16:mem=96gb:scratch_ssd=200gb:cpu_vendor=amd
+#PBS -j oe
+#
+# Supervised routing (PREREGISTRATION.md). MODE=preflight (Stage 0: Rust tests + full pipeline on a
+# 20K / 64-bucket smoke partition) or MODE=pilot (Stage 1: native 1M IVF-8192 pilot).
+# qsub -v MODE=... from the hash-verified input directory $CAMPAIGN/native-<commit>.
+set -euo pipefail
+: "${PBS_JOBID:?must run under PBS}"
+: "${SCRATCHDIR:?scratch_ssd allocation required}"
+: "${MODE:?MODE=preflight|pilot}"
+IN="${PBS_O_WORKDIR:?}"
+OUT=/storage/budejovice1/home/nico/lmi-metacentrum/static-supervised-routing-20261119/results/$MODE-$PBS_JOBID
+mkdir "$OUT"
+exec > >(tee "$OUT/job.log") 2>&1
+source "$IN/common.sh"
+case "$IN" in "$CAMPAIGN"/native-*) ;; *) echo "qsub must be run from $CAMPAIGN/native-<commit>" >&2; exit 2;; esac
+stage
+
+if [[ "$MODE" == preflight ]]; then
+  N=20000; PSEUDO=2000; SMOKE=--smoke; SETTINGS=1,2,4,8,16; GREPS=2
+  INDEX='{"lmi":{"n_buckets":64,"sample_size":4096,"kmeans_iterations":5,"nprobe":4,"hidden_dim":512,"epochs":30,"batch_size":256,"routing_batch_size":256,"seed":42}}'
+  phase=rust_tests
+  cd "$W/qdrant"
+  /usr/bin/time -v cargo test --locked --offline --profile perf -p segment --features testing,lmi-training \
+      --test lmi_static_v120 --test lmi_shell_v120 --test candidate_scoring_v120 --test lmi_training_v120 \
+      > "$OUT/rust-tests.log" 2>&1
+  grep -E '^test |test result' "$OUT/rust-tests.log"
+else
+  N=1000000; PSEUDO=100000; SMOKE=; SETTINGS=1,2,4,8,12,16,20,24,32,40,48,64,96,128,192,256; GREPS=3
+  INDEX='{"lmi":{"n_buckets":8192,"sample_size":524288,"kmeans_iterations":20,"nprobe":24,"hidden_dim":512,"epochs":30,"batch_size":256,"routing_batch_size":256,"seed":42}}'
+fi
+
+phase=source
+SR_PHASE=source SR_N=$N SR_CORPUS="$W/data/corpus.f16" run > "$W/source.log" 2>&1 < /dev/null
+cp "$W/sr/source/source.json" "$OUT/"
+
+phase=build
+LMI_RESEARCH_ROUTER=centroid QDRANT_LMI_BUILD_EVENTS="$OUT/build-events.jsonl" SR_PHASE=build \
+  SR_INDEX="$INDEX" SR_THREADS=16 run > "$W/build.log" 2>&1 < /dev/null
+cp "$W/build.log" "$W/sr/build/build.json" "$OUT/"
+
+phase=export
+SR_PHASE=export run > "$W/export.log" 2>&1 < /dev/null
+mkdir -p "$OUT/export"
+cp -r "$W/sr/export/." "$OUT/export/"
+cat "$OUT/export/partition.json"
+
+phase=verify_partition
+if [[ "$MODE" == pilot ]]; then
+  # The rebuilt 1M partition must reproduce the accepted profile job 25718749 (V rows, nprobe 8/32/128, top 30).
+  echo "$W/sr/export/A0/router.json" > "$W/a0.txt"
+  SR_PHASE=evaluate SR_ARMS="$W/a0.txt" SR_SETTINGS=8,32,128 SR_TOP=30 SR_SEED=1 \
+    SR_SETS="V:$W/data/val.queries.f32:1" SR_OUT="$W/verify" run > "$W/verify.log" 2>&1 < /dev/null
+  "$PY" "$SRC/verify_partition.py" "$W/verify/V.jsonl" "$IN/profile-ivf8192-queries.jsonl" --max-mismatch-rate 0.01 | tee "$OUT/verify_partition.json"
+fi
+
+phase=inputs
+"$PY" "$SRC/make_inputs.py" --queries "$W/data/queries.f32" --corpus "$W/data/corpus.f16" --n $N \
+  --out "$W/inputs" --check-val "$W/data/val.queries.f32" --pseudo $PSEUDO --threads 16 > "$W/inputs.log" 2>&1
+cp "$W/inputs/splits.json" "$W/inputs.log" "$OUT/"
+
+phase=gold
+mkdir -p "$W/gold" "$OUT/gold"
+for s in T V G; do
+  SR_PHASE=gold SR_QUERIES="$W/inputs/$s.f32" SR_K=30 SR_OUT="$W/gold/$s" SR_THREADS=16 run > "$W/gold-$s.log" 2>&1 < /dev/null
+done
+cp "$W"/gold/* "$OUT/gold/"
+
+phase=train
+"$PY" "$SRC/train_router.py" --export "$W/sr/export" --inputs "$W/inputs" --gold "$W/gold" \
+  --corpus "$W/data/corpus.f16" --n $N --out "$W/train" --threads 16 $SMOKE > "$W/train.log" 2>&1
+cp -r "$W/train" "$OUT/train"; cp "$W/train.log" "$OUT/"
+# Artifacts are read from the persistent copy from here on.
+sed "s|$W/train|$OUT/train|" "$W/train/arms.txt" > "$OUT/arms.txt"
+
+phase=consistency
+SR_PHASE=consistency SR_ARMS="$OUT/arms.txt" SR_QUERIES="$W/inputs/V.f32" SR_CONSISTENCY_N=200 \
+  SR_OUT="$OUT/consistency_native.jsonl" run > "$W/consistency.log" 2>&1 < /dev/null
+
+phase=evaluate
+SR_PHASE=evaluate SR_ARMS="$OUT/arms.txt" SR_SETTINGS=$SETTINGS SR_TOP=10 SR_SEED=20261119 \
+  SR_SETS="V:$W/inputs/V.f32:1,G:$W/inputs/G.f32:$GREPS" SR_OUT="$W/eval" run > "$W/evaluate.log" 2>&1 < /dev/null
+mkdir -p "$OUT/eval"; cp "$W"/eval/* "$OUT/eval/"
+cp "$W"/*.log "$OUT/"
+
+persist
