@@ -195,3 +195,15 @@ Exact counts are reported. The 10M check against Tier 3B, which was built after 
 
 **Partition fingerprint.** At each scale, the pilot job records the canonical postings fingerprint. Later jobs at the
 same scale must reproduce it exactly.
+
+## Amendment 2 (2026-11-19, after preflight 25758335 on the 20K smoke partition, before any pilot job)
+
+**Short results.** The decomposed native path (Tier 3 boundary) has no underfill widening. When the probed buckets hold
+fewer than 10 points (small nprobe, small buckets), it returns fewer than 10 hits. The smoke preflight showed 47 such
+results at nprobe 1.
+
+- **Invariant enforced by the harness:** every query returns exactly min(10, candidates) hits; any other count aborts
+  the run.
+- **Scoring:** short results are recorded and count as recall misses.
+- **Gate criterion 3 (replaces "every G query returns 10 hits at every grid point"):** no short results at the operating
+  points used in the matched comparison, plus ≥ 99% native/offline ranking agreement.

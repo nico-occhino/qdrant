@@ -16,7 +16,8 @@
 //!   query sets (`SR_SETS` = `name:file:reps,...`): one untimed warm pass per (arm, nprobe), then
 //!   `reps` timed repetitions whose arm order is a seeded permutation per repetition. The timed
 //!   path is the Tier 3 decomposed LMI path: `router.top_buckets`, sorted de-duplicated posting
-//!   union, native `score_candidates`. Every result must hold `SR_TOP` hits.
+//!   union, native `score_candidates`. Every result must hold min(`SR_TOP`, candidates) hits;
+//!   shorter results (probes holding fewer than `SR_TOP` points) are recorded, not widened.
 //!
 //! Router artifact (`router.json`): `{"arm": .., "layers": [{"kind": "linear", "in": d, "out": m,
 //! "weights": "<file>", "bias": "<file>", "weights_sha256": .., "bias_sha256": ..},
@@ -533,7 +534,11 @@ fn phase_evaluate(root: &Path) {
     let settings: Vec<usize> = env("SR_SETTINGS").split(',').map(|s| s.parse().unwrap()).collect();
     let top: usize = env("SR_TOP").parse().unwrap();
     let seed: u64 = env("SR_SEED").parse().unwrap();
+    // Short results (< top hits) arise only when the probed buckets hold fewer than `top`
+    // candidates: the decomposed path has no underfill widening (as in Tier 3). They are counted
+    // and scored as misses. A hit count other than min(top, candidates) is a correctness failure.
     let mut short_results = 0usize;
+    let mut unexplained = 0usize;
     let mut summary_sets = Vec::new();
     for set in env("SR_SETS").split(',') {
         let parts: Vec<&str> = set.split(':').collect();
@@ -562,6 +567,9 @@ fn phase_evaluate(root: &Path) {
                         if r.ids.len() != top {
                             short_results += 1;
                         }
+                        if r.ids.len() != top.min(r.candidates) {
+                            unexplained += 1;
+                        }
                         let mut row = serde_json::json!({"arm": arm, "nprobe": p, "q": qi,
                             "rep": rep, "ns": ns, "route_ns": r.route_ns, "union_ns": r.union_ns,
                             "score_ns": r.score_ns, "candidates": r.candidates,
@@ -586,9 +594,10 @@ fn phase_evaluate(root: &Path) {
             "arm_specs": arms.iter().map(|a| a.2.clone()).collect::<Vec<_>>(),
             "settings": settings, "top": top, "seed": seed, "sets": summary_sets,
             "load_seconds": load_seconds, "fingerprint_sha256": fingerprint_before,
-            "short_results": short_results, "peak_rss_kib": peak_rss_kib()}),
+            "short_results": short_results, "unexplained_short_results": unexplained,
+            "peak_rss_kib": peak_rss_kib()}),
     );
-    assert_eq!(short_results, 0, "every query must return top hits");
+    assert_eq!(unexplained, 0, "every query must return min(top, candidates) hits");
 }
 
 #[test]

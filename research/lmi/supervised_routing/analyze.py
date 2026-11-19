@@ -80,7 +80,7 @@ def frontier_rows(arr, set_name):
 def matched(arr_arm, target, idx=None):
     """Lowest observed mean candidates and lowest median latency among points with mean recall >= target."""
     best_c = best_l = None
-    for p, a in arr_arm.items():
+    for p, a in sorted(arr_arm.items()):
         sel = slice(None) if idx is None else idx
         if a["recall"][sel].mean() < target:
             continue
@@ -292,7 +292,11 @@ def main():
             bytes_p = sum(f.stat().st_size for f in (local_dir if local_dir.exists() else router_dir).glob("*.f32"))
             bytes_a0 = sum(f.stat().st_size for f in (run / "export" / "A0").glob("*.f32"))
             train_seconds = next((c["seconds"] for c in training["configs"] if c["name"] == sel.get("config")), 0.0)
-            short = sum(int((a["hits"] < 10).sum()) for a in arr[promo].values())
+            # Short results at the operating points used for the matched comparison (Amendment 2).
+            short = int((arr[promo][p["nprobe_at_min_p50"]]["hits"] < 10).sum()
+                        + (arr[promo][p["nprobe_at_min_candidates"]]["hits"] < 10).sum()
+                        + (arr["A0"][a0["nprobe_at_min_p50"]]["hits"] < 10).sum()
+                        + (arr["A0"][a0["nprobe_at_min_candidates"]]["hits"] < 10).sum())
             vp = json.loads((run / "verify_partition.json").read_text()) if (run / "verify_partition.json").exists() else None
             gate["criteria"] = {
                 "1_candidate_reduction": {"value": cand_red, "threshold": 0.10, "pass": cand_red >= 0.10},
