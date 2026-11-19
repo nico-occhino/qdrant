@@ -117,6 +117,7 @@ impl<S: UniversalReadExt + 'static> ReadOnlyLmiIndex<S> {
                                 &routed_query,
                                 query,
                                 top,
+                                self.routing.nprobe(),
                                 &checker,
                                 &*tracker,
                                 &*storage,

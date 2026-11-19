@@ -315,6 +315,7 @@ impl LmiIndex {
                                 &routed_query,
                                 query,
                                 top,
+                                state.nprobe(),
                                 &checker,
                                 &*tracker,
                                 &*storage,
@@ -333,6 +334,117 @@ impl LmiIndex {
                         .collect()
                 }
             }
+        })
+    }
+
+    /// Payload-index estimate for `filter`, as the planner sees it, without searching.
+    #[cfg(any(feature = "testing", feature = "lmi-research"))]
+    pub fn filter_estimate(&self, filter: &Filter) -> OperationResult<filtered::FilterEstimate> {
+        let tracker = self.id_tracker.borrow();
+        let storage = self.vector_storage.borrow();
+        let payload_index = self.payload_index.borrow();
+        payload_index
+            .with_view(|view| filtered::estimate_filter(&view, filter, &*tracker, &*storage))
+    }
+
+    /// Baseline break-even decision as if the index were configured with `nprobe`.
+    #[cfg(any(feature = "testing", feature = "lmi-research"))]
+    pub fn filtered_plan_at(
+        &self,
+        filter: &Filter,
+        nprobe: usize,
+    ) -> OperationResult<Option<FilteredPlanDecision>> {
+        let Some(state) = &self.routing_state else {
+            return Ok(None);
+        };
+        let tracker = self.id_tracker.borrow();
+        let storage = self.vector_storage.borrow();
+        let payload_index = self.payload_index.borrow();
+        payload_index
+            .with_view(|view| {
+                filtered::choose_filtered_plan_with_threshold(
+                    &view,
+                    filter,
+                    &*tracker,
+                    &*storage,
+                    filtered::probe_volume_at(state, nprobe),
+                )
+            })
+            .map(Some)
+    }
+
+    /// Research entry point: one filtered query under an explicit mode, with
+    /// its plan and candidate accounting. `FilteredSearchMode::Baseline` runs
+    /// the same decision and search code as the production `search()`.
+    #[cfg(any(feature = "testing", feature = "lmi-research"))]
+    pub fn filtered_search_research(
+        &self,
+        query: &QueryVector,
+        filter: &Filter,
+        top: usize,
+        mode: &filtered::FilteredSearchMode,
+        query_context: &VectorQueryContext,
+    ) -> OperationResult<(Vec<ScoredPointOffset>, filtered::FilteredSearchRecord)> {
+        let Some(state) = &self.routing_state else {
+            return Err(OperationError::service_error(
+                "LMI research search requires a trained index",
+            ));
+        };
+        if !self.learned_eligible(&[query], None) {
+            return Err(OperationError::service_error(
+                "LMI research search requires a dense nearest query",
+            ));
+        }
+        let tracker = self.id_tracker.borrow();
+        let storage = self.vector_storage.borrow();
+        let payload_index = self.payload_index.borrow();
+        payload_index.with_view(|view| {
+            let (plan, nprobe, decision) = match mode {
+                filtered::FilteredSearchMode::Baseline => {
+                    let decision =
+                        filtered::choose_filtered_plan(state, &view, filter, &*tracker, &*storage)?;
+                    (decision.plan, state.nprobe(), Some(decision))
+                }
+                filtered::FilteredSearchMode::ForceExact => {
+                    (FilteredPlan::ExactMatches, state.nprobe(), None)
+                }
+                filtered::FilteredSearchMode::ForceRouted { nprobe } => {
+                    (FilteredPlan::RoutedIntersect, *nprobe, None)
+                }
+            };
+            let mut record = filtered::FilteredSearchRecord {
+                plan,
+                nprobe,
+                decision,
+                routed: None,
+            };
+            if top == 0 {
+                return Ok((Vec::new(), record));
+            }
+            let result = match plan {
+                FilteredPlan::ExactMatches => self
+                    .plain
+                    .search(&[query], Some(filter), top, None, query_context)?
+                    .remove(0),
+                FilteredPlan::RoutedIntersect => {
+                    let checker = view.filter_context(filter)?;
+                    let routed_query = filtered::routing_query(self.routing_distance, query);
+                    let (result, stats) = filtered::routed_filtered_search(
+                        state,
+                        &routed_query,
+                        query,
+                        top,
+                        nprobe,
+                        &checker,
+                        &*tracker,
+                        &*storage,
+                        query_context,
+                    )?;
+                    record.routed = Some(stats);
+                    result
+                }
+            };
+            Ok((result, record))
         })
     }
 }

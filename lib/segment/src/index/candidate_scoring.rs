@@ -74,6 +74,61 @@ where
     V: VectorStorageRead + RawScorerBuilder,
     I: IdTrackerRead,
 {
+    score_candidates_inner(
+        query,
+        candidates,
+        top,
+        id_tracker,
+        vector_storage,
+        quantized,
+        query_context,
+        None,
+    )
+}
+
+/// [`score_candidates_generic`] that also returns how many offsets reached the
+/// scorer as visible and not deleted, i.e. the vectors actually scored.
+pub fn score_candidates_counted<V, I>(
+    query: &QueryVector,
+    candidates: &[PointOffsetType],
+    top: usize,
+    id_tracker: &I,
+    vector_storage: &V,
+    query_context: &VectorQueryContext,
+) -> OperationResult<(Vec<ScoredPointOffset>, usize)>
+where
+    V: VectorStorageRead + RawScorerBuilder,
+    I: IdTrackerRead,
+{
+    let mut scored = 0;
+    let result = score_candidates_inner(
+        query,
+        candidates,
+        top,
+        id_tracker,
+        vector_storage,
+        None,
+        query_context,
+        Some(&mut scored),
+    )?;
+    Ok((result, scored))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn score_candidates_inner<V, I>(
+    query: &QueryVector,
+    candidates: &[PointOffsetType],
+    top: usize,
+    id_tracker: &I,
+    vector_storage: &V,
+    quantized: Option<&QuantizedVectors>,
+    query_context: &VectorQueryContext,
+    scored: Option<&mut usize>,
+) -> OperationResult<Vec<ScoredPointOffset>>
+where
+    V: VectorStorageRead + RawScorerBuilder,
+    I: IdTrackerRead,
+{
     if top == 0 {
         return Ok(Vec::new());
     }
@@ -100,7 +155,20 @@ where
     let visible = id_tracker
         .point_mappings()
         .filter_deferred_and_deleted(candidates.into_iter(), DeferredBehavior::VisibleOnly);
-    let mut batches = scorer.peek_top_iter(visible, &query_context.is_stopped())?;
+    let mut batches = match scored {
+        None => scorer.peek_top_iter(visible, &query_context.is_stopped())?,
+        Some(scored) => {
+            // Count what the scorer will not skip: it rejects deleted points
+            // (this mask) and deleted vectors (`NotDeletedChecker`).
+            let counted = visible.inspect(|&id| {
+                let point_deleted = deleted_points.get(id as usize).is_some_and(|bit| *bit);
+                if !point_deleted && !vector_storage.is_deleted_vector(id) {
+                    *scored += 1;
+                }
+            });
+            scorer.peek_top_iter(counted, &query_context.is_stopped())?
+        }
+    };
     Ok(batches
         .pop()
         .expect("one input query yields one result batch"))
