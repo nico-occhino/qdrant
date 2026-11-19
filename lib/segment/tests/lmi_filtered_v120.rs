@@ -597,3 +597,431 @@ fn baseline_planner_outputs_are_unchanged() {
         .collect();
     assert_eq!(digests, expected);
 }
+
+// ---------------------------------------------------------------------------
+// Research entry point, counters and probing policies.
+// ---------------------------------------------------------------------------
+
+use segment::index::lmi_index::filtered::{
+    CalibrationBin, CalibrationTable, CostModel, FilterProbePolicy, FilteredSearchMode,
+    FilteredSearchRecord, LinearCost,
+};
+
+fn research(
+    segment: &Segment,
+    query: &QueryVector,
+    filter: &Filter,
+    top: usize,
+    mode: &FilteredSearchMode,
+) -> (Vec<ScoredPointOffset>, FilteredSearchRecord) {
+    let index = segment.vector_data[DEFAULT_VECTOR_NAME]
+        .vector_index
+        .borrow();
+    let VectorIndexEnum::Lmi(lmi) = &*index else {
+        panic!("expected LMI index")
+    };
+    lmi.filtered_search_research(query, filter, top, mode, &VectorQueryContext::default())
+        .unwrap()
+}
+
+fn all_filters() -> Vec<Filter> {
+    let mut filters: Vec<Filter> = [1000_i64, 500, 100, 50, 10, 1]
+        .into_iter()
+        .map(r_below)
+        .collect();
+    filters.push(far_filter());
+    filters
+}
+
+/// Research `Baseline` mode, and `Policy(Baseline)`, run exactly the planner
+/// and search of the production `search()`.
+#[test]
+fn research_baseline_mode_equals_production_search() {
+    let _scope = common::ambient::unmeasured_guard(common::reason::reason("LMI filtering"));
+    let fixture = build_fixture();
+    let lmi = &fixture.lmi;
+    let mut queries = queries(&fixture, 40);
+    queries.extend(fixture.centers.iter().map(|c| QueryVector::from(c.clone())));
+    for filter in all_filters() {
+        let decision = plan(lmi, &filter);
+        for top in [1_usize, 10, 50] {
+            for query in &queries {
+                let production = lmi.vector_data[DEFAULT_VECTOR_NAME]
+                    .vector_index
+                    .borrow()
+                    .search(
+                        &[query],
+                        Some(&filter),
+                        top,
+                        None,
+                        &VectorQueryContext::default(),
+                    )
+                    .unwrap()
+                    .remove(0);
+                let (hits, record) =
+                    research(lmi, query, &filter, top, &FilteredSearchMode::Baseline);
+                assert_eq!(hits, production);
+                assert_eq!(record.decision, Some(decision));
+                assert_eq!(record.plan, decision.plan);
+                let (policy_hits, policy_record) = research(
+                    lmi,
+                    query,
+                    &filter,
+                    top,
+                    &FilteredSearchMode::Policy(FilterProbePolicy::Baseline),
+                );
+                assert_eq!(policy_hits, production);
+                assert_eq!(policy_record.plan, decision.plan);
+                assert_eq!(policy_record.decision, Some(decision));
+            }
+        }
+    }
+}
+
+/// Forced plans: exact equals exact search; routed at the configured probe
+/// equals the Baseline routed plan; `FixedProbe` at the configured probe
+/// decides like Baseline and its threshold is the probe volume at its nprobe.
+#[test]
+fn forced_plans_and_fixed_probe_match_their_definitions() {
+    let _scope = common::ambient::unmeasured_guard(common::reason::reason("LMI filtering"));
+    let fixture = build_fixture();
+    let lmi = &fixture.lmi;
+    let queries = queries(&fixture, 30);
+    for filter in all_filters() {
+        let decision = plan(lmi, &filter);
+        let fixed = {
+            let index = lmi.vector_data[DEFAULT_VECTOR_NAME].vector_index.borrow();
+            let VectorIndexEnum::Lmi(index) = &*index else {
+                panic!("expected LMI index")
+            };
+            (
+                index.filtered_plan_at(&filter, NPROBE).unwrap().unwrap(),
+                index.filtered_plan_at(&filter, 8).unwrap().unwrap(),
+            )
+        };
+        assert_eq!(fixed.0, decision);
+        assert_eq!(fixed.1.threshold, POINTS * 8 / BUCKETS);
+        for query in &queries {
+            let (exact_hits, record) =
+                research(lmi, query, &filter, TOP, &FilteredSearchMode::ForceExact);
+            assert_eq!(record.plan, FilteredPlan::ExactMatches);
+            assert!(record.routed.is_none());
+            assert_eq!(exact_hits, exact(lmi, query, Some(&filter)));
+            let (routed_hits, record) = research(
+                lmi,
+                query,
+                &filter,
+                TOP,
+                &FilteredSearchMode::ForceRouted { nprobe: NPROBE },
+            );
+            assert_eq!(record.plan, FilteredPlan::RoutedIntersect);
+            if decision.plan == FilteredPlan::RoutedIntersect {
+                assert_eq!(routed_hits, search(lmi, query, Some(&filter), None));
+            }
+            let (policy_hits, record) = research(
+                lmi,
+                query,
+                &filter,
+                TOP,
+                &FilteredSearchMode::Policy(FilterProbePolicy::FixedProbe { nprobe: NPROBE }),
+            );
+            assert_eq!(record.plan, decision.plan);
+            assert_eq!(policy_hits, search(lmi, query, Some(&filter), None));
+        }
+    }
+}
+
+/// Counter definitions, checked against an independent recomputation:
+/// raw offsets are the selected buckets' posting lengths, filter evaluations
+/// equal unique candidates, surviving candidates are those whose payload
+/// matches, scored excludes deleted points, and cumulative work is the sum of
+/// every probe of the query (each widening re-probes from scratch).
+#[test]
+fn routed_counters_match_independent_recomputation() {
+    let _scope = common::ambient::unmeasured_guard(common::reason::reason("LMI filtering"));
+    let fixture = build_fixture();
+    let lmi = &fixture.lmi;
+    let (state, tracker_ids): (LmiRoutingState, Vec<usize>) = {
+        let index = lmi.vector_data[DEFAULT_VECTOR_NAME].vector_index.borrow();
+        let VectorIndexEnum::Lmi(index) = &*index else {
+            panic!("expected LMI index")
+        };
+        let tracker = lmi.id_tracker.borrow();
+        let ids = (0..POINTS as u32)
+            .map(|offset| match tracker.external_id(offset).unwrap() {
+                segment::types::ExtendedPointId::NumId(n) => n as usize - 1,
+                other => panic!("unexpected id {other:?}"),
+            })
+            .collect();
+        (index.routing_state().unwrap().clone(), ids)
+    };
+    let stopped = AtomicBool::new(false);
+    let probe = |query: &QueryVector, nprobe: usize, keep: &dyn Fn(usize) -> bool| {
+        let normalized: QueryVector = match query {
+            QueryVector::Nearest(segment::data_types::vectors::VectorInternal::Dense(v)) => {
+                normalized(v.clone()).into()
+            }
+            _ => unreachable!(),
+        };
+        let (unique, raw) = state
+            .candidates_with_raw_count(&normalized, nprobe, &stopped)
+            .unwrap()
+            .unwrap();
+        let surviving = unique
+            .iter()
+            .filter(|&&o| keep(tracker_ids[o as usize]))
+            .count();
+        (raw, unique.len(), surviving)
+    };
+
+    // No widening: final probe equals cumulative.
+    let filter = r_below(500);
+    let keep = |i: usize| r_value(i) < 500;
+    for (q, query) in queries(&fixture, 20).iter().enumerate() {
+        for nprobe in [1_usize, 2, 4, 8] {
+            let (_, record) = research(
+                lmi,
+                query,
+                &filter,
+                TOP,
+                &FilteredSearchMode::ForceRouted { nprobe },
+            );
+            let stats = record.routed.unwrap();
+            assert_eq!(stats.widenings, 0, "query {q} nprobe {nprobe}");
+            let (raw, unique, surviving) = probe(query, nprobe, &keep);
+            let counts = stats.final_probe;
+            assert_eq!(counts.raw_offsets, raw);
+            assert_eq!(counts.unique_candidates, unique);
+            assert_eq!(counts.filter_evaluations, unique);
+            assert_eq!(counts.surviving, surviving);
+            assert_eq!(counts.scored, surviving, "nothing is deleted");
+            assert_eq!(stats.cumulative, stats.final_probe);
+            // Static postings hold each point once: raw equals unique.
+            assert_eq!(counts.raw_offsets, counts.unique_candidates);
+        }
+    }
+
+    // Widening: cumulative is the sum over the probe sequence p, 2p, 4p, ...
+    let filter = far_filter();
+    let keep = |i: usize| FAR_CLUSTERS.contains(&(i % BUCKETS));
+    let query: QueryVector = fixture.centers[0].clone().into();
+    let (_, record) = research(
+        lmi,
+        &query,
+        &filter,
+        TOP,
+        &FilteredSearchMode::ForceRouted { nprobe: 1 },
+    );
+    let stats = record.routed.unwrap();
+    assert!(stats.widenings > 0);
+    let mut expected = segment::index::lmi_index::filtered::ProbeCounts::default();
+    let mut nprobe = 1;
+    for step in 0..=stats.widenings {
+        let (raw, unique, surviving) = probe(&query, nprobe, &keep);
+        expected.raw_offsets += raw;
+        expected.unique_candidates += unique;
+        expected.filter_evaluations += unique;
+        expected.surviving += surviving;
+        expected.scored += surviving;
+        if step == stats.widenings {
+            assert_eq!(stats.final_nprobe, nprobe);
+            assert_eq!(stats.final_probe.unique_candidates, unique);
+        } else {
+            nprobe = (nprobe * 2).min(BUCKETS);
+        }
+    }
+    assert_eq!(stats.initial_nprobe, 1);
+    assert_eq!(stats.cumulative, expected);
+    assert!(stats.cumulative.unique_candidates > stats.final_probe.unique_candidates);
+
+    // A deleted surviving candidate is evaluated and survives the filter but is not scored.
+    let filter = r_below(1000);
+    let query = queries(&fixture, 1).remove(0);
+    let mode = FilteredSearchMode::ForceRouted { nprobe: 2 };
+    let (hits, before) = research(lmi, &query, &filter, TOP, &mode);
+    let victim = lmi.id_tracker.borrow().external_id(hits[0].idx).unwrap();
+    lmi.id_tracker.borrow_mut().drop(victim).unwrap();
+    let (_, after) = research(lmi, &query, &filter, TOP, &mode);
+    let (before, after) = (before.routed.unwrap(), after.routed.unwrap());
+    assert_eq!(after.final_probe.surviving, before.final_probe.surviving);
+    assert_eq!(after.final_probe.scored, before.final_probe.scored - 1);
+}
+
+fn costs(exact_per_match_ns: f64, route_fixed_ns: f64) -> CostModel {
+    CostModel {
+        exact_iteration: LinearCost {
+            fixed_ns: 0.0,
+            per_unit_ns: exact_per_match_ns,
+        },
+        exact_scan: LinearCost {
+            fixed_ns: 0.0,
+            per_unit_ns: exact_per_match_ns,
+        },
+        route_fixed_ns,
+        route_per_candidate_ns: 0.0,
+        route_per_scored_ns: 0.0,
+        unique_candidates_at: [1_usize, 2, 4, 8, 16, 32]
+            .iter()
+            .map(|&p| (p, (p * PER_BUCKET) as f64))
+            .collect(),
+    }
+}
+
+/// Calibration tables bin conservatively and fall back to exact.
+#[test]
+fn calibration_table_bins_round_selectivity_down() {
+    let table = CalibrationTable {
+        target_recall: 0.95,
+        bins: vec![
+            CalibrationBin {
+                selectivity: 0.01,
+                nprobe: None,
+            },
+            CalibrationBin {
+                selectivity: 0.1,
+                nprobe: Some(8),
+            },
+            CalibrationBin {
+                selectivity: 1.0,
+                nprobe: Some(2),
+            },
+        ],
+    };
+    let bin = |s: f64| table.bin_for(s).unwrap().selectivity;
+    assert_eq!(bin(1.0), 1.0);
+    assert_eq!(
+        bin(0.99),
+        0.1,
+        "between bins: the lower selectivity, more probes"
+    );
+    assert_eq!(bin(0.1), 0.1);
+    assert_eq!(bin(0.05), 0.01);
+    assert_eq!(bin(0.0001), 0.01, "below the grid: the smallest bin");
+    assert!(
+        CalibrationTable {
+            target_recall: 0.9,
+            bins: vec![]
+        }
+        .bin_for(0.5)
+        .is_none()
+    );
+}
+
+/// Policy decisions use the estimate only and route to the forced plans.
+#[test]
+fn probing_policies_decide_from_the_estimate_and_execute_the_forced_plan() {
+    let _scope = common::ambient::unmeasured_guard(common::reason::reason("LMI filtering"));
+    let fixture = build_fixture();
+    let lmi = &fixture.lmi;
+    let table = CalibrationTable {
+        target_recall: 0.95,
+        bins: vec![
+            CalibrationBin {
+                selectivity: 0.001,
+                nprobe: None,
+            },
+            CalibrationBin {
+                selectivity: 0.05,
+                nprobe: Some(16),
+            },
+            CalibrationBin {
+                selectivity: 0.5,
+                nprobe: Some(4),
+            },
+        ],
+    };
+    // Exact is expensive per match and routing is cheap: route whenever the table allows.
+    let cheap_routing = costs(1_000.0, 1.0);
+    // Routing is prohibitively expensive: always exact.
+    let costly_routing = costs(1.0, 1e12);
+    let query = queries(&fixture, 1).remove(0);
+    // r < 500 matches 3,199 of 6,400 points: just below the 0.5 bin, so it rounds
+    // down to the 0.05 bin (more probes), as conservative binning requires.
+    for (limit, expected_nprobe) in [
+        (1000_i64, Some(4)),
+        (500, Some(16)),
+        (100, Some(16)),
+        (50, Some(16)),
+        (1, None),
+    ] {
+        let filter = r_below(limit);
+        let calibrated = FilterProbePolicy::Calibrated {
+            table: table.clone(),
+            costs: cheap_routing.clone(),
+        };
+        let (hits, record) = research(
+            lmi,
+            &query,
+            &filter,
+            TOP,
+            &FilteredSearchMode::Policy(calibrated),
+        );
+        let decision = record.policy.unwrap();
+        match expected_nprobe {
+            Some(nprobe) => {
+                assert_eq!(
+                    decision.plan,
+                    FilteredPlan::RoutedIntersect,
+                    "limit {limit}"
+                );
+                assert_eq!(decision.nprobe, nprobe, "limit {limit}");
+                let (forced, _) = research(
+                    lmi,
+                    &query,
+                    &filter,
+                    TOP,
+                    &FilteredSearchMode::ForceRouted { nprobe },
+                );
+                assert_eq!(hits, forced);
+                assert_eq!(record.routed.unwrap().initial_nprobe, nprobe);
+            }
+            None => {
+                assert_eq!(decision.plan, FilteredPlan::ExactMatches, "limit {limit}");
+                assert_eq!(hits, exact(lmi, &query, Some(&filter)));
+            }
+        }
+        let costly = FilterProbePolicy::Calibrated {
+            table: table.clone(),
+            costs: costly_routing.clone(),
+        };
+        let (hits, record) = research(
+            lmi,
+            &query,
+            &filter,
+            TOP,
+            &FilteredSearchMode::Policy(costly),
+        );
+        assert_eq!(record.policy.unwrap().plan, FilteredPlan::ExactMatches);
+        assert_eq!(hits, exact(lmi, &query, Some(&filter)));
+        // C1 at a fixed probe count follows the same cost comparison.
+        let c1 = FilterProbePolicy::CostModel {
+            nprobe: 8,
+            costs: cheap_routing.clone(),
+        };
+        let (_, record) = research(lmi, &query, &filter, TOP, &FilteredSearchMode::Policy(c1));
+        let decision = record.policy.unwrap();
+        assert_eq!(decision.nprobe, 8);
+        assert!(decision.predicted_exact_ns.unwrap() > decision.predicted_routed_ns.unwrap());
+        assert_eq!(decision.plan, FilteredPlan::RoutedIntersect);
+    }
+    // A probe count without calibration is an error, never a silent default.
+    let bad = FilterProbePolicy::CostModel {
+        nprobe: 3,
+        costs: cheap_routing,
+    };
+    let index = lmi.vector_data[DEFAULT_VECTOR_NAME].vector_index.borrow();
+    let VectorIndexEnum::Lmi(index) = &*index else {
+        panic!("expected LMI index")
+    };
+    assert!(
+        index
+            .filtered_search_research(
+                &query,
+                &r_below(500),
+                TOP,
+                &FilteredSearchMode::Policy(bad),
+                &VectorQueryContext::default(),
+            )
+            .is_err()
+    );
+}
