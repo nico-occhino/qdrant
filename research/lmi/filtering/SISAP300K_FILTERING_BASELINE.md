@@ -68,6 +68,8 @@ p95 values are in the JSON. The run took 8 min 04 s, with peak RSS 2.3 GB.
    selectivity drops. This is consistent with the static Tier 1–3 result.
 5. **Filter checks are not free.** At 100% selectivity the same probe costs about 2.2 ms more than unfiltered search
    (IVF). The planner's break-even ignores this cost.
+   *Erratum:* the later stage pass shows that filter checks account for only ≈0.75 ms of this (15.6 ns per
+   evaluation). See `FILTER_PROBING_REPORT.md`.
 6. **Exact filtered search has its own cost cliff.** It costs about 0.11 µs per matching point at 1% and about
    0.55–0.76 µs from 3% up to 100%. This is probably Plain switching from payload-index iteration to a full scan with
    per-point checks. Not verified.
