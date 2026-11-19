@@ -235,6 +235,7 @@ impl LmiIndex {
             dim,
             &config,
             vector_config.distance,
+            args.permit.num_cpus as usize,
             args.stopped,
         )?;
         log::info!(

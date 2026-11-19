@@ -325,7 +325,7 @@ pub(super) fn train(
     distance: Distance,
     stopped: &AtomicBool,
 ) -> OperationResult<MlpRouter> {
-    train_with_tch(data, dim, config, distance, stopped).map(|trained| trained.native)
+    train_with_tch(data, dim, config, distance, 1, stopped).map(|trained| trained.native)
 }
 
 /// Research-only router selection, read once per build from `LMI_RESEARCH_ROUTER`.
@@ -412,11 +412,15 @@ pub(super) fn centroid_router(centers: &[Vec<f64>], dim: usize) -> OperationResu
     })
 }
 
+/// `threads` is the build's CPU permit; it parallelises only the spherical
+/// teacher's assignment steps (results are independent of it). MLP training
+/// stays single-threaded for reproducibility.
 pub(super) fn train_with_tch(
     data: &[f32],
     dim: usize,
     config: &LmiConfig,
     distance: Distance,
+    threads: usize,
     stopped: &AtomicBool,
 ) -> OperationResult<TrainedRouter> {
     check_process_stopped(stopped)?;
@@ -425,8 +429,9 @@ pub(super) fn train_with_tch(
     let mut teacher_centers = None;
     let labels = match distance {
         Distance::Cosine => {
-            let (labels, centers, stats) =
-                super::spherical_kmeans::cluster_with_centers_qdrant(data, dim, config, stopped)?;
+            let (labels, centers, stats) = super::spherical_kmeans::cluster_with_centers_qdrant(
+                data, dim, config, threads, stopped,
+            )?;
             // Explicit derived diagnostic artifact for a bounded private build.
             // Disabled normally; never used as authoritative index/recovery state.
             if let Some(path) = std::env::var_os("LMI_TEACHER_DIAGNOSTIC") {
@@ -733,7 +738,7 @@ mod tests {
             -0.71414286,
         ];
         let stopped = AtomicBool::new(false);
-        let trained = train_with_tch(&data, 2, &config, Distance::Cosine, &stopped).unwrap();
+        let trained = train_with_tch(&data, 2, &config, Distance::Cosine, 1, &stopped).unwrap();
         trained.native.validate().unwrap();
         let (torch_logits, _) = trained.logits_for_test(&data).unwrap();
         for (row, logits) in data.chunks_exact(2).zip(torch_logits.chunks_exact(2)) {
@@ -743,7 +748,7 @@ mod tests {
                 assert!((a - b).abs() < 1e-4);
             }
         }
-        let again = train_with_tch(&data, 2, &config, Distance::Cosine, &stopped).unwrap();
+        let again = train_with_tch(&data, 2, &config, Distance::Cosine, 1, &stopped).unwrap();
         assert_eq!(trained.native, again.native);
     }
 

@@ -5,7 +5,8 @@
 //! * `source`: ingest `ANN_N` rows of a little-endian Float16 corpus (`ANN_CORPUS`) into one
 //!   appendable Plain Float16 segment under `ANN_ROOT/source` (ids 1..=N).
 //! * `build`: build `ANN_ROOT/build-$ANN_NAME` from the source with `ANN_INDEX` (JSON:
-//!   `{"plain":{}}`, `{"hnsw":{"m":16,"ef_construct":100,"threads":16}}` or `{"lmi":LmiConfig}`)
+//!   `{"plain":{}}`, `{"hnsw":{"m":16,"ef_construct":100,"threads":16}}` or `{"lmi":LmiConfig}`,
+//!   optionally with a top-level `"threads"` CPU permit for LMI)
 //!   through `SegmentBuilder`, recording wall time, index bytes and peak RSS.
 //! * `search`: load a built segment and time index-level search for every setting in
 //!   `ANN_SETTINGS` (nprobe for LMI, ef for HNSW, ignored for Plain) over raw Float32 queries
@@ -181,6 +182,10 @@ fn phase_build(root: &Path) {
         })
     } else if let Some(l) = spec.get("lmi") {
         let cfg: LmiConfig = serde_json::from_value(l.clone()).unwrap();
+        // Optional top-level "threads": the CPU permit (parallel KMeans assignment).
+        if let Some(t) = spec.get("threads") {
+            threads = t.as_u64().unwrap() as usize;
+        }
         Indexes::LmiTrained(cfg)
     } else {
         Indexes::Plain {}

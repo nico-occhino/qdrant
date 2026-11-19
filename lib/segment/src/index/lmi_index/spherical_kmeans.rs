@@ -6,6 +6,7 @@ use std::time::Instant;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
+use rayon::prelude::*;
 
 use super::LmiConfig;
 use crate::common::operation_error::{OperationError, OperationResult, check_process_stopped};
@@ -92,26 +93,75 @@ pub(super) fn cluster_with_centers(
     config: &LmiConfig,
     stopped: &AtomicBool,
 ) -> OperationResult<(Vec<i64>, Vec<Vec<f64>>, ClusterStats)> {
-    cluster_impl(data, dim, config, stopped, AssignmentKernel::ScalarF64)
+    cluster_impl(data, dim, config, 1, stopped, AssignmentKernel::ScalarF64)
 }
 
+/// `threads` parallelises only the per-row assignment steps. Each row's label
+/// is computed by the same sequential kernel regardless of the thread count,
+/// and accumulation stays sequential in row order, so labels and centers are
+/// bit-identical for every `threads >= 1`.
 pub(super) fn cluster_with_centers_qdrant(
     data: &[f32],
     dim: usize,
     config: &LmiConfig,
+    threads: usize,
     stopped: &AtomicBool,
 ) -> OperationResult<(Vec<i64>, Vec<Vec<f64>>, ClusterStats)> {
-    cluster_impl(data, dim, config, stopped, AssignmentKernel::QdrantF32)
+    cluster_impl(
+        data,
+        dim,
+        config,
+        threads,
+        stopped,
+        AssignmentKernel::QdrantF32,
+    )
+}
+
+/// Label every row with its best centroid, in row order.
+fn assign_all(
+    data: &[f32],
+    dim: usize,
+    centers: &[Vec<f64>],
+    centers_f32: Option<&[Vec<f32>]>,
+    pool: Option<&rayon::ThreadPool>,
+    stopped: &AtomicBool,
+) -> OperationResult<Vec<usize>> {
+    let label = |row: &[f32]| -> OperationResult<usize> {
+        check_process_stopped(stopped)?;
+        Ok(match centers_f32 {
+            Some(c) => assign_qdrant(row, c),
+            None => assign(row, centers),
+        })
+    };
+    match pool {
+        Some(pool) => pool.install(|| data.par_chunks_exact(dim).map(label).collect()),
+        None => data.chunks_exact(dim).map(label).collect(),
+    }
 }
 
 fn cluster_impl(
     data: &[f32],
     dim: usize,
     config: &LmiConfig,
+    threads: usize,
     stopped: &AtomicBool,
     kernel: AssignmentKernel,
 ) -> OperationResult<(Vec<i64>, Vec<Vec<f64>>, ClusterStats)> {
     check_process_stopped(stopped)?;
+    if threads == 0 {
+        return Err(error("LMI spherical KMeans needs at least one thread"));
+    }
+    let pool = if threads > 1 {
+        Some(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .thread_name(|i| format!("lmi-kmeans-{i}"))
+                .build()
+                .map_err(|e| error(&format!("LMI spherical KMeans thread pool: {e}")))?,
+        )
+    } else {
+        None
+    };
     config.check()?;
     if dim == 0 || !data.len().is_multiple_of(dim) {
         return Err(error("LMI spherical sample has invalid dimensions"));
@@ -168,14 +218,17 @@ fn cluster_impl(
                     .collect::<Vec<_>>(),
             ),
         };
-        for (point, row) in data.chunks_exact(dim).enumerate() {
-            check_process_stopped(stopped)?;
-            let bucket = match &centers_f32 {
-                Some(c) => assign_qdrant(row, c),
-                None => assign(row, &centers),
-            };
-            changed |= labels[point] != bucket;
-            labels[point] = bucket;
+        let assigned = assign_all(
+            data,
+            dim,
+            &centers,
+            centers_f32.as_deref(),
+            pool.as_ref(),
+            stopped,
+        )?;
+        for (label, bucket) in labels.iter_mut().zip(assigned) {
+            changed |= *label != bucket;
+            *label = bucket;
         }
         drop(centers_f32); // Avoid f32 centers overlapping the f64 accumulator matrix.
         stats
@@ -234,12 +287,15 @@ fn cluster_impl(
                 .collect::<Vec<_>>(),
         ),
     };
-    for row in data.chunks_exact(dim) {
-        check_process_stopped(stopped)?;
-        let bucket = match &centers_f32 {
-            Some(c) => assign_qdrant(row, c),
-            None => assign(row, &centers),
-        };
+    let assigned = assign_all(
+        data,
+        dim,
+        &centers,
+        centers_f32.as_deref(),
+        pool.as_ref(),
+        stopped,
+    )?;
+    for bucket in assigned {
         final_labels.push(bucket as i64);
         stats.sizes[bucket] += 1;
     }
@@ -254,13 +310,14 @@ pub(super) fn cluster(
     config: &LmiConfig,
     stopped: &AtomicBool,
 ) -> OperationResult<Vec<i64>> {
-    cluster_with_centers_qdrant(data, dim, config, stopped).map(|(labels, _, _)| labels)
+    cluster_with_centers_qdrant(data, dim, config, 1, stopped).map(|(labels, _, _)| labels)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::atomic::Ordering;
+
+    use super::*;
 
     fn config(buckets: usize, iterations: usize, seed: u64) -> LmiConfig {
         LmiConfig {
@@ -349,13 +406,95 @@ mod tests {
         let stopped = AtomicBool::new(false);
         let cfg = config(2, 12, 42);
         let scalar = cluster_with_centers(&data, 2, &cfg, &stopped).unwrap();
-        let native = cluster_with_centers_qdrant(&data, 2, &cfg, &stopped).unwrap();
+        let native = cluster_with_centers_qdrant(&data, 2, &cfg, 1, &stopped).unwrap();
         assert_eq!(scalar.0, native.0);
         assert_eq!(scalar.1, native.1);
         assert_eq!(native.0, cluster(&data, 2, &cfg, &stopped).unwrap());
         let zero = [0.0, 0.0, 0.0, 0.0];
-        let native = cluster_with_centers_qdrant(&zero, 2, &config(2, 3, 7), &stopped).unwrap();
+        let native = cluster_with_centers_qdrant(&zero, 2, &config(2, 3, 7), 1, &stopped).unwrap();
         assert_eq!(native.0, [0, 0]);
+    }
+
+    #[test]
+    fn parallel_assignment_is_bit_identical_to_single_thread() {
+        // Deterministic pseudo-random unit vectors (no RNG dependency on thread count).
+        let (count, dim) = (1_500, 16);
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut data = Vec::with_capacity(count * dim);
+        for _ in 0..count {
+            let row: Vec<f32> = (0..dim)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    (state >> 40) as f32 / (1u64 << 23) as f32 - 1.0
+                })
+                .collect();
+            let norm = row.iter().map(|v| v * v).sum::<f32>().sqrt();
+            data.extend(row.iter().map(|v| v / norm));
+        }
+        let stopped = AtomicBool::new(false);
+        let cfg = LmiConfig {
+            sample_size: count,
+            ..config(40, 8, 11)
+        };
+        let serial = cluster_with_centers_qdrant(&data, dim, &cfg, 1, &stopped).unwrap();
+        for threads in [2, 3, 8] {
+            let parallel =
+                cluster_with_centers_qdrant(&data, dim, &cfg, threads, &stopped).unwrap();
+            assert_eq!(serial.0, parallel.0, "labels differ at {threads} threads");
+            assert_eq!(serial.1, parallel.1, "centers differ at {threads} threads");
+            assert_eq!(serial.2.iterations, parallel.2.iterations);
+            assert_eq!(serial.2.sizes, parallel.2.sizes);
+        }
+        assert!(cluster_with_centers_qdrant(&data, dim, &cfg, 0, &stopped).is_err());
+        stopped.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(cluster_with_centers_qdrant(&data, dim, &cfg, 4, &stopped).is_err());
+    }
+
+    #[test]
+    #[ignore = "Explicit bounded parallel KMeans assignment timing (50K x 768, B 2,048)"]
+    fn parallel_assignment_synthetic_benchmark() {
+        let (count, dim) = (50_000, 768);
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut data = Vec::with_capacity(count * dim);
+        for _ in 0..count {
+            let row: Vec<f32> = (0..dim)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    (state >> 40) as f32 / (1u64 << 23) as f32 - 1.0
+                })
+                .collect();
+            let norm = row.iter().map(|v| v * v).sum::<f32>().sqrt();
+            data.extend(row.iter().map(|v| v / norm));
+        }
+        let stopped = AtomicBool::new(false);
+        let cfg = LmiConfig {
+            sample_size: count,
+            ..config(2_048, 2, 5)
+        };
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let mut reference = None;
+        for t in [1, threads] {
+            let started = Instant::now();
+            let result = cluster_with_centers_qdrant(&data, dim, &cfg, t, &stopped).unwrap();
+            println!(
+                "threads={t} total_seconds={:.3} assignment_seconds={:?} accumulation_seconds={:?} final_assignment_seconds={:.3}",
+                started.elapsed().as_secs_f64(),
+                result.2.assignment_seconds,
+                result.2.accumulation_seconds,
+                result.2.final_assignment_seconds,
+            );
+            match &reference {
+                None => reference = Some(result),
+                Some(r) => {
+                    assert_eq!(r.0, result.0);
+                    assert_eq!(r.1, result.1);
+                }
+            }
+        }
     }
 
     #[test]
