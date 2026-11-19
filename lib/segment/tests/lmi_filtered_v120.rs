@@ -471,3 +471,129 @@ fn deleted_point_is_excluded_from_routed_filtered_results() {
     // Same probe minus the deleted offset: the old ranks 2..=10 move up by one.
     assert_eq!(second[..TOP - 1], first[1..]);
 }
+
+/// FNV-1a 64: a stable, dependency-free digest for regression fingerprints.
+fn fnv(hash: &mut u64, bytes: &[u8]) {
+    for &b in bytes {
+        *hash ^= u64::from(b);
+        *hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+}
+
+/// Outputs (offsets and exact score bits) and plan decisions of the Baseline
+/// planner, recorded at `a89ab1fd3` before the probing-policy changes. Every
+/// later change must leave them bit-identical, on both the mutable and the
+/// read-only index paths.
+const BASELINE_DIGESTS: &[(&str, u64)] = &[
+    ("none/top1", 0xc7873ae1f5c26a0e),
+    ("none/top10", 0x2a7337b25d960be4),
+    ("none/top50", 0x2b3df395f174eb4a),
+    ("r<1000/top1", 0x929d6f10ffdafc64),
+    ("r<1000/top10", 0x1942904b989cbe02),
+    ("r<1000/top50", 0xc0e1f56dee3f7a68),
+    ("r<500/top1", 0x785c7f9cd1b97f12),
+    ("r<500/top10", 0xd658d4bc31520f82),
+    ("r<500/top50", 0x6e14ce767f98e63c),
+    ("r<100/top1", 0x3e87d7874dd14483),
+    ("r<100/top10", 0x37925614f755d8b2),
+    ("r<100/top50", 0x518705b630b1095a),
+    ("r<50/top1", 0xe4e3080a6d582f54),
+    ("r<50/top10", 0xb603f124c06e3a39),
+    ("r<50/top50", 0xc34353a384545ceb),
+    ("r<10/top1", 0x8b2f407ff0cf27f1),
+    ("r<10/top10", 0x74ffdc8d4a8e88b5),
+    ("r<10/top50", 0x33dfe4af28089d8e),
+    ("r<1/top1", 0x48ceddf22d6fc721),
+    ("r<1/top10", 0x099b0f59e52224c8),
+    ("r<1/top50", 0x099b0f59e52224c8),
+    ("far/top1", 0xa78b29d0c5b5792d),
+    ("far/top10", 0xabbf16fa329ad737),
+    ("far/top50", 0xfabe27084e02400d),
+    ("plans_exact", 0x0000000000000510),
+    ("plans_routed", 0x00000000000006c0),
+    ("widenings", 0x00000000000002f9),
+];
+
+#[test]
+fn baseline_planner_outputs_are_unchanged() {
+    let _scope = common::ambient::unmeasured_guard(common::reason::reason("LMI filtering"));
+    let fixture = build_fixture();
+    let lmi = &fixture.lmi;
+    let read_only =
+        ReadOnlySegment::<MmapFile>::open(&MmapFs, &lmi.segment_path, lmi.uuid, None, None)
+            .unwrap();
+    let mut queries = queries(&fixture, 112);
+    queries.extend(fixture.centers.iter().map(|c| QueryVector::from(c.clone())));
+    let mut cases: Vec<(String, Option<Filter>)> = vec![("none".into(), None)];
+    for limit in [1000_i64, 500, 100, 50, 10, 1] {
+        cases.push((format!("r<{limit}"), Some(r_below(limit))));
+    }
+    cases.push(("far".into(), Some(far_filter())));
+
+    let mut digests = Vec::new();
+    for (name, filter) in &cases {
+        for top in [1_usize, 10, 50] {
+            let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+            if let Some(filter) = filter {
+                fnv(&mut hash, format!("{:?}", plan(lmi, filter)).as_bytes());
+            }
+            for query in &queries {
+                let run = |index: &dyn VectorIndexRead| {
+                    index
+                        .search(
+                            &[query],
+                            filter.as_ref(),
+                            top,
+                            None,
+                            &VectorQueryContext::default(),
+                        )
+                        .unwrap()
+                        .remove(0)
+                };
+                let mutable = run(&*lmi.vector_data[DEFAULT_VECTOR_NAME].vector_index.borrow());
+                let shared = run(&*read_only.vector_data[DEFAULT_VECTOR_NAME]
+                    .vector_index
+                    .borrow());
+                assert_eq!(
+                    mutable, shared,
+                    "read-only path diverged for {name} top {top}"
+                );
+                for hit in &mutable {
+                    fnv(&mut hash, &hit.idx.to_le_bytes());
+                    fnv(&mut hash, &hit.score.to_bits().to_le_bytes());
+                }
+                fnv(&mut hash, b";");
+            }
+            digests.push((format!("{name}/top{top}"), hash));
+        }
+    }
+    // Plan counters and widenings accumulated over all of the above.
+    let (plans, widenings) = {
+        let index = lmi.vector_data[DEFAULT_VECTOR_NAME].vector_index.borrow();
+        let VectorIndexEnum::Lmi(index) = &*index else {
+            panic!("expected LMI index")
+        };
+        (
+            index.filtered_plan_counts_for_test(),
+            index.underfill_widenings_for_test(),
+        )
+    };
+    digests.push(("plans_exact".into(), plans.0));
+    digests.push(("plans_routed".into(), plans.1));
+    digests.push(("widenings".into(), widenings));
+
+    if BASELINE_DIGESTS.is_empty() || std::env::var_os("LMI_PRINT_BASELINE_DIGESTS").is_some() {
+        for (name, value) in &digests {
+            eprintln!("    (\"{name}\", 0x{value:016x}),");
+        }
+    }
+    assert!(
+        !BASELINE_DIGESTS.is_empty(),
+        "baseline digests not recorded"
+    );
+    let expected: Vec<(String, u64)> = BASELINE_DIGESTS
+        .iter()
+        .map(|(name, value)| (name.to_string(), *value))
+        .collect();
+    assert_eq!(digests, expected);
+}
