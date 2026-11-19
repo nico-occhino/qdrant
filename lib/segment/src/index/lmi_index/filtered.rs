@@ -356,16 +356,217 @@ pub enum FilteredSearchMode {
     ForceExact,
     /// Route at `nprobe`, intersect with the filter, widen only to fill.
     ForceRouted { nprobe: usize },
+    /// A research probing policy (see [`FilterProbePolicy`]).
+    Policy(FilterProbePolicy),
 }
 
 /// What one research call did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FilteredSearchRecord {
     pub plan: FilteredPlan,
     /// Initial probe count of a routed plan (the configured one otherwise).
     pub nprobe: usize,
     /// Break-even decision, when the mode consulted it.
     pub decision: Option<FilteredPlanDecision>,
+    /// Full policy decision, for `FilteredSearchMode::Policy`.
+    pub policy: Option<PolicyDecision>,
     /// Candidate accounting of a routed plan.
     pub routed: Option<RoutedFilterStats>,
+}
+
+/// `fixed_ns + per_unit_ns · units`.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LinearCost {
+    pub fixed_ns: f64,
+    pub per_unit_ns: f64,
+}
+
+impl LinearCost {
+    fn eval(&self, units: f64) -> f64 {
+        self.fixed_ns + self.per_unit_ns * units
+    }
+}
+
+/// Latency model fitted offline on validation queries. It predicts plan costs
+/// from the payload estimate only; it never sees a query's true matching count.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CostModel {
+    /// Exact plan when a payload index can be iterated, per estimated match.
+    pub exact_iteration: LinearCost,
+    /// Exact plan when every point is scanned with the filter, per estimated match.
+    pub exact_scan: LinearCost,
+    /// Routed plan: fixed cost (routing).
+    pub route_fixed_ns: f64,
+    /// Routed plan: per unique candidate (filter evaluation and gather).
+    pub route_per_candidate_ns: f64,
+    /// Routed plan: per scored vector.
+    pub route_per_scored_ns: f64,
+    /// Mean unique candidates of a probe at each grid `nprobe` (validation).
+    pub unique_candidates_at: Vec<(usize, f64)>,
+}
+
+impl CostModel {
+    pub fn exact_ns(&self, estimate: &FilterEstimate) -> f64 {
+        let cost = if estimate.primary_iteration {
+            &self.exact_iteration
+        } else {
+            &self.exact_scan
+        };
+        cost.eval(estimate.exp as f64)
+    }
+
+    /// `None` when `nprobe` is not a calibrated grid point.
+    pub fn routed_ns(&self, nprobe: usize, estimate: &FilterEstimate) -> Option<f64> {
+        let unique = self
+            .unique_candidates_at
+            .iter()
+            .find(|(p, _)| *p == nprobe)
+            .map(|(_, unique)| *unique)?;
+        let selectivity = estimate.exp as f64 / estimate.available.max(1) as f64;
+        Some(
+            self.route_fixed_ns
+                + self.route_per_candidate_ns * unique
+                + self.route_per_scored_ns * selectivity * unique,
+        )
+    }
+}
+
+/// One selectivity bin of a calibration table.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CalibrationBin {
+    /// Grid selectivity (fraction of live points) this bin was calibrated at.
+    pub selectivity: f64,
+    /// Smallest grid `nprobe` meeting the target on validation; `None` if none did.
+    pub nprobe: Option<usize>,
+}
+
+/// Selectivity → `nprobe`, calibrated on validation queries for one index.
+/// It targets *mean* recall over the validation query distribution; it gives
+/// no per-query guarantee.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CalibrationTable {
+    /// Mean Recall@10 the table was calibrated for (documentation only).
+    pub target_recall: f64,
+    /// Bins in ascending selectivity.
+    pub bins: Vec<CalibrationBin>,
+}
+
+impl CalibrationTable {
+    /// The bin at the largest grid selectivity not above `selectivity`; below
+    /// the smallest bin, the smallest. Rounding down is the conservative side:
+    /// lower selectivity needs at least as many probes.
+    pub fn bin_for(&self, selectivity: f64) -> Option<&CalibrationBin> {
+        let tolerance = 1e-12;
+        self.bins
+            .iter()
+            .rev()
+            .find(|bin| bin.selectivity <= selectivity + tolerance)
+            .or_else(|| self.bins.first())
+    }
+}
+
+/// Research probing policies. Each decides from the payload estimate (and,
+/// for the break-even rules, the planner's sampling check) only.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilterProbePolicy {
+    /// B0: the committed planner.
+    Baseline,
+    /// B1: the Baseline break-even rule at a fixed probe count.
+    FixedProbe { nprobe: usize },
+    /// C1: exact versus routed at a fixed probe count by predicted latency.
+    CostModel { nprobe: usize, costs: CostModel },
+    /// R1 / R2: probe count from a calibration table, then exact versus
+    /// routed by predicted latency; exact when the bin has no probe count.
+    Calibrated {
+        table: CalibrationTable,
+        costs: CostModel,
+    },
+}
+
+/// What a policy decided for one filter.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PolicyDecision {
+    pub plan: FilteredPlan,
+    pub nprobe: usize,
+    pub estimate: FilterEstimate,
+    /// The break-even decision, for B0 and B1.
+    pub break_even: Option<FilteredPlanDecision>,
+    /// Predicted latencies, for C1 and the calibrated policies.
+    pub predicted_exact_ns: Option<f64>,
+    pub predicted_routed_ns: Option<f64>,
+}
+
+/// Apply a probing policy to `filter`.
+pub fn decide_policy<P, I, V>(
+    policy: &FilterProbePolicy,
+    state: &LmiRoutingState,
+    payload_index: &P,
+    filter: &Filter,
+    id_tracker: &I,
+    vector_storage: &V,
+) -> OperationResult<PolicyDecision>
+where
+    P: PayloadIndexRead,
+    I: IdTrackerRead,
+    V: VectorStorageRead,
+{
+    let estimate = estimate_filter(payload_index, filter, id_tracker, vector_storage)?;
+    let break_even = |nprobe: usize| -> OperationResult<PolicyDecision> {
+        let decision = choose_filtered_plan_with_threshold(
+            payload_index,
+            filter,
+            id_tracker,
+            vector_storage,
+            probe_volume_at(state, nprobe),
+        )?;
+        Ok(PolicyDecision {
+            plan: decision.plan,
+            nprobe,
+            estimate,
+            break_even: Some(decision),
+            predicted_exact_ns: None,
+            predicted_routed_ns: None,
+        })
+    };
+    let by_cost = |nprobe: usize, costs: &CostModel| -> OperationResult<PolicyDecision> {
+        let exact_ns = costs.exact_ns(&estimate);
+        let routed_ns = costs.routed_ns(nprobe, &estimate).ok_or_else(|| {
+            OperationError::service_error(format!(
+                "cost model has no calibration at nprobe {nprobe}"
+            ))
+        })?;
+        let plan = if estimate.exp == 0 || exact_ns <= routed_ns {
+            FilteredPlan::ExactMatches
+        } else {
+            FilteredPlan::RoutedIntersect
+        };
+        Ok(PolicyDecision {
+            plan,
+            nprobe,
+            estimate,
+            break_even: None,
+            predicted_exact_ns: Some(exact_ns),
+            predicted_routed_ns: Some(routed_ns),
+        })
+    };
+    match policy {
+        FilterProbePolicy::Baseline => break_even(state.nprobe()),
+        FilterProbePolicy::FixedProbe { nprobe } => break_even(*nprobe),
+        FilterProbePolicy::CostModel { nprobe, costs } => by_cost(*nprobe, costs),
+        FilterProbePolicy::Calibrated { table, costs } => {
+            let selectivity = estimate.exp as f64 / estimate.available.max(1) as f64;
+            match table.bin_for(selectivity).and_then(|bin| bin.nprobe) {
+                Some(nprobe) => by_cost(nprobe, costs),
+                None => Ok(PolicyDecision {
+                    plan: FilteredPlan::ExactMatches,
+                    nprobe: state.nprobe(),
+                    estimate,
+                    break_even: None,
+                    predicted_exact_ns: Some(costs.exact_ns(&estimate)),
+                    predicted_routed_ns: None,
+                }),
+            }
+        }
+    }
 }

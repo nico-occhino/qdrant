@@ -399,6 +399,7 @@ impl LmiIndex {
         let storage = self.vector_storage.borrow();
         let payload_index = self.payload_index.borrow();
         payload_index.with_view(|view| {
+            let mut policy_decision = None;
             let (plan, nprobe, decision) = match mode {
                 filtered::FilteredSearchMode::Baseline => {
                     let decision =
@@ -411,11 +412,19 @@ impl LmiIndex {
                 filtered::FilteredSearchMode::ForceRouted { nprobe } => {
                     (FilteredPlan::RoutedIntersect, *nprobe, None)
                 }
+                filtered::FilteredSearchMode::Policy(policy) => {
+                    let decision = filtered::decide_policy(
+                        policy, state, &view, filter, &*tracker, &*storage,
+                    )?;
+                    policy_decision = Some(decision);
+                    (decision.plan, decision.nprobe, decision.break_even)
+                }
             };
             let mut record = filtered::FilteredSearchRecord {
                 plan,
                 nprobe,
                 decision,
+                policy: policy_decision,
                 routed: None,
             };
             if top == 0 {
