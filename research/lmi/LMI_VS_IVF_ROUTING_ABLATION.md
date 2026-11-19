@@ -251,7 +251,87 @@ Peak RSS was 16.9–18.9 GB for all systems, dominated by the 15.8 GB Float16 ve
 - **Plain agreement with the gold.** Native exact search agrees with the official gold at R@10 = 0.994 (test-256), above the offline `oracle_check.py` value of 0.988 on the same queries. The offline check ranks by raw inner product over the stored Float16 rows, whose norms deviate from 1 by up to 6×10⁻⁴; native Cosine renormalises. Near-tie flips are the likely cause. This is not verified.
 - **Thread scaling of IVF and LMI is poor and non-monotone.** For example, LMI at nprobe 16 reaches 194 QPS at 16 threads but 668 at nprobe 8. The likely cause is memory bandwidth or allocation contention on the shared node. Treat the 16-thread throughput figures for these two indexes as indicative only.
 - **Settings grid (deviation).** The run used the grid in `tier3-configs.tsv`: nprobe {8, 16, 30, 64, 128} for IVF and LMI and ef {32, …, 1,024} for HNSW. The preregistration lists nprobe {4, …, 256}, and Amendment A does not record the narrower grid. Every system crossed both recall targets inside the grid, so no locked point is affected. The coarser steps do make the locked comparison less precise (see Q1).
-- **IVF-8192.** Deferred to Tier 3B (Amendment A2).
+- **IVF-8192.** Deferred to Tier 3B (Amendment A2), reported below.
+
+## Tier 3B: IVF-8192 natively at 10M
+
+**Status:** complete, 2026-11-19. Preregistration: `ivf_ablation/tier3/TIER3_PREREGISTRATION.md`, Amendment B.
+
+**Job.** 25743351 ran on alfrid4 (2× AMD EPYC 9554, 16 CPUs and 96 GB allocated) at commit `891fa7b87`,
+binary sha256 `44c9a152…`. It exited 0 after 3 h 39 min of wall time; the prediction was ≈ 3.7 h. It wrote
+`COMPLETE.json`. 34 of 35 checksums verify; the exception is `job.log`, the known appended-line pattern, and
+its prefix hash matches.
+
+**Evidence**
+- Local copy: `hpc-tier3b/` (read-only).
+- Analysis: `analysis/tier3b.{json,txt}`, produced by `ivf_ablation/tier3/analyze_tier3.py`.
+
+**Systems:** hnsw (m16/efc100), ivf-3162 (the 3A configuration) and ivf-8192 (Tier 2 F2: B 8,192, S 524,288,
+20 iterations). All three were built in one job on one node with a 16-CPU permit. Plain and lmi-native were
+not rebuilt; their 3A results stand.
+
+**Test at the validation-locked R@10 ≥ 0.95 point**
+
+| System | Setting | R@10 [95% CI] | Candidates | Routing p50 | p50 / p95 / p99 (ms) | QPS at 1 / 16 threads |
+|---|---|---|---|---|---|---|
+| HNSW m16/efc100 | ef 160 | 0.952 [0.946, 0.958] | — | — | 0.95 / 1.31 / 1.50 | 1,054 / 8,859 |
+| **IVF B 8,192 (converged)** | nprobe 20 | 0.946 [0.941, 0.952] | 32,158 | 1.03 ms | 12.39 / 16.72 / 19.59 | 79 / 363 |
+| IVF B 3,162 | nprobe 16 | 0.951 [0.946, 0.956] | 65,577 | 1.13 ms | 28.24 / 37.94 / 43.70 | 35 / 156 |
+
+At R@30 ≥ 0.90 the locked points are HNSW ef 64 (0.47 ms), IVF-8192 nprobe 12 (7.98 ms, R@30 0.908) and
+IVF-3162 nprobe 12 (22.00 ms, R@30 0.927).
+
+**Build and size (10M, index only, 16 CPUs)**
+
+| System | Build | k-means | Postings (single-threaded) | Index bytes |
+|---|---|---|---|---|
+| HNSW | 597 s | — | — | 456.3 MB |
+| IVF-3162 | 695 s | 17 s | 671 s | 50.2 MB |
+| IVF-8192 | 2,170 s | 429 s | 1,734 s | 65.7 MB |
+
+Peak RSS was 16.9–18.9 GB, dominated by the 15.8 GB Float16 vector storage.
+
+### Answers
+
+- **Q4. Yes.** At the locked R@10 points, natively, IVF-8192 against IVF-3162:
+  - candidates: **0.490×** [0.487, 0.494];
+  - p50: **0.439×** (12.4 against 28.2 ms);
+  - test recall: 0.004 lower [−0.008, −0.001].
+
+  IVF-8192's test recall (0.946) is just below 0.95, but its CI includes it; the point was locked on validation
+  (0.951), as preregistered. The next grid setting is a descriptive check outside the locked comparison: nprobe 24
+  reaches test R@10 0.956 at 14.9 ms, still 0.53× of IVF-3162's p50.
+
+  At R@30 the ratios are 0.394× candidates and 0.363× p50, with recall 0.019 lower [−0.023, −0.015].
+
+  - **Routing cost.** Ranking 8,192 instead of 3,162 centroids costs no more routing time: 1.03 against 1.13 ms
+    p50, because IVF-8192 probes fewer buckets (20 against 16 of a smaller set). Candidate scoring remains the
+    dominant cost.
+  - **Build cost.** IVF-8192 costs 3.1× the build time of IVF-3162 (2,170 against 695 s) and 1.3× the index bytes.
+    80% of its build is the single-threaded posting assignment (1,734 s). The parallel k-means took 429 s.
+  - **Native confirmation.** This confirms Tier 2's offline finding: the partition effect (finer B and a converged
+    teacher) is large, and it carries over to native latency.
+- **Q2 (re-answered on one node).** The best IVF (8,192, nprobe 20) is still about **13× slower** than HNSW at p50
+  (12.4 against 0.95 ms) and about **24× lower** in 16-thread throughput (363 against 8,859 QPS), at similar recall.
+  - HNSW costs 6.9× the index bytes (456 against 66 MB).
+  - On this node HNSW also builds faster in wall time (597 against 2,170 s), with 16 threads against an IVF build
+    that is mostly single-threaded.
+  - The overall front is unchanged: HNSW leads on latency and throughput; IVF leads on index bytes. Of the IVFs,
+    8,192 now dominates 3,162 on latency and candidates, while 3,162 still leads on index bytes and build time.
+
+### Notes and deviations
+
+- **Reproducibility of IVF-3162.** Its candidate counts match Tier 3A exactly: 65,838 validation and 65,577 test at
+  nprobe 16, and 33,526 / 33,481 at nprobe 8. The 16-thread k-means therefore reproduced the 3A index at 10M,
+  consistent with the bit-identity test of `3e49dabcd`.
+- **Latency is not comparable across jobs.** IVF-3162 at nprobe 16 measured 28.2 ms p50 here and 20.5 ms in 3A on
+  elmu1-8 (EPYC 9474F), with identical candidates. All 3B comparisons are within this job and node.
+- **Build prediction.** The IVF-8192 build was predicted at ≈ 55 min and took 36 min. k-means took 429 s against
+  ≈ 1,610 s predicted. Postings took 1,734 s against ≈ 1,469 s predicted. The job total matched the prediction.
+- **Thread scaling.** As in 3A, 16-thread throughput is non-monotone for IVF (for example, IVF-8192: 363 QPS at
+  nprobe 20 and 433 at 32). The 16-thread figures are indicative only.
+- **Next engineering lever.** The posting assignment is the remaining single-threaded build step: 80% of the
+  IVF-8192 build and 97% of IVF-3162's. This is noted, not pursued.
 
 ## Files and locations (Tier 3)
 
@@ -273,9 +353,11 @@ Repository paths are relative to the repository root on branch `research/static-
 - `hpc-native-profile/`: profile job 25718749.
 - `hpc-tier3a/`: Tier 3A job 25738234.
 - `analysis/tier3a.{json,txt}`: Tier 3A analysis output.
+- `hpc-tier3b/`: Tier 3B job 25743351.
+- `analysis/tier3b.{json,txt}`: Tier 3B analysis output.
 - `native-staging-ec557c427/` and `native-staging-891fa7b87/`: the staged inputs for 3A and 3B.
 - `hpc-submissions/submitted.log`: the submission log.
 
 **Remote (MetaCentrum)**, under `/storage/budejovice1/home/nico/lmi-metacentrum/static-lmi-ivf-20261118/`:
 - `native-<commit>/`: inputs for each revision.
-- `results/ann-10m-<job>/`: outputs, with 3A in `ann-10m-25738234…` and 3B (job 25743351, pending) in `ann-10m-25743351…`.
+- `results/ann-10m-<job>/`: outputs, with 3A in `ann-10m-25738234…` and 3B (job 25743351, complete) in `ann-10m-25743351…`.
