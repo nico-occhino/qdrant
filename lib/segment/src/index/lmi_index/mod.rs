@@ -5,6 +5,7 @@
 mod build;
 mod build_plan;
 mod config;
+pub mod filtered;
 mod postings;
 pub mod read_only;
 mod routing;
@@ -14,6 +15,7 @@ mod state;
 #[cfg(feature = "lmi-training")]
 mod training;
 pub use config::LmiConfig;
+pub use filtered::{FilteredPlan, FilteredPlanDecision};
 
 /// Run the same checked admission as training, without allocating samples/tensors.
 pub fn check_build_memory(
@@ -54,7 +56,8 @@ use crate::data_types::vectors::{QueryVector, VectorInternal, VectorRef};
 use crate::id_tracker::{IdTrackerEnum, IdTrackerRead};
 use crate::index::candidate_scoring::score_candidates;
 use crate::index::plain_vector_index::PlainVectorIndex;
-use crate::index::{VectorIndex, VectorIndexRead};
+use crate::index::struct_payload_index::StructPayloadIndex;
+use crate::index::{PayloadIndexRead, VectorIndex, VectorIndexRead};
 use crate::telemetry::VectorIndexSearchesTelemetry;
 use crate::types::{Distance, Filter, SearchParams, VectorDataConfig};
 use crate::vector_storage::quantized::quantized_vectors::QuantizedVectors;
@@ -79,6 +82,13 @@ pub struct LmiIndex {
     selected_candidate_offsets: AtomicU64,
     #[cfg(feature = "testing")]
     underfill_widenings: AtomicU64,
+    /// Filtered learned searches served by exact scoring of the matching points.
+    #[cfg(feature = "testing")]
+    filtered_exact_searches: AtomicU64,
+    /// Filtered learned searches served by routing plus posting intersection.
+    #[cfg(feature = "testing")]
+    filtered_routed_searches: AtomicU64,
+    payload_index: Arc<AtomicRefCell<StructPayloadIndex>>,
     routing_state: Option<LmiRoutingState>,
     routing_distance: Option<Distance>,
     state_files: Vec<PathBuf>,
@@ -89,13 +99,13 @@ impl LmiIndex {
         id_tracker: Arc<AtomicRefCell<IdTrackerEnum>>,
         vector_storage: Arc<AtomicRefCell<VectorStorageEnum>>,
         quantized_vectors: Arc<AtomicRefCell<Option<QuantizedVectors>>>,
-        payload_index: Arc<AtomicRefCell<crate::index::struct_payload_index::StructPayloadIndex>>,
+        payload_index: Arc<AtomicRefCell<StructPayloadIndex>>,
     ) -> Self {
         let plain = PlainVectorIndex::new(
             id_tracker.clone(),
             vector_storage.clone(),
             quantized_vectors.clone(),
-            payload_index,
+            payload_index.clone(),
         );
         Self {
             plain,
@@ -112,6 +122,11 @@ impl LmiIndex {
             selected_candidate_offsets: AtomicU64::new(0),
             #[cfg(feature = "testing")]
             underfill_widenings: AtomicU64::new(0),
+            #[cfg(feature = "testing")]
+            filtered_exact_searches: AtomicU64::new(0),
+            #[cfg(feature = "testing")]
+            filtered_routed_searches: AtomicU64::new(0),
+            payload_index,
             routing_state: None,
             routing_distance: None,
             state_files: Vec::new(),
@@ -189,10 +204,20 @@ impl LmiIndex {
         storage: &VectorStorageEnum,
         query_context: &VectorQueryContext,
     ) -> OperationResult<Vec<ScoredPointOffset>> {
-        widen_until_filled(state, routed_query, query, top, result, tracker, storage, query_context, || {
-            #[cfg(feature = "testing")]
-            self.underfill_widenings.fetch_add(1, Ordering::Relaxed);
-        })
+        widen_until_filled(
+            state,
+            routed_query,
+            query,
+            top,
+            result,
+            tracker,
+            storage,
+            query_context,
+            || {
+                #[cfg(feature = "testing")]
+                self.underfill_widenings.fetch_add(1, Ordering::Relaxed);
+            },
+        )
     }
 
     /// Learned searches that had to widen the probe to fill `top`.
@@ -201,18 +226,114 @@ impl LmiIndex {
         self.underfill_widenings.load(Ordering::Relaxed)
     }
 
+    /// Filtered learned searches as `(exact matches, routed intersection)`.
+    #[cfg(feature = "testing")]
+    pub fn filtered_plan_counts_for_test(&self) -> (u64, u64) {
+        (
+            self.filtered_exact_searches.load(Ordering::Relaxed),
+            self.filtered_routed_searches.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Planner decision for `filter`, without searching.
+    pub fn filtered_plan(&self, filter: &Filter) -> OperationResult<Option<FilteredPlanDecision>> {
+        let Some(state) = &self.routing_state else {
+            return Ok(None);
+        };
+        let tracker = self.id_tracker.borrow();
+        let storage = self.vector_storage.borrow();
+        let payload_index = self.payload_index.borrow();
+        payload_index
+            .with_view(|view| {
+                filtered::choose_filtered_plan(state, &view, filter, &*tracker, &*storage)
+            })
+            .map(Some)
+    }
+
+    /// Query shapes and parameters the learned path serves, independent of filtering.
+    fn learned_eligible(&self, vectors: &[&QueryVector], params: Option<&SearchParams>) -> bool {
+        params.is_none_or(|p| *p == SearchParams::default())
+            && self.quantized_vectors.borrow().is_none()
+            && vectors
+                .iter()
+                .all(|q| matches!(q, QueryVector::Nearest(VectorInternal::Dense(_))))
+    }
+
     fn supports_candidates(
         &self,
         vectors: &[&QueryVector],
         filter: Option<&Filter>,
         params: Option<&SearchParams>,
     ) -> bool {
-        filter.is_none()
-            && params.is_none_or(|p| *p == SearchParams::default())
-            && self.quantized_vectors.borrow().is_none()
-            && vectors
-                .iter()
-                .all(|q| matches!(q, QueryVector::Nearest(VectorInternal::Dense(_))))
+        filter.is_none() && self.learned_eligible(vectors, params)
+    }
+
+    /// Adaptive filtered search; see [`filtered`] for the plan choice.
+    fn filtered_search(
+        &self,
+        state: &LmiRoutingState,
+        vectors: &[&QueryVector],
+        filter: &Filter,
+        top: usize,
+        params: Option<&SearchParams>,
+        query_context: &VectorQueryContext,
+    ) -> OperationResult<Vec<Vec<ScoredPointOffset>>> {
+        if top == 0 {
+            return Ok(vec![Vec::new(); vectors.len()]);
+        }
+        let tracker = self.id_tracker.borrow();
+        let storage = self.vector_storage.borrow();
+        let payload_index = self.payload_index.borrow();
+        payload_index.with_view(|view| {
+            let decision =
+                filtered::choose_filtered_plan(state, &view, filter, &*tracker, &*storage)?;
+            match decision.plan {
+                FilteredPlan::ExactMatches => {
+                    #[cfg(feature = "testing")]
+                    self.filtered_exact_searches
+                        .fetch_add(vectors.len() as u64, Ordering::Relaxed);
+                    #[cfg(feature = "lmi-research")]
+                    log::info!(target: "lmi_research", "{}", serde_json::json!({
+                        "event": "lmi_filtered_search", "decision": decision,
+                        "query_count": vectors.len(),
+                    }));
+                    self.plain
+                        .search(vectors, Some(filter), top, params, query_context)
+                }
+                FilteredPlan::RoutedIntersect => {
+                    #[cfg(feature = "testing")]
+                    self.filtered_routed_searches
+                        .fetch_add(vectors.len() as u64, Ordering::Relaxed);
+                    let checker = view.filter_context(filter)?;
+                    vectors
+                        .iter()
+                        .map(|query| {
+                            let routed_query =
+                                filtered::routing_query(self.routing_distance, query);
+                            let (result, _stats) = filtered::routed_filtered_search(
+                                state,
+                                &routed_query,
+                                query,
+                                top,
+                                &checker,
+                                &*tracker,
+                                &*storage,
+                                query_context,
+                            )?;
+                            #[cfg(feature = "testing")]
+                            self.underfill_widenings
+                                .fetch_add(_stats.widenings as u64, Ordering::Relaxed);
+                            #[cfg(feature = "lmi-research")]
+                            log::info!(target: "lmi_research", "{}", serde_json::json!({
+                                "event": "lmi_filtered_search", "decision": decision,
+                                "routed": _stats, "returned_hits": result.len(),
+                            }));
+                            Ok(result)
+                        })
+                        .collect()
+                }
+            }
+        })
     }
 }
 
@@ -271,6 +392,12 @@ impl VectorIndexRead for LmiIndex {
         params: Option<&SearchParams>,
         query_context: &VectorQueryContext,
     ) -> OperationResult<Vec<Vec<ScoredPointOffset>>> {
+        if let Some(filter) = filter
+            && let Some(state) = &self.routing_state
+            && self.learned_eligible(vectors, params)
+        {
+            return self.filtered_search(state, vectors, filter, top, params, query_context);
+        }
         if self.supports_candidates(vectors, filter, params) {
             if let Some(state) = &self.routing_state {
                 let tracker = self.id_tracker.borrow();

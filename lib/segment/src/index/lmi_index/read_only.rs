@@ -9,6 +9,7 @@ use common::types::{ScoredPointOffset, TelemetryDetail};
 use common::universal_io::UniversalReadFs;
 use sparse::common::types::DimId;
 
+use super::filtered::{self, FilteredPlan};
 use super::{LmiConfig, LmiRoutingState, state};
 use crate::common::operation_error::{OperationError, OperationResult};
 use crate::data_types::query_context::VectorQueryContext;
@@ -16,7 +17,8 @@ use crate::data_types::vectors::{QueryVector, VectorInternal};
 use crate::id_tracker::read_only_tracker_enum::ReadOnlyIdTrackerEnum;
 use crate::index::candidate_scoring::score_candidates_generic;
 use crate::index::plain_vector_index::read_only::ReadOnlyPlainVectorIndex;
-use crate::index::{UniversalReadExt, VectorIndexRead};
+use crate::index::struct_payload_index::read_only::ReadOnlyStructPayloadIndex;
+use crate::index::{PayloadIndexRead, UniversalReadExt, VectorIndexRead};
 use crate::telemetry::VectorIndexSearchesTelemetry;
 use crate::types::{Distance, Filter, SearchParams, VectorDataConfig};
 use crate::vector_storage::VectorStorageRead;
@@ -30,6 +32,7 @@ pub struct ReadOnlyLmiIndex<S: UniversalReadExt + 'static> {
     id_tracker: Arc<AtomicRefCell<ReadOnlyIdTrackerEnum<S>>>,
     vector_storage: Arc<AtomicRefCell<VectorStorageReadEnum<S>>>,
     quantized_vectors: Arc<AtomicRefCell<Option<ReadOnlyQuantizedVectors<S>>>>,
+    payload_index: Arc<AtomicRefCell<ReadOnlyStructPayloadIndex<S>>>,
 }
 
 impl<S: UniversalReadExt + 'static> ReadOnlyLmiIndex<S> {
@@ -41,11 +44,7 @@ impl<S: UniversalReadExt + 'static> ReadOnlyLmiIndex<S> {
         id_tracker: Arc<AtomicRefCell<ReadOnlyIdTrackerEnum<S>>>,
         vector_storage: Arc<AtomicRefCell<VectorStorageReadEnum<S>>>,
         quantized_vectors: Arc<AtomicRefCell<Option<ReadOnlyQuantizedVectors<S>>>>,
-        payload_index: Arc<
-            AtomicRefCell<
-                crate::index::struct_payload_index::read_only::ReadOnlyStructPayloadIndex<S>,
-            >,
-        >,
+        payload_index: Arc<AtomicRefCell<ReadOnlyStructPayloadIndex<S>>>,
     ) -> OperationResult<Self> {
         let storage = vector_storage.borrow();
         let routing = state::load_state(
@@ -61,7 +60,7 @@ impl<S: UniversalReadExt + 'static> ReadOnlyLmiIndex<S> {
             id_tracker.clone(),
             vector_storage.clone(),
             quantized_vectors.clone(),
-            payload_index,
+            payload_index.clone(),
         )?;
         Ok(Self {
             plain,
@@ -70,21 +69,65 @@ impl<S: UniversalReadExt + 'static> ReadOnlyLmiIndex<S> {
             id_tracker,
             vector_storage,
             quantized_vectors,
+            payload_index,
         })
     }
 
-    fn eligible(
-        &self,
-        queries: &[&QueryVector],
-        filter: Option<&Filter>,
-        params: Option<&SearchParams>,
-    ) -> bool {
-        filter.is_none()
-            && params.is_none_or(|p| *p == SearchParams::default())
+    fn eligible(&self, queries: &[&QueryVector], params: Option<&SearchParams>) -> bool {
+        params.is_none_or(|p| *p == SearchParams::default())
             && self.quantized_vectors.borrow().is_none()
             && queries
                 .iter()
                 .all(|q| matches!(q, QueryVector::Nearest(VectorInternal::Dense(_))))
+    }
+}
+
+impl<S: UniversalReadExt + 'static> ReadOnlyLmiIndex<S> {
+    /// Same adaptive plan as the mutable index; see [`filtered`].
+    fn filtered_search(
+        &self,
+        vectors: &[&QueryVector],
+        filter: &Filter,
+        top: usize,
+        params: Option<&SearchParams>,
+        query_context: &VectorQueryContext,
+    ) -> OperationResult<Vec<Vec<ScoredPointOffset>>> {
+        if top == 0 {
+            return Ok(vec![Vec::new(); vectors.len()]);
+        }
+        let tracker = self.id_tracker.borrow();
+        let storage = self.vector_storage.borrow();
+        let payload_index = self.payload_index.borrow();
+        payload_index.with_view(|view| {
+            let decision =
+                filtered::choose_filtered_plan(&self.routing, &view, filter, &*tracker, &*storage)?;
+            match decision.plan {
+                FilteredPlan::ExactMatches => {
+                    self.plain
+                        .search(vectors, Some(filter), top, params, query_context)
+                }
+                FilteredPlan::RoutedIntersect => {
+                    let checker = view.filter_context(filter)?;
+                    vectors
+                        .iter()
+                        .map(|query| {
+                            let routed_query = filtered::routing_query(Some(self.distance), query);
+                            filtered::routed_filtered_search(
+                                &self.routing,
+                                &routed_query,
+                                query,
+                                top,
+                                &checker,
+                                &*tracker,
+                                &*storage,
+                                query_context,
+                            )
+                            .map(|(result, _)| result)
+                        })
+                        .collect()
+                }
+            }
+        })
     }
 }
 
@@ -97,10 +140,13 @@ impl<S: UniversalReadExt + 'static> VectorIndexRead for ReadOnlyLmiIndex<S> {
         params: Option<&SearchParams>,
         query_context: &VectorQueryContext,
     ) -> OperationResult<Vec<Vec<ScoredPointOffset>>> {
-        if !self.eligible(vectors, filter, params) {
+        if !self.eligible(vectors, params) {
             return self
                 .plain
                 .search(vectors, filter, top, params, query_context);
+        }
+        if let Some(filter) = filter {
+            return self.filtered_search(vectors, filter, top, params, query_context);
         }
         let tracker = self.id_tracker.borrow();
         let storage = self.vector_storage.borrow();
