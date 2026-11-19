@@ -864,7 +864,46 @@ fn costs(exact_per_match_ns: f64, route_fixed_ns: f64) -> CostModel {
             .iter()
             .map(|&p| (p, (p * PER_BUCKET) as f64))
             .collect(),
+        exact_table: None,
+        routed_table: None,
     }
+}
+
+/// Empirical tables replace the linear terms and interpolate log-log.
+#[test]
+fn empirical_cost_tables_interpolate_log_log_and_clamp() {
+    use segment::index::lmi_index::filtered::FilterEstimate;
+    let mut model = costs(1.0, 1.0);
+    model.exact_table = Some(vec![(100.0, 1_000.0), (10_000.0, 100_000.0)]);
+    model.routed_table = Some(vec![(4, vec![(0.01, 2_000.0), (1.0, 8_000.0)])]);
+    let estimate = |exp: usize| FilterEstimate {
+        min: exp,
+        exp,
+        max: exp,
+        available: 100_000,
+        primary_iteration: true,
+    };
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-6 * b.abs().max(1.0);
+    assert!(
+        close(model.exact_ns(&estimate(1_000)), 10_000.0),
+        "log-log midpoint"
+    );
+    assert!(
+        close(model.exact_ns(&estimate(10)), 1_000.0),
+        "clamped below"
+    );
+    assert!(
+        close(model.exact_ns(&estimate(50_000)), 100_000.0),
+        "clamped above"
+    );
+    assert!(
+        close(model.routed_ns(4, &estimate(10_000)).unwrap(), 4_000.0),
+        "s = 0.1"
+    );
+    assert!(
+        model.routed_ns(8, &estimate(10_000)).is_none(),
+        "uncalibrated nprobe"
+    );
 }
 
 /// Calibration tables bin conservatively and fall back to exact.

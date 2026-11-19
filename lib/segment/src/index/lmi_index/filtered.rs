@@ -403,10 +403,44 @@ pub struct CostModel {
     pub route_per_scored_ns: f64,
     /// Mean unique candidates of a probe at each grid `nprobe` (validation).
     pub unique_candidates_at: Vec<(usize, f64)>,
+    /// Empirical exact-plan latency: (estimated matches, mean ns) on validation,
+    /// ascending. When present it replaces the linear exact terms.
+    #[serde(default)]
+    pub exact_table: Option<Vec<(f64, f64)>>,
+    /// Empirical routed latency per `nprobe`: (estimated selectivity, mean ns)
+    /// on validation, ascending. When present it replaces the linear routed terms.
+    #[serde(default)]
+    pub routed_table: Option<Vec<(usize, Vec<(f64, f64)>)>>,
+}
+
+/// Log-log linear interpolation through `(x, y)` points ascending in `x`,
+/// clamped to the end values outside their range.
+fn interpolate_log(points: &[(f64, f64)], x: f64) -> Option<f64> {
+    let (first, last) = (points.first()?, points.last()?);
+    if x <= first.0 {
+        return Some(first.1);
+    }
+    if x >= last.0 {
+        return Some(last.1);
+    }
+    let i = points.partition_point(|(px, _)| *px <= x);
+    let ((x0, y0), (x1, y1)) = (points[i - 1], points[i]);
+    if x0 <= 0.0 || y0 <= 0.0 || y1 <= 0.0 {
+        return Some(y0 + (y1 - y0) * (x - x0) / (x1 - x0));
+    }
+    let t = (x.ln() - x0.ln()) / (x1.ln() - x0.ln());
+    Some((y0.ln() + t * (y1.ln() - y0.ln())).exp())
 }
 
 impl CostModel {
     pub fn exact_ns(&self, estimate: &FilterEstimate) -> f64 {
+        if let Some(value) = self
+            .exact_table
+            .as_deref()
+            .and_then(|table| interpolate_log(table, estimate.exp as f64))
+        {
+            return value;
+        }
         let cost = if estimate.primary_iteration {
             &self.exact_iteration
         } else {
@@ -417,12 +451,16 @@ impl CostModel {
 
     /// `None` when `nprobe` is not a calibrated grid point.
     pub fn routed_ns(&self, nprobe: usize, estimate: &FilterEstimate) -> Option<f64> {
+        let selectivity = estimate.exp as f64 / estimate.available.max(1) as f64;
+        if let Some(table) = &self.routed_table {
+            let (_, points) = table.iter().find(|(p, _)| *p == nprobe)?;
+            return interpolate_log(points, selectivity);
+        }
         let unique = self
             .unique_candidates_at
             .iter()
             .find(|(p, _)| *p == nprobe)
             .map(|(_, unique)| *unique)?;
-        let selectivity = estimate.exp as f64 / estimate.available.max(1) as f64;
         Some(
             self.route_fixed_ns
                 + self.route_per_candidate_ns * unique
