@@ -421,3 +421,78 @@ fn underfilled_learned_probe_widens_to_fill_top() {
     assert_eq!(widened.len(), 3);
     assert!(!widened.contains(&3), "deleted offset must stay excluded");
 }
+
+fn install_router(lmi: &Segment, config: LmiConfig, router: MlpRouter) {
+    let vector_config = lmi.config().vector_data[DEFAULT_VECTOR_NAME].clone();
+    let storage = lmi.vector_data[DEFAULT_VECTOR_NAME].vector_storage.borrow();
+    let metadata = LmiStateMetadata::new(
+        config,
+        &vector_config,
+        storage.datatype(),
+        storage.total_vector_count(),
+    );
+    drop(storage);
+    let routing = LmiRoutingState::from_compact(
+        router,
+        CompactPostings::from_buckets(vec![vec![0, 2, 3], vec![1]]).unwrap(),
+        config.nprobe,
+    )
+    .unwrap();
+    let index_path = lmi.segment_path.join("vector_index");
+    save_fixture_state(&index_path, &metadata, &routing, &vector_config).unwrap();
+    let mut state = Segment::load_state(&lmi.segment_path).unwrap();
+    state
+        .config
+        .vector_data
+        .get_mut(DEFAULT_VECTOR_NAME)
+        .unwrap()
+        .index = Indexes::LmiTrained(config);
+    Segment::save_state(&state, &lmi.segment_path).unwrap();
+}
+
+/// The supervised-routing artifact shape: one non-centroid `Linear` layer with biases.
+/// It persists, reopens without retraining on both open paths, ranks buckets by
+/// `bias + W q`, and breaks equal logits toward the smaller bucket id.
+#[test]
+fn single_linear_router_with_bias_persists_and_ranks_deterministically() {
+    let _scope = common::ambient::unmeasured_guard(common::reason::reason("LMI v1.20 regression"));
+    let linear = |bias1: f32| MlpRouter {
+        layers: vec![RouterLayer::Linear(LinearLayer {
+            in_features: 2,
+            out_features: 2,
+            // Both rows score q[0]; only the bias separates the buckets.
+            weights: vec![1.0, 0.0, 1.0, 0.0],
+            bias: vec![0.0, bias1],
+        })],
+    };
+    for (bias1, expected_bucket, expected_top1) in [(0.5_f32, 1_usize, 1_u32), (0.0, 0, 0)] {
+        let (_root, _plain, lmi, config) = fixture();
+        install_router(&lmi, config, linear(bias1));
+        let (path, uuid) = (lmi.segment_path.clone(), lmi.uuid);
+        drop(lmi);
+        let reopened = load_segment(&path, uuid, None, &AtomicBool::new(false), true).unwrap();
+        {
+            let index = reopened.vector_data[DEFAULT_VECTOR_NAME].vector_index.borrow();
+            let segment::index::VectorIndexEnum::Lmi(lmi_index) = &*index else {
+                panic!("expected LMI index")
+            };
+            let state = lmi_index.routing_state().expect("persisted learned state");
+            assert_eq!(state.router(), &linear(bias1), "router reopened bit-identically");
+            assert_eq!(
+                state.router().top_buckets(&[0.8, 1.0], 2).unwrap(),
+                if expected_bucket == 1 { vec![1, 0] } else { vec![0, 1] },
+            );
+        }
+        // nprobe 1 searches only the top bucket: offset 1 alone, or the best of {0, 2, 3}.
+        assert_eq!(ids(&reopened), vec![expected_top1]);
+        let read_only =
+            ReadOnlySegment::<MmapFile>::open(&MmapFs, &path, uuid, None, None).unwrap();
+        let q: QueryVector = [0.8_f32, 1.0].into();
+        let shared = read_only.vector_data[DEFAULT_VECTOR_NAME]
+            .vector_index
+            .borrow()
+            .search(&[&q], None, 1, None, &VectorQueryContext::default())
+            .unwrap();
+        assert_eq!(shared[0][0].idx, expected_top1);
+    }
+}
