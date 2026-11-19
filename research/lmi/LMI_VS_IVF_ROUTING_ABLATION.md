@@ -173,3 +173,82 @@ The router effect at a fixed partition (centroid over MLP) is 0.83 at B = 3,162 
 | F1 (B 3,162, S 250K) | 13 s | 471 s | — |
 
 **Promotion (Tier 2 rule).** F2, IVF B 8,192 with the converged teacher (S 524,288, 20 iterations), goes to Tier 3 together with the native LMI baseline. On these offline coverage measurements it needs about **58% less total work** than the accepted native LMI at R@10 = 0.95.
+
+## Native build profile at 1M (gate for Tier 3)
+
+**Status:** complete, 2026-11-18. Recorded in full in `ivf_ablation/tier3/TIER3_PREREGISTRATION.md`, Amendment A.
+
+**Jobs**
+- **25718667** failed at `build_ivf8192`: the native sample-budget cap rejected S = 524,288. Commit `f2f6f27d8` raised the opt-in limit to the `LmiConfig` maximum.
+- **25718749** (retry) ran on zenon51 with 8 CPUs and 32 GB, against the 1M source at commit `f2f6f27d8`. It exited 0 after 5 h 35 min of a 6 h walltime, and wrote `COMPLETE.json`.
+- **Local copy:** `hpc-native-profile/` (read-only).
+
+| Index | Build at 1M | Index size | Validation (1M gold) |
+|---|---|---|---|
+| IVF-8192 (S 524,288, 20 iterations) | k-means 14,492 s single-threaded, plus postings 379 s | 29.3 MB | nprobe 32: R@10 0.949, p50 16.68 ms (routing 14.30 ms) |
+| LMI-3162 | k-means 733 s, MLP 2,404 s, postings 120 s | 12.1 MB | nprobe 64: R@10 0.964, p50 14.96 ms (routing 5.08 ms) |
+| HNSW m16/efc100 | 168 s on 16 threads | 40.3 MB | ef 128: R@10 0.966, p50 0.98 ms |
+
+**Consequences (Amendment A)**
+- Native routing ran at only about 0.44 GMAC/s, which led to the router constant-factor fix (`aaca97f24`).
+- The single-threaded k-means teacher at B = 8,192 takes 4.0 h, so IVF-8192 was deferred to Tier 3B.
+- The profile's build stages gave the Tier 3A walltime prediction (≈ 4.5 h). The actual run took 4 h 19 min.
+
+## Tier 3A: native Qdrant v1.20 latency at 10M
+
+**Status:** complete, 2026-11-19. Preregistration: `ivf_ablation/tier3/TIER3_PREREGISTRATION.md` and Amendment A.
+
+**Job.** 25738234 ran on elmu1-8 (AMD EPYC 9474F, 16 of 192 cores allocated) at commit `ec557c427`, binary sha256 `44e30e84…`. It exited 0 after 4 h 19 min of wall time; the prediction was ≈ 4.5 h. It wrote `COMPLETE.json` and its checksums verify; the `job.log` mismatch is the known appended-line pattern, and the prefix hash matches. Every query returned 30 results, so the decomposed path never underfilled.
+
+**Evidence**
+- Local copy: `hpc-tier3a/` (read-only).
+- Analysis: `analysis/tier3a.{json,txt}`, produced by `ivf_ablation/tier3/analyze_tier3.py`.
+- Recall: returned IDs against the official SISAP23 top-30. The harness stores row *i* as point *i* + 1.
+- Panels: 2,000 validation and 2,000 test queries; Plain used 256 of each.
+
+**Test at the validation-locked R@10 ≥ 0.95 point**
+
+| System | Setting | R@10 [95% CI] | Candidates | Routing p50 | p50 / p95 / p99 (ms) | QPS at 1 / 16 threads |
+|---|---|---|---|---|---|---|
+| HNSW m16/efc100 | ef 256 | 0.961 [0.955, 0.966] | — | — | 1.30 / 1.81 / 2.04 | 760 / 6,335 |
+| **IVF B 3,162 (centroid router)** | nprobe 16 | 0.951 [0.946, 0.956] | 65,577 | 0.98 ms | 20.50 / 27.75 / 31.88 | 48 / 317 |
+| LMI B 3,162 (accepted) | nprobe 30 | 0.958 [0.953, 0.962] | 119,018 | 1.57 ms | 34.86 / 44.85 / 50.16 | 29 / 218 |
+| Plain (exact) | — | 0.994 [0.991, 0.996] (n 256) | 10.1M | — | 612 / 630 / 636 | 1.6 / 7.6 |
+
+At R@30 ≥ 0.90 the locked points are HNSW ef 64 (0.43 ms), IVF nprobe 16 and LMI nprobe 16 (both 20.5 ms). At that point IVF has the higher recall, 0.944 against 0.920.
+
+**Build and size (10M, index only)**
+
+| System | Build | Threads | Index bytes | Breakdown |
+|---|---|---|---|---|
+| HNSW | 596 s | 16 | 454.5 MB | — |
+| IVF-3162 | 766 s | 1 | 50.2 MB | k-means 193 s, postings 567 s |
+| LMI-3162 | 1,601 s | 1 | 48.6 MB | k-means 191 s, MLP 910 s, postings 492 s |
+
+Peak RSS was 16.9–18.9 GB for all systems, dominated by the 15.8 GB Float16 vector storage.
+
+### Answers to the preregistered questions
+
+- **Q1. Yes.** At the locked R@10 points, native IVF scores **0.551×** the candidates of LMI [0.548, 0.554] and has **0.588×** its p50 latency. Its test recall is 0.007 lower [−0.010, −0.004], and both clear 0.95.
+
+  At equal nprobe, IVF recall is higher at every width: +0.026 at nprobe 8, falling to +0.005 at 128, and every CI excludes 0. Candidates and latency are within 6% of each other at equal nprobe.
+
+  The native result is therefore the same as Tiers 1 and 2: the centroid router reaches the target with about half the routing width. The native candidate ratio (0.55) is lower than Tier 2's offline 0.68. The likely reason is the coarse nprobe grid, where LMI's lock jumps from 16 to 30.
+- **Q2.** HNSW is about **16× faster** than the best learned-partition index at p50 (1.30 against 20.5 ms) and about **20× faster** at 16 threads (6,335 against 317 QPS), at slightly higher recall.
+
+  It costs **9×** the index bytes (455 against 50 MB) and up to about 9,500 CPU-seconds to build (596 s × 16 threads), against 766 single-threaded seconds for IVF. Wall-clock build time is close: 596 s against 766 s.
+
+  Both IVF and LMI are bound by candidate scoring: about 0.3 µs per scored Float16 vector, and routing is under 5% of latency.
+- **Q3.** LMI is **not on the recall–latency–build front**. IVF has the same B, the same teacher and the same postings path, and at every recall level it is equal or faster, with 0.48× the build time.
+
+  The only axis on which LMI is non-dominated is index bytes, where it is 1.6 MB (3%) smaller than IVF. That is immaterial next to the 15.8 GB of vectors.
+
+  The overall front is HNSW for latency and IVF for index bytes and CPU build cost.
+
+### Notes and deviations
+
+- **Plain repetitions.** Plain ran 3 test repetitions, not the 1 that A3 states, because the job script applies the test repetition count to every kind. This adds data and changes no operating point.
+- **Plain agreement with the gold.** Native exact search agrees with the official gold at R@10 = 0.994 (test-256), above the offline `oracle_check.py` value of 0.988 on the same queries. The offline check ranks by raw inner product over the stored Float16 rows, whose norms deviate from 1 by up to 6×10⁻⁴; native Cosine renormalises. Near-tie flips are the likely cause. This is not verified.
+- **Thread scaling of IVF and LMI is poor and non-monotone.** For example, LMI at nprobe 16 reaches 194 QPS at 16 threads but 668 at nprobe 8. The likely cause is memory bandwidth or allocation contention on the shared node. Treat the 16-thread throughput figures for these two indexes as indicative only.
+- **Settings grid (deviation).** The run used the grid in `tier3-configs.tsv`: nprobe {8, 16, 30, 64, 128} for IVF and LMI and ef {32, …, 1,024} for HNSW. The preregistration lists nprobe {4, …, 256}, and Amendment A does not record the narrower grid. Every system crossed both recall targets inside the grid, so no locked point is affected. The coarser steps do make the locked comparison less precise (see Q1).
+- **IVF-8192.** Deferred to Tier 3B (Amendment A2).
