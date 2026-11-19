@@ -306,12 +306,14 @@ def main():
                                   "pass": short == 0 and (summary["consistency"]["agreement"] or 0) >= 0.99},
                 "4_budget": {"router_bytes": bytes_p, "a0_router_bytes": bytes_a0, "training_seconds": train_seconds,
                              "route_p50_ms": route_p, "a0_route_p50_ms": route_a0,
-                             "pass": bytes_p <= 2 * bytes_a0 and train_seconds <= 7200 and route_p <= route_a0 + 0.5},
+                             "pass": bool(bytes_p <= 2 * bytes_a0 and train_seconds <= 7200 and route_p <= route_a0 + 0.5)},
                 "5_generalisation": {"held_out_set": "G", "train_T_c95": next((c["train_T"]["c95"] for c in training["configs"] if c["name"] == sel.get("config")), None),
                                      "val_c95": sel["val"]["c95"], "pass": True},
                 "6_integrity": {"verify_partition": vp, "pass": vp is not None and vp.get("candidate_mismatches", 1) <= 0.01 * vp.get("checked", 0)},
             }
             gate["candidate_bootstrap"] = bootstrap_ratio(arr, promo, "A0", 0.95, "candidates")
+            for c in gate["criteria"].values():
+                c["pass"] = bool(c["pass"])
             gate["passed"] = all(c["pass"] for c in gate["criteria"].values())
         summary["gate"] = gate
     else:
