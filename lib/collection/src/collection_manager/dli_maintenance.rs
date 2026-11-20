@@ -330,7 +330,7 @@ pub struct PrivateBuild {
     pub output: Result<Segment, String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct DliPublicationEvent {
     pub target_level: usize,
     pub source_uuids: Vec<Uuid>,
@@ -360,6 +360,9 @@ pub struct DliMaintenance {
     pub native_enabled: AtomicBool,
     /// Collection policy for new learned destinations; COW buffers stay cached.
     pub destination_on_disk: AtomicBool,
+    /// Per-level model rule for new learned destinations (default: one fixed model,
+    /// full retraining).
+    pub level_model: Mutex<super::dli_schedule::LevelModelPolicy>,
     pub published: AtomicUsize,
     pub published_uuids: Mutex<Vec<Uuid>>,
     pub publication_events: Mutex<Vec<DliPublicationEvent>>,
@@ -562,6 +565,7 @@ impl DliMaintenance {
             last: Mutex::new(Vec::new()),
             native_enabled: AtomicBool::new(false),
             destination_on_disk: AtomicBool::new(true),
+            level_model: Mutex::new(Default::default()),
             published: AtomicUsize::new(0),
             published_uuids: Mutex::new(Vec::new()),
             publication_events: Mutex::new(Vec::new()),
@@ -603,6 +607,60 @@ impl DliMaintenance {
         assert!(!self.running.load(Ordering::Acquire));
         self.stopped.store(false, Ordering::Release);
     }
+    /// Model for the destination of `plan`. With router reuse and a non-empty target,
+    /// this is the target's own configuration naming the target's router, so the build
+    /// routes the merged data without training; otherwise a fresh per-level model.
+    fn destination_model(
+        &self,
+        captured: &[LockedSegment],
+        roles: &HashMap<Uuid, usize>,
+        plan: &CompactionPlan,
+    ) -> Result<LmiConfig, String> {
+        let policy = *self.level_model.lock();
+        if policy.reuse_target_router && plan.target_existing_points > 0 {
+            let mut targets = captured.iter().filter_map(|locked| {
+                let LockedSegment::Original(segment) = locked else {
+                    return None;
+                };
+                let guard = segment.read();
+                (roles.get(&guard.uuid) == Some(&plan.target_level)).then(|| {
+                    let model = match guard
+                        .config()
+                        .vector_data
+                        .get(segment::data_types::vectors::DEFAULT_VECTOR_NAME)
+                        .map(|vector| vector.index.clone())
+                    {
+                        Some(segment::types::Indexes::LmiTrained(model)) => Some(model),
+                        _ => None,
+                    };
+                    let index = guard
+                        .vector_data
+                        .get(segment::data_types::vectors::DEFAULT_VECTOR_NAME)?
+                        .vector_index
+                        .borrow();
+                    let VectorIndexEnum::Lmi(lmi) = &*index else {
+                        return None;
+                    };
+                    let fingerprint = lmi.routing_state()?.router().fingerprint();
+                    model.map(|model| LmiConfig {
+                        reuse_router: Some(fingerprint),
+                        ..model
+                    })
+                })?
+            });
+            let target = targets
+                .next()
+                .ok_or("non-empty target level has no trained LMI member")?;
+            if targets.next().is_some() {
+                return Err("router reuse needs exactly one target member".into());
+            }
+            return Ok(target);
+        }
+        policy
+            .fresh_config(self.model, self.hierarchy.arity, plan.target_level)
+            .map_err(|e| format!("{e:?}"))
+    }
+
     /// Called after native update locks have been released. One private job per
     /// observed source version set; no authoritative point state is stored here.
     pub fn observe(self: &Arc<Self>, holder: &LockedSegmentHolder) {
@@ -658,6 +716,16 @@ impl DliMaintenance {
             let level = roles_snapshot[uuid];
             level == 0 || level == plan.target_level || plan.source_levels.contains(&level)
         });
+        let job_model = match self.destination_model(&captured, &roles_snapshot, &plan) {
+            Ok(model) => model,
+            Err(error) => {
+                self.optimizer_errors
+                    .lock()
+                    .push(format!("DLI destination model: {error}"));
+                self.running.store(false, Ordering::Release);
+                return;
+            }
+        };
         let expected_sources: std::collections::HashSet<_> =
             fingerprints.iter().map(|(uuid, _, _)| *uuid).collect();
         {
@@ -715,7 +783,7 @@ impl DliMaintenance {
                         staging: staging.path().to_owned(),
                         segments_path: segments_path.clone(),
                         segment_config,
-                        model: state.model.clone(),
+                        model: job_model,
                         destination_on_disk: state.destination_on_disk.load(Ordering::Acquire),
                         expected_sources,
                         expected_topology: Some((
@@ -839,7 +907,7 @@ impl DliMaintenance {
                     staging: staging.path().to_owned(),
                     segments_path: state.path.clone(),
                     segment_config: source_config,
-                    model: state.model.clone(),
+                    model: job_model,
                     destination_on_disk: state.destination_on_disk.load(Ordering::Acquire),
                     expected_sources,
                     expected_topology: Some((

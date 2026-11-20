@@ -797,6 +797,7 @@ fn lmi_config_from_grpc(
         kmeans_iterations: size(value.kmeans_iterations)?,
         nprobe: size(value.nprobe)?,
         seed: value.seed,
+        reuse_router: None,
     };
     config
         .check()

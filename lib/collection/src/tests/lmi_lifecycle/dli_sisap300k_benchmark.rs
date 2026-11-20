@@ -44,6 +44,7 @@ fn model_config() -> LmiConfig {
         kmeans_iterations: 5,
         nprobe: 4,
         seed: 42,
+        reuse_router: None,
     }
 }
 
@@ -85,6 +86,7 @@ fn collection_config(dli: bool) -> CollectionConfigInternal {
             } else {
                 Default::default()
             },
+            level_model: Default::default(),
             buffer_capacity: DLI_BUFFER_CAPACITY,
             arity: 2,
             candidate_budget: 2_000,

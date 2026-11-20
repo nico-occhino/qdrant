@@ -118,6 +118,7 @@ impl LocalShard {
         maintenance
             .destination_on_disk
             .store(destination_on_disk, Ordering::Release);
+        *maintenance.level_model.lock() = config.level_model;
         maintenance.attach_search(search.clone());
         maintenance.native_enabled.store(true, Ordering::Release);
 

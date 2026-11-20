@@ -166,6 +166,8 @@ fn policies() -> Vec<(&'static str, Option<RoutingPolicy>)> {
             }),
         ),
         ("reserved", Some(RoutingPolicy::ReservedPerLevel)),
+        ("mdn", Some(RoutingPolicy::ModelDrivenNormalized)),
+        ("mdn_code", Some(RoutingPolicy::ModelDrivenNormalizedCode)),
         // Offline control: learned budget split proportionally to member
         // population; Plain buffer always fully scored.
         ("proportional", None),
@@ -314,7 +316,18 @@ fn build_static_reference(
     let staging = tempfile::tempdir_in(root).unwrap();
     let mut config = template.config().clone();
     let vector = config.vector_data.get_mut(DEFAULT_VECTOR_NAME).unwrap();
-    assert!(matches!(vector.index, Indexes::LmiTrained(_)));
+    let Indexes::LmiTrained(mut model) = vector.index.clone() else {
+        panic!("static reference template is not a trained LMI");
+    };
+    // Optional explicit model (e.g. bucket count matched to the DLI topology); a
+    // template's reused-router identity never applies to a fresh static build.
+    if let Ok(json) = std::env::var("DLI_FRONTIER_STATIC_MODEL") {
+        model = serde_json::from_str(&json).expect("DLI_FRONTIER_STATIC_MODEL is an LmiConfig");
+    }
+    model.reuse_router = None;
+    model.check().unwrap();
+    println!("STATIC_REFERENCE_MODEL {}", serde_json::to_string(&model).unwrap());
+    vector.index = Indexes::LmiTrained(model);
     vector.quantization_config = None;
     let mut builder = SegmentBuilder::new(
         staging.path(),

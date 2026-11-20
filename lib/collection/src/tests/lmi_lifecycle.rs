@@ -133,6 +133,7 @@ async fn lmi_collection_builds_and_searches_with_fresh_plain_writes_body() {
         kmeans_iterations: 1,
         nprobe: 2,
         seed: 7,
+        reuse_router: None,
     });
     let mut optimizer_config = OptimizersConfig::fixture();
     optimizer_config.indexing_threshold = Some(1);

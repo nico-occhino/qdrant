@@ -46,6 +46,75 @@ fn model_config() -> LmiConfig {
         kmeans_iterations: 5,
         nprobe: 4,
         seed: 42,
+        reuse_router: None,
+    }
+}
+
+/// Preregistered arm (`research/dli/emma_path/PREREGISTRATION.md`); unset means G0,
+/// the original configuration, so earlier campaigns are unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Arm {
+    G0,
+    E1,
+    E1R,
+}
+
+fn arm() -> Arm {
+    match std::env::var("DLI_ARM").as_deref() {
+        Err(_) | Ok("G0") => Arm::G0,
+        Ok("E1") => Arm::E1,
+        Ok("E1R") => Arm::E1R,
+        Ok(other) => panic!("DLI_ARM must be G0, E1 or E1R, got {other}"),
+    }
+}
+
+/// (buffer capacity, arity, base model, per-level rule, collection routing policy).
+fn arm_config() -> (
+    usize,
+    usize,
+    LmiConfig,
+    crate::collection_manager::dli_schedule::LevelModelPolicy,
+    crate::collection_manager::dli_bucket_plan::RoutingPolicy,
+) {
+    use crate::collection_manager::dli_bucket_plan::RoutingPolicy;
+    use crate::collection_manager::dli_schedule::{LevelBuckets, LevelModelPolicy};
+    match arm() {
+        Arm::G0 => (
+            DLI_BUFFER_CAPACITY,
+            2,
+            model_config(),
+            LevelModelPolicy::default(),
+            RoutingPolicy::SlotWeighted,
+        ),
+        // Sommerová `bs_10_5k.yml` + her code defaults (hidden 128, Faiss 25 iterations,
+        // 100K preferred sample with the 40·k floor).
+        arm @ (Arm::E1 | Arm::E1R) => (
+            5_000,
+            10,
+            emma_model_config(),
+            LevelModelPolicy {
+                buckets: LevelBuckets::ArityPower,
+                min_samples_per_bucket: 40,
+                reuse_target_router: arm == Arm::E1,
+            },
+            RoutingPolicy::ModelDrivenNormalizedCode,
+        ),
+    }
+}
+
+/// Base model for the E arms; `n_buckets` is replaced by arity^level per level.
+fn emma_model_config() -> LmiConfig {
+    LmiConfig {
+        n_buckets: 10,
+        sample_size: 100_000,
+        hidden_dim: 128,
+        epochs: 10,
+        batch_size: 256,
+        routing_batch_size: 256,
+        kmeans_iterations: 25,
+        nprobe: 1,
+        seed: 42,
+        reuse_router: None,
     }
 }
 
@@ -81,7 +150,7 @@ fn collection_config(dli: bool) -> CollectionConfigInternal {
         .with_on_disk(true)
         .with_datatype(Datatype::Float16)
         .build();
-    let model = model_config();
+    let (buffer_capacity, arity, model, level_model, routing_policy) = arm_config();
     vectors.lmi_config = (!dli).then_some(model.clone());
     let mut optimizer_config = OptimizersConfig::fixture();
     // The comparison baseline uses Qdrant's ordinary optimizer. DLI owns its
@@ -107,16 +176,18 @@ fn collection_config(dli: bool) -> CollectionConfigInternal {
         dli_experimental: dli.then_some(DliExperimentalConfig {
             materialize_topk: false,
             quantized_shortlist: None,
-            routing_policy: Default::default(),
+            routing_policy,
             maintenance_policy: if std::env::var("DLI_BENCH_POLICY").as_deref() == Ok("size-tiered")
             {
                 crate::collection_manager::dli_schedule::MaintenancePolicy::SizeTiered
             } else {
                 Default::default()
             },
-            buffer_capacity: DLI_BUFFER_CAPACITY,
-            arity: 2,
-            candidate_budget: 2_000,
+            level_model,
+            buffer_capacity,
+            arity,
+            candidate_budget: std::env::var("DLI_BENCH_BUDGET")
+                .map_or(2_000, |v| v.parse().expect("DLI_BENCH_BUDGET")),
             model,
         }),
     }
@@ -534,7 +605,10 @@ async fn sisap23_scaling_static_lmi_vs_temporal_dli() {
         .parse()
         .unwrap();
     assert_eq!(population, oracle_population);
-    assert!(population >= 1_000_000 && population <= FULL_COUNT);
+    // Below 1M the caller must stage population-specific gold as ground_truth.i32.
+    assert!(population >= 100_000 && population <= FULL_COUNT);
+    let (buffer_capacity, _, _, _, _) = arm_config();
+    let chunk = BATCH_SIZE.min(buffer_capacity);
     let system = std::env::var("DLI_SINGLE_SYSTEM").unwrap();
     assert!(["static", "geometric", "size-tiered"].contains(&system.as_str()));
     assert_eq!(
@@ -561,8 +635,8 @@ async fn sisap23_scaling_static_lmi_vs_temporal_dli() {
     let local = replica(&collection).await;
     let ingestion = Instant::now();
     let mut checkpoints = Vec::new();
-    for first in (0..population).step_by(BATCH_SIZE) {
-        let end = (first + BATCH_SIZE).min(population);
+    for first in (0..population).step_by(chunk) {
+        let end = (first + chunk).min(population);
         let mut block = vec![0; (end - first) * DIMENSIONS * 2];
         source
             .seek(SeekFrom::Start((first * DIMENSIONS * 2) as u64))
@@ -583,7 +657,7 @@ async fn sisap23_scaling_static_lmi_vs_temporal_dli() {
         };
         let write_seconds = apply_points(&collection, points).await.as_secs_f64();
         if dli {
-            if end % DLI_BUFFER_CAPACITY == 0 {
+            if end % buffer_capacity == 0 {
                 wait_for_dli_publications(&local, old_publications + 1).await;
             }
         } else {
@@ -595,10 +669,12 @@ async fn sisap23_scaling_static_lmi_vs_temporal_dli() {
             "elapsed_seconds":ingestion.elapsed().as_secs_f64(),"points":info.points_count}),
         );
         assert_eq!(info.points_count, Some(end));
-        println!(
-            "SCALING_CHECKPOINT system={system} population={end} elapsed={:.3}",
-            ingestion.elapsed().as_secs_f64()
-        );
+        if end % BATCH_SIZE.max(chunk) == 0 || end == population {
+            println!(
+                "SCALING_CHECKPOINT system={system} population={end} elapsed={:.3}",
+                ingestion.elapsed().as_secs_f64()
+            );
+        }
     }
     let ingestion_seconds = ingestion.elapsed().as_secs_f64();
     let work = segment::index::hnsw_index::point_scorer::scoring_work_snapshot;
@@ -615,7 +691,10 @@ async fn sisap23_scaling_static_lmi_vs_temporal_dli() {
     } else {
         Vec::new()
     };
+    let (buffer_capacity, arity, model, level_model, routing_policy) = arm_config();
     let result = serde_json::json!({"source_head":std::env::var("DLI_BENCH_HEAD").ok(),"system":system,
+        "arm":format!("{:?}", arm()),"buffer_capacity":buffer_capacity,"arity":arity,"model":model,
+        "level_model":level_model,"routing_policy":routing_policy,"publication_events":events,
         "population":population,"oracle_population":oracle_population,"checkpoints":checkpoints,
         "ingestion_to_checkpoint_seconds":ingestion_seconds,"recall10":metrics.0,"recall30":metrics.1,
         "query_p50_ms":metrics.2,"query_p95_ms":metrics.3,"query_mean_ms":metrics.4,"query_count":QUERY_COUNT,
@@ -1808,4 +1887,202 @@ async fn run_65k_query(
         "score": hit.score,
         "version": hit.version,
     })).collect()
+}
+
+/// Router identity and bucket count of every learned member, keyed by DLI level.
+async fn learned_members(
+    collection: &Collection,
+    root: &Path,
+) -> std::collections::BTreeMap<usize, (uuid::Uuid, u64, usize, usize)> {
+    let Ok(bytes) = std::fs::read(root.join("storage/0/dli_hierarchy.json")) else {
+        return Default::default();
+    };
+    let descriptor: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let roles: std::collections::HashMap<uuid::Uuid, usize> = descriptor["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| (m[0].as_str().unwrap().parse().unwrap(), m[1].as_u64().unwrap() as usize))
+        .collect();
+    let holder = replica(collection).await.local_segments_for_test().await.unwrap();
+    let guard = holder.read();
+    let mut members = std::collections::BTreeMap::new();
+    for (_, member) in guard.iter_original() {
+        let segment = member.read();
+        let level = roles[&segment.uuid];
+        if level == 0 {
+            continue;
+        }
+        let index = segment.vector_data[segment::data_types::vectors::DEFAULT_VECTOR_NAME]
+            .vector_index
+            .borrow();
+        let VectorIndexEnum::Lmi(lmi) = &*index else {
+            panic!("learned member without LMI index")
+        };
+        let state = lmi.routing_state().unwrap();
+        assert!(
+            members
+                .insert(
+                    level,
+                    (
+                        segment.uuid,
+                        state.router().fingerprint(),
+                        state.postings().len(),
+                        segment.available_point_count(),
+                    ),
+                )
+                .is_none(),
+            "two members on level {level}"
+        );
+    }
+    members
+}
+
+/// Sommerová-faithful maintenance end to end in a configured collection: aⁱ buckets on
+/// every learned level; with reuse, a compaction into a non-empty level keeps that
+/// level's router (no training) and without reuse it retrains; full-budget search
+/// equals exact search over all points.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn emma_level_rule_and_router_reuse_in_configured_collection() {
+    let _scope = common::ambient::test_guard();
+    use rand::{RngExt, SeedableRng};
+    use crate::collection_manager::dli_bucket_plan::RoutingPolicy;
+    use crate::collection_manager::dli_schedule::{
+        HierarchyConfig, LevelBuckets, LevelModelPolicy, MaintenancePolicy,
+    };
+    const B: usize = 40;
+    const A: usize = 4;
+    const BATCHES: usize = 22;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(20261120);
+    let centers: Vec<Vec<f32>> = (0..8)
+        .map(|_| (0..DIMENSIONS).map(|_| rng.random_range(-1.0f32..1.0)).collect())
+        .collect();
+    let rows: Vec<Vec<f32>> = (0..B * BATCHES)
+        .map(|i| {
+            centers[i % centers.len()]
+                .iter()
+                .map(|c| c + rng.random_range(-0.3f32..0.3))
+                .collect()
+        })
+        .collect();
+    let queries: Vec<Vec<f32>> = (0..6)
+        .map(|i| centers[i].iter().map(|c| c + rng.random_range(-0.3f32..0.3)).collect())
+        .collect();
+    let stored = |v: &[f32]| -> Vec<f32> {
+        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        v.iter().map(|x| f16::from_f32(x / norm).to_f32()).collect()
+    };
+    let corpus: Vec<Vec<f32>> = rows.iter().map(|v| stored(v)).collect();
+
+    for reuse in [true, false] {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = collection_config(true);
+        let dli = config.dli_experimental.as_mut().unwrap();
+        dli.buffer_capacity = B;
+        dli.arity = A;
+        dli.candidate_budget = usize::MAX / 2;
+        dli.routing_policy = RoutingPolicy::ModelDrivenNormalizedCode;
+        dli.level_model = LevelModelPolicy {
+            buckets: LevelBuckets::ArityPower,
+            min_samples_per_bucket: 4,
+            reuse_target_router: reuse,
+        };
+        dli.model = LmiConfig {
+            n_buckets: A,
+            sample_size: 64,
+            hidden_dim: 8,
+            epochs: 2,
+            batch_size: 16,
+            routing_batch_size: 16,
+            kmeans_iterations: 3,
+            nprobe: 1,
+            seed: 5,
+            reuse_router: None,
+        };
+        let collection = create_collection_with_config("emma", root.path(), config).await;
+        let local = replica(&collection).await;
+        let hierarchy = HierarchyConfig {
+            buffer_capacity: B,
+            arity: A,
+            policy: MaintenancePolicy::Geometric,
+        };
+        let mut counts: Vec<usize> = Vec::new();
+        let mut previous = learned_members(&collection, root.path()).await;
+        let (mut reused, mut retrained) = (0, 0);
+        for batch in 0..BATCHES {
+            let points = (batch * B..(batch + 1) * B)
+                .map(|row| PointStructPersisted {
+                    id: ((row + 1) as u64).into(),
+                    vector: VectorStructPersisted::Single(rows[row].clone()),
+                    payload: None,
+                })
+                .collect();
+            apply_points(&collection, points).await;
+            wait_for_dli_publications(&local, batch + 1).await;
+            let plan = hierarchy.plan(B, &counts).unwrap().unwrap();
+            counts.resize(counts.len().max(plan.target_level), 0);
+            for level in &plan.source_levels {
+                counts[level - 1] = 0;
+            }
+            counts[plan.target_level - 1] = plan.output_points;
+            let current = learned_members(&collection, root.path()).await;
+            for (level, (_, _, buckets, points)) in &current {
+                assert_eq!(*buckets, A.pow(*level as u32), "level {level} bucket count");
+                assert_eq!(*points, counts[level - 1], "level {level} population");
+            }
+            let before = previous.get(&plan.target_level);
+            let after = current[&plan.target_level];
+            if plan.target_existing_points > 0 {
+                let before = before.expect("non-empty target existed");
+                assert_ne!(before.0, after.0, "target must be a new physical generation");
+                if reuse {
+                    assert_eq!(before.1, after.1, "reuse must keep the target router");
+                    reused += 1;
+                } else {
+                    assert_ne!(before.1, after.1, "rebuild must retrain the target router");
+                    retrained += 1;
+                }
+            }
+            previous = current;
+        }
+        assert_eq!(counts.iter().sum::<usize>(), B * BATCHES);
+        assert!(reused + retrained >= 8, "too few non-empty-target compactions");
+        let diagnostics = local.local_dli_diagnostics_for_test().await.unwrap();
+        assert!(diagnostics.4.is_empty(), "maintenance errors: {diagnostics:?}");
+
+        for query in &queries {
+            let result = collection
+                .search(
+                    CoreSearchRequest {
+                        query: QueryEnum::Nearest(NamedQuery::default_dense(query.clone())),
+                        filter: None,
+                        params: None,
+                        limit: 10,
+                        offset: 0,
+                        with_payload: None,
+                        with_vector: None,
+                        score_threshold: None,
+                    },
+                    None,
+                    None,
+                    &ShardSelectorInternal::All,
+                    None,
+                )
+                .await
+                .unwrap();
+            let norm = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let mut exact: Vec<f32> = corpus
+                .iter()
+                .map(|v| v.iter().zip(query).map(|(a, b)| a * b / norm).sum())
+                .collect();
+            exact.sort_by(|a, b| b.total_cmp(a));
+            assert_eq!(result.len(), 10);
+            for (hit, oracle) in result.iter().zip(&exact) {
+                assert!((hit.score - oracle).abs() < 2e-3, "{} vs {oracle}", hit.score);
+            }
+        }
+        let attribution = local.local_dli_search_metrics_for_test().await.unwrap();
+        println!("EMMA_TEST reuse={reuse} reused={reused} retrained={retrained} search={attribution:?}");
+        collection.stop_gracefully().await;
+    }
 }

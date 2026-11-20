@@ -410,6 +410,9 @@ pub struct DliExperimentalConfig {
     pub routing_policy: crate::collection_manager::dli_bucket_plan::RoutingPolicy,
     #[serde(default)]
     pub maintenance_policy: crate::collection_manager::dli_schedule::MaintenancePolicy,
+    /// Per-level bucket count, sample floor and router reuse for new learned levels.
+    #[serde(default)]
+    pub level_model: crate::collection_manager::dli_schedule::LevelModelPolicy,
     pub buffer_capacity: usize,
     pub arity: usize,
     pub candidate_budget: usize,

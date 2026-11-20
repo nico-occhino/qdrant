@@ -143,6 +143,7 @@ mod tests {
             kmeans_iterations: 1,
             nprobe: 2,
             seed: 7,
+            reuse_router: None,
         };
         let mut params = VectorParamsBuilder::new(16, Distance::Cosine).build();
         params.lmi_config = Some(lmi);
@@ -443,6 +444,7 @@ mod tests {
             kmeans_iterations: 1,
             nprobe: 2,
             seed: 7,
+            reuse_router: None,
         });
         let optimizer = std::sync::Arc::new(new_indexing_optimizer(
             2,

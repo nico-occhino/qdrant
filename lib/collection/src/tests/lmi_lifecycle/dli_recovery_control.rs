@@ -400,6 +400,7 @@ async fn dli_recovery_control_body() {
         kmeans_iterations: 2,
         nprobe: 2,
         seed: 7,
+        reuse_router: None,
     });
     let mut opt = OptimizersConfig::fixture();
     opt.indexing_threshold = Some(1);
@@ -925,6 +926,7 @@ async fn dli_recovery_control_body() {
                 kmeans_iterations: 2,
                 nprobe: 2,
                 seed,
+                reuse_router: None,
             });
             let staging = tempfile::tempdir().unwrap();
             let mut builder = SegmentBuilder::new(
@@ -1087,6 +1089,7 @@ async fn dli_recovery_control_body() {
                 kmeans_iterations: 2,
                 nprobe: 2,
                 seed: 71,
+                reuse_router: None,
             },
             private_root.path().to_owned(),
         );
@@ -1631,6 +1634,7 @@ async fn dli_recovery_control_body() {
         quantized_shortlist: Some(64),
         routing_policy: crate::collection_manager::dli_bucket_plan::RoutingPolicy::ReservedPerLevel,
         maintenance_policy: Default::default(),
+        level_model: Default::default(),
         buffer_capacity: 3,
         arity: 2,
         candidate_budget: 64,
@@ -1644,6 +1648,7 @@ async fn dli_recovery_control_body() {
             kmeans_iterations: 2,
             nprobe: 2,
             seed: 73,
+            reuse_router: None,
         },
     });
     // F7: the same DLI configuration with generic optimizer workers enabled

@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use super::dli_bucket_plan::{
     BucketPrediction, RoutingPolicy, SelectedBuckets, select, select_density,
-    select_density_uncached, select_reserved,
+    select_density_uncached, select_model_normalized, select_reserved,
 };
 
 /// Linux task-local counters. CPU is in clock ticks (getconf CLK_TCK), not ns.
@@ -404,6 +404,12 @@ pub fn route_pinned_traced(
         }
         RoutingPolicy::PopulationDensityUncached => {
             select_density_uncached(predictions, arity, budget)
+        }
+        RoutingPolicy::ModelDrivenNormalized => {
+            select_model_normalized(predictions, arity, budget, false)
+        }
+        RoutingPolicy::ModelDrivenNormalizedCode => {
+            select_model_normalized(predictions, arity, budget, true)
         }
     }
     .map_err(|e| fail(&format!("invalid DLI candidate plan: {e:?}")))?;
@@ -1005,6 +1011,7 @@ mod tests {
                         kmeans_iterations: 2,
                         nprobe: 2,
                         seed: 17,
+                        reuse_router: None,
                     },
                     expected_sources: inputs
                         .iter()
@@ -1234,6 +1241,7 @@ mod tests {
             kmeans_iterations: 2,
             nprobe: 2,
             seed,
+            reuse_router: None,
         });
         if quantized {
             config.vector_data.get_mut(DEFAULT_VECTOR_NAME).unwrap().quantization_config = Some(segment::types::ScalarQuantizationConfig {

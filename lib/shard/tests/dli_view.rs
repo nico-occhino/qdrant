@@ -44,6 +44,7 @@ fn lmi(root: &std::path::Path, rows: &[(u64, [f32; 2])], seed: u64) -> Segment {
         kmeans_iterations: 2,
         nprobe: 2,
         seed,
+        reuse_router: None,
     });
     let mut builder = SegmentBuilder::new(
         staging.path(),

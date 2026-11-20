@@ -96,6 +96,7 @@ fn config(buffer_capacity: usize) -> CollectionConfigInternal {
             quantized_shortlist: None,
             routing_policy: Default::default(),
             maintenance_policy: Default::default(),
+        level_model: Default::default(),
             buffer_capacity,
             arity: 2,
             // Exhaustive learned routing: isolates visibility from ANN recall.
@@ -110,6 +111,7 @@ fn config(buffer_capacity: usize) -> CollectionConfigInternal {
                 kmeans_iterations: 2,
                 nprobe: 4,
                 seed: 11,
+                reuse_router: None,
             },
         }),
     }

@@ -16,6 +16,10 @@ pub enum RoutingPolicy {
     TemperatureDensity {
         temperature_milli: u32,
     },
+    /// Sommerová thesis eq. 3.4: P(bucket|q) times the member's bucket count, buffer 1.
+    ModelDrivenNormalized,
+    /// Her released code: the same score divided by the arity (0-based level exponent).
+    ModelDrivenNormalizedCode,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -192,6 +196,64 @@ fn select_density_impl<const CACHE: bool>(
     })
 }
 
+/// Model-driven normalized ordering (Sommerová §3.5.1). A learned bucket scores
+/// P(bucket|q)·B_m, where B_m is its member's bucket count (all predictions of that
+/// member, empty buckets included), so a uniformly uncertain model scores 1 on every
+/// level; `divide_by_arity` reproduces her code's `arity**level_idx` with a 0-based
+/// index. The Plain buffer scores 1. Whole buckets are taken until `budget` is met.
+pub fn select_model_normalized(
+    predictions: Vec<BucketPrediction>,
+    arity: usize,
+    budget: usize,
+    divide_by_arity: bool,
+) -> Result<SelectedBuckets, PlanError> {
+    if budget == 0 {
+        return Err(PlanError::ZeroBudget);
+    }
+    let mut bucket_counts = HashMap::<Uuid, usize>::new();
+    for p in &predictions {
+        if p.level > 0 {
+            *bucket_counts.entry(p.physical).or_default() += 1;
+        }
+    }
+    // Reuse the baseline validation and its deterministic tie order.
+    let ranked = select(predictions, arity, usize::MAX)?.buckets;
+    let divisor = if divide_by_arity { arity as f64 } else { 1. };
+    let mut scored: Vec<_> = ranked
+        .into_iter()
+        .map(|p| {
+            let score = if p.level == 0 {
+                1.
+            } else {
+                f64::from(p.probability) * bucket_counts[&p.physical] as f64 / divisor
+            };
+            (score, p)
+        })
+        .collect();
+    scored.sort_by(|a, b| {
+        b.0.total_cmp(&a.0)
+            .then(a.1.level.cmp(&b.1.level))
+            .then(a.1.physical.cmp(&b.1.physical))
+            .then(a.1.bucket.cmp(&b.1.bucket))
+    });
+    let mut count = 0usize;
+    let mut buckets = Vec::new();
+    for (_, p) in scored {
+        if count >= budget {
+            break;
+        }
+        count = count
+            .checked_add(p.occupancy)
+            .ok_or(PlanError::NumericOverflow)?;
+        buckets.push(p);
+    }
+    Ok(SelectedBuckets {
+        requested: budget,
+        estimated_candidates: count,
+        buckets,
+    })
+}
+
 /// Reserve the highest-probability nonempty bucket of each learned physical
 /// member, then fill remaining work in the baseline order. Whole buckets impose
 /// an explicit cost floor; `budget` remains a minimum, never a hard work bound.
@@ -296,6 +358,41 @@ mod tests {
         assert_eq!(
             select_density(shifted, 2, 1).unwrap().buckets[0].physical,
             Uuid::from_u128(1)
+        );
+    }
+
+    #[test]
+    fn model_normalized_scales_by_member_bucket_count_and_code_variant_divides_by_arity() {
+        // Level 1: 10 buckets; level 2: 100 buckets (arity 10). Uniform level-2 model
+        // (0.01 each) scores 1.0, a confident level-1 bucket 0.5*10 = 5.0.
+        let mut input = vec![b(0, 9, None, 0., 5)];
+        for bucket in 0..10 {
+            input.push(b(1, 1, Some(bucket), if bucket == 0 { 0.5 } else { 0.05 }, 3));
+        }
+        for bucket in 0..100 {
+            input.push(b(2, 2, Some(bucket), 0.01, if bucket == 7 { 0 } else { 4 }));
+        }
+        let thesis = select_model_normalized(input.clone(), 10, 1, false).unwrap();
+        assert_eq!((thesis.buckets[0].level, thesis.buckets[0].bucket), (1, Some(0)));
+        // Thesis: second-best level-1 buckets score 0.5, below the buffer and the
+        // uniform level 2 (both 1.0); the buffer wins the tie by level order.
+        let thesis = select_model_normalized(input.clone(), 10, 9, false).unwrap();
+        assert_eq!(thesis.buckets[1].level, 0);
+        assert_eq!(thesis.buckets[2].level, 2);
+        // Code variant: every learned score shrinks by the arity (confident bucket 0.5,
+        // level 2 about 0.1), so the buffer (1.0) is visited first.
+        let code = select_model_normalized(input.clone(), 10, 9, true).unwrap();
+        assert_eq!(
+            code.buckets.iter().map(|p| p.level).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        // Empty buckets are never selected and the budget is a minimum.
+        let all = select_model_normalized(input, 10, usize::MAX, false).unwrap();
+        assert_eq!(all.estimated_candidates, 5 + 30 + 99 * 4);
+        assert!(all.buckets.iter().all(|p| p.occupancy > 0));
+        assert_eq!(
+            select_model_normalized(vec![], 10, 0, false),
+            Err(PlanError::ZeroBudget)
         );
     }
 

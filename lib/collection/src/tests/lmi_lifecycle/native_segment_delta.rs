@@ -325,6 +325,7 @@ async fn native_lmi_mixed_segments_mutation_restart_and_optimizer_body() {
         kmeans_iterations: 2,
         nprobe: 2,
         seed: 7,
+        reuse_router: None,
     });
     let mut opt = OptimizersConfig::fixture();
     opt.indexing_threshold = Some(1);

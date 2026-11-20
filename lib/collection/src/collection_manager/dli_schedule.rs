@@ -13,6 +13,66 @@ pub enum MaintenancePolicy {
     SizeTiered,
 }
 
+/// How many buckets a freshly trained learned level gets.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum LevelBuckets {
+    /// Every level uses the collection model's `n_buckets` (original Qdrant DLI).
+    #[default]
+    Fixed,
+    /// Level i gets arity^i buckets, so a full level has buckets of about the buffer
+    /// size (Sommerová eq. 3.1–3.2).
+    ArityPower,
+}
+
+/// Per-level model rule for new learned destinations. The default reproduces the
+/// original behaviour: one model configuration, full retraining on every compaction.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LevelModelPolicy {
+    pub buckets: LevelBuckets,
+    /// Teacher sample floor of this many samples per bucket (Faiss's 40·k rule);
+    /// the collection model's `sample_size` stays the preferred size. 0 disables.
+    pub min_samples_per_bucket: usize,
+    /// Compaction into a non-empty target reuses the target's trained router instead
+    /// of training (Sommerová's naive insert); an empty target is trained fresh.
+    pub reuse_target_router: bool,
+}
+
+/// Largest sample the LMI configuration accepts.
+const MAX_SAMPLE_SIZE: usize = 1_000_000;
+/// Largest bucket count the LMI configuration accepts.
+const MAX_BUCKETS: usize = 65_536;
+
+impl LevelModelPolicy {
+    /// Model for a learned destination at `level` that is trained from scratch.
+    pub fn fresh_config(
+        &self,
+        base: segment::index::lmi_index::LmiConfig,
+        arity: usize,
+        level: usize,
+    ) -> Result<segment::index::lmi_index::LmiConfig, ScheduleError> {
+        let mut config = base;
+        config.reuse_router = None;
+        if self.buckets == LevelBuckets::ArityPower {
+            let exponent = u32::try_from(level).map_err(|_| ScheduleError::CapacityOverflow)?;
+            config.n_buckets = arity
+                .checked_pow(exponent)
+                .filter(|&n| n <= MAX_BUCKETS)
+                .ok_or(ScheduleError::CapacityOverflow)?;
+        }
+        if self.min_samples_per_bucket > 0 {
+            let floor = self
+                .min_samples_per_bucket
+                .checked_mul(config.n_buckets)
+                .ok_or(ScheduleError::CapacityOverflow)?;
+            config.sample_size = config.sample_size.max(floor).min(MAX_SAMPLE_SIZE);
+        }
+        config.sample_size = config.sample_size.max(config.n_buckets);
+        config.nprobe = config.nprobe.clamp(1, config.n_buckets);
+        Ok(config)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HierarchyConfig {
     pub buffer_capacity: usize,
@@ -178,6 +238,40 @@ mod tests {
             levels[level - 1] = 0;
         }
         levels[p.target_level - 1] = p.output_points;
+    }
+
+    #[test]
+    fn level_model_policy_sizes_buckets_and_samples_per_level() {
+        let base = segment::index::lmi_index::LmiConfig {
+            n_buckets: 548,
+            sample_size: 100_000,
+            nprobe: 4,
+            ..Default::default()
+        };
+        let legacy = LevelModelPolicy::default();
+        assert_eq!(legacy.fresh_config(base, 10, 3).unwrap(), base);
+        let emma = LevelModelPolicy {
+            buckets: LevelBuckets::ArityPower,
+            min_samples_per_bucket: 40,
+            reuse_target_router: true,
+        };
+        let level1 = emma.fresh_config(base, 10, 1).unwrap();
+        assert_eq!((level1.n_buckets, level1.sample_size, level1.nprobe), (10, 100_000, 4));
+        let level2 = emma.fresh_config(base, 2, 1).unwrap();
+        assert_eq!((level2.n_buckets, level2.nprobe), (2, 2));
+        let level4 = emma.fresh_config(base, 10, 4).unwrap();
+        assert_eq!((level4.n_buckets, level4.sample_size), (10_000, 400_000));
+        let reused = segment::index::lmi_index::LmiConfig {
+            reuse_router: Some(7),
+            ..base
+        };
+        assert_eq!(emma.fresh_config(reused, 10, 1).unwrap().reuse_router, None);
+        assert_eq!(emma.fresh_config(base, 10, 5), Err(ScheduleError::CapacityOverflow));
+        let huge = LevelModelPolicy {
+            min_samples_per_bucket: 1_000,
+            ..emma
+        };
+        assert_eq!(huge.fresh_config(base, 10, 4).unwrap().sample_size, MAX_SAMPLE_SIZE);
     }
 
     #[test]
