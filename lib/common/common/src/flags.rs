@@ -92,9 +92,28 @@ pub struct FeatureFlags {
     /// Existing `GraphInline` segments are always readable, regardless of this flag.
     pub combined_vector_storage: bool,
 
+    /// Record the version of every delete, in formats older readers cannot parse: versioned
+    /// delete entries in appendable mappings logs, and a delete log next to the deleted mask of
+    /// immutable segments, which takes their deletes in place of the mask. Followers use the
+    /// versions to never apply the delete of a moved point before they see its new copy. Gates
+    /// writing only: both formats are always read, and the deletes of an immutable segment are the
+    /// union of its mask and its log.
+    pub versioned_deletes: bool,
+
+    /// Build the main HNSW graph of large segments with PiPNN instead of inserting point by
+    /// point. When disabled, PiPNN is *never* used and graphs are built with HNSW.
+    /// When enabled, PiPNN is used where it applies: segments that are large enough, have
+    /// no older graph to build from, and whose vectors support it. Only changes how graphs
+    /// are built: the resulting graph has the same format either way.
+    ///
+    /// Disabled by default: PiPNN ignores `ef_construct`, so with it the graph quality of large
+    /// segments can only be tuned through `m`.
+    pub pipnn_graph_building: bool,
+
     /// Serverless-compatible deployment mode. Implies [`Self::write_segment_manifest`],
     /// [`Self::append_only_mutations`], [`Self::compact_bitmask`], [`Self::append_only_storages`],
-    /// [`Self::compact_logstore_tracker`] and [`Self::persist_proxy_segments`].
+    /// [`Self::compact_logstore_tracker`], [`Self::persist_proxy_segments`] and
+    /// [`Self::versioned_deletes`].
     ///
     /// Note that this will only be applied when passed into [`init_feature_flags`].
     pub serverless_compatible: bool,
@@ -118,6 +137,8 @@ impl Default for FeatureFlags {
             transfer_raw_payloads: true,
             persist_proxy_segments: false,
             combined_vector_storage: true,
+            versioned_deletes: false,
+            pipnn_graph_building: false,
             serverless_compatible: false,
         }
     }
@@ -133,6 +154,12 @@ impl FeatureFlags {
     /// the disk-resident id-tracker format). See the field docs for implications.
     pub fn serverless_compatible(self) -> bool {
         self.serverless_compatible
+    }
+
+    /// Turn on serverless-compatible mode. The implied sub-flags are applied
+    /// when the flags are passed to [`init_feature_flags`].
+    pub fn enable_serverless_compatible(&mut self) {
+        self.serverless_compatible = true;
     }
 
     fn all() -> Self {
@@ -154,6 +181,9 @@ impl FeatureFlags {
             transfer_raw_payloads: true,
             persist_proxy_segments: true,
             combined_vector_storage: true,
+            // Deliberately not enabled by `all`: it changes the persisted storage format.
+            versioned_deletes: false,
+            pipnn_graph_building: true,
             serverless_compatible: false,
         }
     }
@@ -173,6 +203,7 @@ impl FeatureFlags {
             self.append_only_storages = true;
             self.compact_logstore_tracker = true;
             self.persist_proxy_segments = true;
+            self.versioned_deletes = true;
         }
 
         // Append-only storages cannot rewrite slots.
@@ -234,6 +265,7 @@ mod tests {
         assert!(flags.append_only_storages);
         assert!(flags.compact_logstore_tracker);
         assert!(flags.persist_proxy_segments);
+        assert!(flags.versioned_deletes);
     }
 
     #[test]
@@ -251,6 +283,7 @@ mod tests {
         assert!(flags.append_only_storages);
         assert!(flags.compact_logstore_tracker);
         assert!(flags.persist_proxy_segments);
+        assert!(flags.versioned_deletes);
     }
 
     #[test]

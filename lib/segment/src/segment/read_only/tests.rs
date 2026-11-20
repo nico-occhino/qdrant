@@ -28,6 +28,7 @@ use crate::data_types::vectors::{DEFAULT_VECTOR_NAME, QueryVector, VectorInterna
 use crate::entry::entry_point::{
     NonAppendableSegmentEntry as _, ReadSegmentEntry, SegmentEntry as _, StorageSegmentEntry as _,
 };
+use crate::id_tracker::delete_versions::DeleteGating;
 use crate::json_path::JsonPath;
 use crate::payload_json;
 use crate::segment::Segment;
@@ -256,6 +257,7 @@ fn assert_query_equivalence(reference: &impl ReadSegmentEntry, candidate: &impl 
 
 #[test]
 fn read_only_segment_matches_mutable() {
+    let _scope = ambient::test_guard();
     let segments_dir = Builder::new().prefix("ro_segments").tempdir().unwrap();
     let temp_dir = Builder::new().prefix("ro_builder").tempdir().unwrap();
 
@@ -276,6 +278,7 @@ fn read_only_segment_matches_mutable() {
 
 #[test]
 fn read_only_segment_graph_inline_matches_mutable() {
+    let _scope = ambient::test_guard();
     let segments_dir = Builder::new().prefix("ro_segments_gi").tempdir().unwrap();
     let temp_dir = Builder::new().prefix("ro_builder_gi").tempdir().unwrap();
 
@@ -321,6 +324,7 @@ fn read_only_segment_graph_inline_matches_mutable() {
 #[case::mmap(false)]
 #[case::graph_inline(true)]
 fn read_only_segment_with_load_profile_matches_mutable(#[case] inline_storage: bool) {
+    let _scope = ambient::test_guard();
     let segments_dir = Builder::new().prefix("ro_segments_lp").tempdir().unwrap();
     let temp_dir = Builder::new().prefix("ro_builder_lp").tempdir().unwrap();
 
@@ -654,6 +658,7 @@ fn preload_then_reload(
 /// keeps answering queries identically to the reference.
 #[test]
 fn read_only_segment_config_reload_payload_index() {
+    let _scope = ambient::test_guard();
     use crate::index::payload_config::PayloadConfig;
     use crate::segment_constructor::get_payload_index_path;
 
@@ -693,7 +698,7 @@ fn read_only_segment_config_reload_payload_index() {
         .config_reload_diff(&MmapFs)
         .expect("config reload diff");
     assert!(!diff.is_empty());
-    read_only.apply_config_reload(diff);
+    let _retired = read_only.apply_config_reload(diff);
     {
         let payload_index = read_only.payload_index.borrow();
         assert!(payload_index.field_indexes.contains_key(&kw_field));
@@ -707,13 +712,17 @@ fn read_only_segment_config_reload_payload_index() {
         .expect("config reload diff");
     assert!(diff.is_empty());
 
-    // Drop `num` again on disk and reload: the index is removed.
+    // Drop `num` again on disk and reload: the index is removed, and handed back
+    // to the caller instead of being dropped inside the apply.
     reduced_config.save(&config_path).unwrap();
     let diff = read_only
         .config_reload_diff(&MmapFs)
         .expect("config reload diff");
     assert!(!diff.is_empty());
-    read_only.apply_config_reload(diff);
+    let (retired_vectors, retired_field_indexes) = read_only.apply_config_reload(diff);
+    assert!(retired_vectors.is_empty());
+    assert!(!retired_field_indexes.is_empty());
+    drop(retired_field_indexes);
     {
         let payload_index = read_only.payload_index.borrow();
         assert!(payload_index.field_indexes.contains_key(&kw_field));
@@ -729,6 +738,7 @@ fn read_only_segment_config_reload_payload_index() {
 /// re-check the segment manifest instead of escalating.
 #[test]
 fn vanished_segment_classifies_not_found() {
+    let _scope = ambient::test_guard();
     use common::universal_io::IsNotFound as _;
 
     let segments_dir = Builder::new().prefix("ro_segments").tempdir().unwrap();
@@ -772,6 +782,7 @@ fn vanished_segment_classifies_not_found() {
 /// first use runs the deferred graph load) surfaces the missing files.
 #[test]
 fn deferred_index_reads_nothing_at_open() {
+    let _scope = ambient::test_guard();
     use crate::data_types::load_profile::LoadProfile;
     use crate::segment_constructor::get_vector_index_path;
 
@@ -826,6 +837,7 @@ fn deferred_index_reads_nothing_at_open() {
 /// payload reads identically to an eagerly opened one.
 #[test]
 fn deferred_index_opens_on_first_search() {
+    let _scope = ambient::test_guard();
     use crate::data_types::load_profile::LoadProfile;
 
     let segments_dir = Builder::new().prefix("ro_segments").tempdir().unwrap();
@@ -856,6 +868,7 @@ fn deferred_index_opens_on_first_search() {
 /// it, and an unset flag changes nothing.
 #[test]
 fn schedule_open_and_finish_observe_the_stop_flag() {
+    let _scope = ambient::test_guard();
     let segments_dir = Builder::new().prefix("ro_segments_stop").tempdir().unwrap();
     let temp_dir = Builder::new().prefix("ro_builder_stop").tempdir().unwrap();
 
@@ -1419,6 +1432,7 @@ fn test_open_writer_appends_between_list_and_tracker_open() {
         mutable.uuid,
         None,
         None,
+        DeleteGating::Immediate,
         &stop,
     )
     .and_then(|staged| staged.finish(&MmapFs))
@@ -2346,6 +2360,7 @@ fn text_stats_ignore_load_history_optimized(
 /// opener's id tracker, for held and unknown points.
 #[test]
 fn read_only_segment_batched_lookups_match_single() {
+    let _scope = ambient::test_guard();
     let segments_dir = Builder::new().prefix("ro_segments").tempdir().unwrap();
     let temp_dir = Builder::new().prefix("ro_builder").tempdir().unwrap();
     let mutable = build_immutable_segment(segments_dir.path(), temp_dir.path(), false);

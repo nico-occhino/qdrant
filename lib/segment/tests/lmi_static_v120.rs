@@ -385,7 +385,7 @@ fn deleted_static_candidate_is_filtered_by_current_scorer() {
     drop(lmi);
     let reopened = load_segment(&path, uuid, None, &AtomicBool::new(false), true).unwrap();
     assert_eq!(ids(&reopened), vec![1]);
-    reopened.id_tracker.borrow_mut().drop(2.into()).unwrap();
+    reopened.id_tracker.borrow_mut().drop(2.into(), None).unwrap();
     // The only posting in the learned bucket is now deleted. The search must
     // not return an empty result while live points exist: the probe widens and
     // the deleted offset is still excluded by the current scorer.
@@ -416,7 +416,7 @@ fn underfilled_learned_probe_widens_to_fill_top() {
     drop(index);
     assert_eq!(ids_top(&reopened, 1), vec![1]);
     // After a deletion the live count is 3: top = 4 fills to 3, never 4.
-    reopened.id_tracker.borrow_mut().drop(4.into()).unwrap();
+    reopened.id_tracker.borrow_mut().drop(4.into(), None).unwrap();
     let widened = ids_top(&reopened, 4);
     assert_eq!(widened.len(), 3);
     assert!(!widened.contains(&3), "deleted offset must stay excluded");

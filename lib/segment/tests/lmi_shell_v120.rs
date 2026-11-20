@@ -165,7 +165,7 @@ fn deleted_candidate_and_float16_use_real_storage() {
     };
     lmi_index.set_synthetic_candidates_for_test(vec![0, 1, 2]);
     drop(index);
-    lmi.id_tracker.borrow_mut().drop(1.into()).unwrap();
+    lmi.id_tracker.borrow_mut().drop(1.into(), None).unwrap();
     assert_eq!(ids(&lmi, None, None), vec![1, 2]);
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "qdrant"
-version = "1.20.0"
+version = "1.20.2"
 description = "Qdrant - Vector Search engine"
 authors = [
     "Andrey Vasnetsov <andrey@vasnetsov.com>",
@@ -19,7 +19,7 @@ workspace = true
 
 [features]
 default = []
-service_debug = ["parking_lot/deadlock_detection", "collection/testing"]
+service_debug = ["parking_lot/deadlock_detection", "collection/testing", "dep:ctrlc"]
 tracing = [
     "api/tracing",
     "collection/tracing",
@@ -38,11 +38,13 @@ data-consistency-check = ["collection/data-consistency-check"]
 gpu = ["gpu/gpu", "segment/gpu"]
 deb = []
 staging = ["collection/staging", "storage/staging", "shard/staging"]
+# Edge-follower verification in the model_testing binary (see lib/collection model_testing).
+edge-verify = ["collection/edge-verify"]
 
 [dev-dependencies]
 serde_urlencoded = "0.7"
-sealed_test = "1.1.0"
 
+common = { path = "lib/common/common", features = ["testing"] }
 mockito = { workspace = true }
 tempfile = { workspace = true }
 rusty-hook = "^0.11.2"
@@ -68,7 +70,7 @@ anyhow = "1.0.98"
 futures = { workspace = true }
 futures-util = { workspace = true }
 clap = { workspace = true }
-ctrlc = "3.5.2"
+ctrlc = { version = "3.5.2", optional = true }
 env_logger = { workspace = true }
 serde_cbor = { workspace = true }
 uuid = { workspace = true }
@@ -156,7 +158,7 @@ pyroscope = { version = "2.1.0", features = ["backend-pprof-rs", "backend-jemall
 # Backtrace
 rstack-self = { version = "0.3.0", optional = true }
 
-# Jemalloc
+# Jemalloc. Keep the condition in sync with `build.rs`, which emits `cfg(jemalloc)` for the code.
 [target.'cfg(all(not(target_env = "msvc"), any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
 tikv-jemallocator = { version = "0.7.0", features = [
     "stats",
@@ -261,7 +263,7 @@ num_cpus = "1.17"
 object_store = { version = "0.14.0", features = ["aws", "gcp", "azure"] }
 ordered-float = { version = "5.3.0", features = ["serde", "schemars", "bytemuck"] }
 rayon = "1.12.0"
-parking_lot = { version = "0.12.5", features = ["arc_lock", "deadlock_detection", "serde"] }
+parking_lot = { version = "0.13.0", features = ["arc_lock", "deadlock_detection", "serde"] }
 ph = "0.8.5"
 pin-project-lite = "0.2.17"
 pprof = { version = "0.15.0", default-features = false, features = ["flamegraph", "prost-codec"] }
@@ -273,7 +275,7 @@ prost-for-raft = { package = "prost", version = "=0.11.9" } # version of prost u
 raft = { git = "https://github.com/tikv/raft-rs", rev = "aafb07c7bab439c6139926a77dfafc5b10e9bc84" ,features = ["prost-codec"], default-features = false }
 rand = "0.10.1"
 rand_distr = "0.6.0"
-roaring = "0.11.4"
+roaring = "0.12.0"
 reqwest = { version = "0.13.4", default-features = false, features = [
     "json",
     "http2",
@@ -281,7 +283,7 @@ reqwest = { version = "0.13.4", default-features = false, features = [
     "rustls",
     "blocking",
 ] }
-rstest = { version = "0.27.0", default-features = false }
+rstest = { version = "0.28.0", default-features = false }
 schemars = { version = "0.8.22", features = [
     "uuid1",
     "preserve_order",
@@ -300,7 +302,7 @@ serde_json = { version = "~1.0", features = ["preserve_order"] }
 slab = "0.4.12"
 strum = { version = "0.28.0", features = ["derive"] }
 stumpalo = "1.0.0"
-sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 tap = "1.0.1"
 tar = { version = "0.4.46", default-features = false }
 tempfile = "3.27.0"
@@ -322,7 +324,7 @@ bitvec = "1.0.1"
 smallvec = { version = "1.15.1", features = ["write"] }
 dashmap = "6.2"
 walkdir = "2.5.0"
-zstd = "0.13"
+zstd = "0.14"
 
 [patch.crates-io]
 tonic = { git = "https://github.com/qdrant/tonic", branch = "v0.14.6-qdrant" }

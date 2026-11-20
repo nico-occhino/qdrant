@@ -16,7 +16,9 @@ use crate::data_types::query_context::VectorQueryContext;
 use crate::data_types::vectors::{QueryVector, VectorInternal};
 use crate::id_tracker::read_only_tracker_enum::ReadOnlyIdTrackerEnum;
 use crate::index::candidate_scoring::score_candidates_generic;
+use crate::index::field_index::CardinalityEstimation;
 use crate::index::plain_vector_index::read_only::ReadOnlyPlainVectorIndex;
+use crate::index::query_optimization::filter_checks::FilterChecks;
 use crate::index::struct_payload_index::read_only::ReadOnlyStructPayloadIndex;
 use crate::index::{PayloadIndexRead, UniversalReadExt, VectorIndexRead};
 use crate::telemetry::VectorIndexSearchesTelemetry;
@@ -191,6 +193,27 @@ impl<S: UniversalReadExt + 'static> VectorIndexRead for ReadOnlyLmiIndex<S> {
                 )
             })
             .collect()
+    }
+
+    fn filter_checks(
+        &self,
+        query_vectors: &[QueryVector],
+        cardinality: &CardinalityEstimation,
+        top: usize,
+        params: Option<&SearchParams>,
+    ) -> OperationResult<FilterChecks> {
+        let queries: Vec<&QueryVector> = query_vectors.iter().collect();
+        if self.eligible(&queries, params) {
+            Ok(filtered::learned_filter_checks(
+                &self.routing,
+                queries.len(),
+                cardinality,
+                top,
+            ))
+        } else {
+            self.plain
+                .filter_checks(query_vectors, cardinality, top, params)
+        }
     }
 
     fn get_telemetry_data(&self, detail: TelemetryDetail) -> VectorIndexSearchesTelemetry {

@@ -1,5 +1,6 @@
 mod test_facets;
 mod test_immutable_payload_index_files;
+mod test_max_available_vectors_size;
 mod test_vector_name_ops;
 
 use std::assert_matches;
@@ -537,7 +538,11 @@ fn test_check_consistency() {
         .unwrap();
 
     // make id_tracker inconsistent
-    segment.id_tracker.borrow_mut().drop(6.into()).unwrap();
+    segment
+        .id_tracker
+        .borrow_mut()
+        .drop(6.into(), None)
+        .unwrap();
 
     let search_result = segment
         .search(

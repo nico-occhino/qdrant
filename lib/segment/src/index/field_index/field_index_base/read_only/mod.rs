@@ -140,23 +140,6 @@ impl<S: UniversalReadExt> ReadOnlyFieldIndex<S> {
         }
     }
 
-    pub fn is_cold(&self) -> bool {
-        match self {
-            ReadOnlyFieldIndex::IntMapIndex(index) => index.is_cold(),
-            ReadOnlyFieldIndex::KeywordIndex(index) => index.is_cold(),
-            ReadOnlyFieldIndex::UuidMapIndex(index) => index.is_cold(),
-            ReadOnlyFieldIndex::IntIndex(index) => index.is_cold(),
-            ReadOnlyFieldIndex::DatetimeIndex(index) => index.is_cold(),
-            ReadOnlyFieldIndex::FloatIndex(index) => index.is_cold(),
-            ReadOnlyFieldIndex::UuidIndex(index) => index.is_cold(),
-            ReadOnlyFieldIndex::GeoIndex(index) => GeoIndexRead::is_cold(index),
-            ReadOnlyFieldIndex::FullTextIndex(index) => FullTextIndexRead::is_cold(index),
-            ReadOnlyFieldIndex::BoolIndex(index) => BoolIndexRead::is_cold(index),
-            ReadOnlyFieldIndex::NullIndex(index) => NullIndexRead::is_cold(index),
-            ReadOnlyFieldIndex::Nested(index) => index.is_cold(),
-        }
-    }
-
     /// Populate all pages in the mmap. Block until all pages are populated.
     pub fn populate(&self) -> OperationResult<()> {
         match self {
@@ -274,6 +257,26 @@ impl<S: UniversalReadExt> LiveReload for ReadOnlyFieldIndex<S> {
             ReadOnlyFieldIndex::UuidMapIndex(index) => index.live_preload(fs),
             ReadOnlyFieldIndex::NullIndex(index) => index.live_preload(fs),
             ReadOnlyFieldIndex::Nested(index) => index.live_preload(fs),
+        }
+    }
+
+    fn apply_deletions(
+        &mut self,
+        deleted_points: &SortedSlice<'_, PointOffsetType>,
+    ) -> OperationResult<()> {
+        match self {
+            ReadOnlyFieldIndex::IntIndex(index) => index.apply_deletions(deleted_points),
+            ReadOnlyFieldIndex::DatetimeIndex(index) => index.apply_deletions(deleted_points),
+            ReadOnlyFieldIndex::IntMapIndex(index) => index.apply_deletions(deleted_points),
+            ReadOnlyFieldIndex::KeywordIndex(index) => index.apply_deletions(deleted_points),
+            ReadOnlyFieldIndex::FloatIndex(index) => index.apply_deletions(deleted_points),
+            ReadOnlyFieldIndex::GeoIndex(index) => index.apply_deletions(deleted_points),
+            ReadOnlyFieldIndex::FullTextIndex(index) => index.apply_deletions(deleted_points),
+            ReadOnlyFieldIndex::BoolIndex(index) => index.apply_deletions(deleted_points),
+            ReadOnlyFieldIndex::UuidIndex(index) => index.apply_deletions(deleted_points),
+            ReadOnlyFieldIndex::UuidMapIndex(index) => index.apply_deletions(deleted_points),
+            ReadOnlyFieldIndex::NullIndex(index) => index.apply_deletions(deleted_points),
+            ReadOnlyFieldIndex::Nested(index) => index.apply_deletions(deleted_points),
         }
     }
 

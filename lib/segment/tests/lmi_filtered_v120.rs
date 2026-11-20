@@ -464,7 +464,7 @@ fn deleted_point_is_excluded_from_routed_filtered_results() {
     let first = search(lmi, &query, Some(&filter), None);
     let victim = first[0].idx;
     let external_id = lmi.id_tracker.borrow().external_id(victim).unwrap();
-    lmi.id_tracker.borrow_mut().drop(external_id).unwrap();
+    lmi.id_tracker.borrow_mut().drop(external_id, None).unwrap();
     let second = search(lmi, &query, Some(&filter), None);
     assert_eq!(second.len(), TOP);
     assert!(second.iter().all(|p| p.idx != victim));
@@ -840,7 +840,7 @@ fn routed_counters_match_independent_recomputation() {
     let mode = FilteredSearchMode::ForceRouted { nprobe: 2 };
     let (hits, before) = research(lmi, &query, &filter, TOP, &mode);
     let victim = lmi.id_tracker.borrow().external_id(hits[0].idx).unwrap();
-    lmi.id_tracker.borrow_mut().drop(victim).unwrap();
+    lmi.id_tracker.borrow_mut().drop(victim, None).unwrap();
     let (_, after) = research(lmi, &query, &filter, TOP, &mode);
     let (before, after) = (before.routed.unwrap(), after.routed.unwrap());
     assert_eq!(after.final_probe.surviving, before.final_probe.surviving);

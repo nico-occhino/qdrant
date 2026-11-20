@@ -35,6 +35,8 @@ use uuid::Uuid;
 use validator::{Validate, ValidationError, ValidationErrors};
 use zerocopy::native_endian::U64;
 
+mod hnsw_config_serde;
+use self::hnsw_config_serde::HnswConfigDeserialize;
 use crate::common::anonymize::Anonymize;
 use crate::common::operation_error::{OperationError, OperationResult};
 use crate::common::utils::{self, MaybeOneOrMany, MultiValue};
@@ -48,6 +50,7 @@ use crate::data_types::primitive::PrimitiveVectorElement;
 use crate::data_types::tiny_map::TinyMap;
 use crate::data_types::vectors::{DenseVector, VectorStructInternal};
 use crate::index::field_index::CardinalityEstimation;
+use crate::index::query_optimization::resolved_points::ResolvedPoints;
 use crate::index::sparse_index::sparse_index_config::SparseIndexConfig;
 use crate::json_path::{JsonPath, JsonPathItem};
 use crate::spaces::metric::{Metric, MetricPostProcessing};
@@ -359,21 +362,6 @@ impl Distance {
             Distance::Euclid | Distance::Manhattan => Order::SmallBetter,
         }
     }
-
-    pub fn is_ordered(&self, left: ScoreType, right: ScoreType) -> bool {
-        match self.distance_order() {
-            Order::LargeBetter => left >= right,
-            Order::SmallBetter => left <= right,
-        }
-    }
-
-    /// Checks if score satisfies threshold condition
-    pub fn check_threshold(&self, score: ScoreType, threshold: ScoreType) -> bool {
-        match self.distance_order() {
-            Order::LargeBetter => score > threshold,
-            Order::SmallBetter => score < threshold,
-        }
-    }
 }
 
 /// Map a segment [`Distance`] to the TurboQuant [`DistanceType`].
@@ -396,6 +384,23 @@ impl From<Distance> for quantization::DistanceType {
 pub enum Order {
     LargeBetter,
     SmallBetter,
+}
+
+impl Order {
+    pub fn is_ordered(self, left: ScoreType, right: ScoreType) -> bool {
+        match self {
+            Order::LargeBetter => left >= right,
+            Order::SmallBetter => left <= right,
+        }
+    }
+
+    /// Checks if score satisfies threshold condition
+    pub fn check_threshold(self, score: ScoreType, threshold: ScoreType) -> bool {
+        match self {
+            Order::LargeBetter => score > threshold,
+            Order::SmallBetter => score < threshold,
+        }
+    }
 }
 
 /// Search result
@@ -849,7 +854,8 @@ impl Indexes {
 #[derive(
     Copy, Clone, Debug, Eq, PartialEq, Deserialize, Serialize, JsonSchema, Validate, Anonymize,
 )]
-#[serde(rename_all = "snake_case")]
+// Reads a missing `ef_construct` as the default, without making it optional in the JSON schema
+#[serde(rename_all = "snake_case", from = "HnswConfigDeserialize")]
 #[anonymize(false)]
 pub struct HnswConfig {
     /// Number of edges per node in the index graph. Larger the value - more accurate the search, more space required.
@@ -858,6 +864,7 @@ pub struct HnswConfig {
     /// This setting alone does not guarantee exact search.
     pub m: usize,
     /// Number of neighbours to consider during the index building. Larger the value - more accurate the search, more time required to build index.
+    // Read as `DEFAULT_HNSW_EF_CONSTRUCT` if missing, see `HnswConfigDeserialize`
     #[validate(range(min = 4))]
     pub ef_construct: usize,
     /// Minimal size threshold (in KiloBytes) below which full-scan is preferred over HNSW search.
@@ -1390,6 +1397,13 @@ pub struct StrictModeConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unindexed_filtering_update: Option<bool>,
 
+    /// Require filter-based reads (e.g. search, scroll, count, facet) to restrict results to
+    /// tenants. Applies only when the collection has a payload index with `is_tenant: true`:
+    /// the top-level `must` of the request filter must then contain a `match` (`value` or `any`)
+    /// condition on one of the tenant keys. Reads by point id are not affected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub require_tenant_filter: Option<bool>,
+
     // Search
     /// Max HNSW ef value allowed in search parameters.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1503,6 +1517,7 @@ impl Hash for StrictModeConfig {
             sparse_config,
             max_payload_index_count,
             max_resident_memory_percent,
+            require_tenant_filter,
         } = self;
         enabled.hash(state);
         max_query_limit.hash(state);
@@ -1524,6 +1539,7 @@ impl Hash for StrictModeConfig {
         sparse_config.hash(state);
         max_payload_index_count.hash(state);
         max_resident_memory_percent.hash(state);
+        require_tenant_filter.hash(state);
     }
 }
 
@@ -1552,6 +1568,13 @@ pub struct StrictModeConfigOutput {
     /// Allow usage of unindexed fields in filtered updates (e.g. delete by payload).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unindexed_filtering_update: Option<bool>,
+
+    /// Require filter-based reads (e.g. search, scroll, count, facet) to restrict results to
+    /// tenants. Applies only when the collection has a payload index with `is_tenant: true`:
+    /// the top-level `must` of the request filter must then contain a `match` (`value` or `any`)
+    /// condition on one of the tenant keys. Reads by point id are not affected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub require_tenant_filter: Option<bool>,
 
     // Search
     /// Max HNSW value allowed in search parameters.
@@ -1658,6 +1681,7 @@ impl From<StrictModeConfig> for StrictModeConfigOutput {
             sparse_config,
             max_payload_index_count,
             max_resident_memory_percent,
+            require_tenant_filter,
         } = config;
 
         Self {
@@ -1682,6 +1706,7 @@ impl From<StrictModeConfig> for StrictModeConfigOutput {
             sparse_config: sparse_config.map(StrictModeSparseConfigOutput::from),
             max_payload_index_count,
             max_resident_memory_percent,
+            require_tenant_filter,
         }
     }
 }
@@ -4262,6 +4287,11 @@ pub enum Condition {
 
     #[serde(skip)]
     CustomIdChecker(CustomIdChecker),
+
+    /// A filter already evaluated in one segment, shared by the searches of a batch.
+    /// Internal: never serialized nor received from a user.
+    #[serde(skip)]
+    ResolvedPoints(ResolvedPoints),
 }
 
 #[derive(Deserialize)]
@@ -4391,6 +4421,7 @@ impl Condition {
             | Condition::HasVector(_)
             | Condition::Slice(_)
             | Condition::CustomIdChecker(_) => 0,
+            Condition::ResolvedPoints(resolved) => resolved.len(),
         }
     }
 
@@ -4404,6 +4435,7 @@ impl Condition {
             | Condition::IsEmpty(_)
             | Condition::IsNull(_)
             | Condition::CustomIdChecker(_)
+            | Condition::ResolvedPoints(_)
             | Condition::HasId(_)
             | Condition::HasVector(_)
             | Condition::Slice(_) => 1,
@@ -4420,7 +4452,8 @@ impl Condition {
             Condition::HasId(_)
             | Condition::HasVector(_)
             | Condition::Slice(_)
-            | Condition::CustomIdChecker(_) => None,
+            | Condition::CustomIdChecker(_)
+            | Condition::ResolvedPoints(_) => None,
         }
     }
 
@@ -4442,7 +4475,8 @@ impl Condition {
             | Condition::HasId(_)
             | Condition::HasVector(_)
             | Condition::Slice(_)
-            | Condition::CustomIdChecker(_) => None,
+            | Condition::CustomIdChecker(_)
+            | Condition::ResolvedPoints(_) => None,
         }
     }
 }
@@ -4459,7 +4493,7 @@ impl Validate for Condition {
             Condition::Slice(slice_condition) => slice_condition.validate(),
             Condition::Nested(nested_condition) => nested_condition.validate(),
             Condition::Filter(filter) => filter.validate(),
-            Condition::CustomIdChecker(_) => Ok(()),
+            Condition::CustomIdChecker(_) | Condition::ResolvedPoints(_) => Ok(()),
         }
     }
 }

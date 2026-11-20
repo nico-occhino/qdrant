@@ -35,7 +35,9 @@ use crate::data_types::vectors::{QueryVector, VectorInternal};
 use crate::id_tracker::IdTrackerRead;
 use crate::index::PayloadIndexRead;
 use crate::index::candidate_scoring::score_candidates_counted;
+use crate::index::field_index::CardinalityEstimation;
 use crate::index::query_estimator::adjust_to_available_vectors;
+use crate::index::query_optimization::filter_checks::FilterChecks;
 use crate::index::sample_estimation::sample_check_cardinality;
 use crate::types::{Distance, Filter};
 use crate::vector_storage::VectorStorageRead;
@@ -62,6 +64,33 @@ pub struct FilteredPlanDecision {
     pub estimated_max: usize,
     /// Whether the payload-index estimate was inconclusive and sampling decided.
     pub sampled: bool,
+}
+
+/// [`crate::index::VectorIndexRead::filter_checks`] for the learned path.
+///
+/// Mirrors [`choose_filtered_plan`] from the cardinality estimate alone: an estimate that
+/// fits within the probe volume takes the exact plan, which evaluates the filter on every
+/// match ([`FilterChecks::Full`]). Otherwise the routed plan checks each probed candidate
+/// lazily, about one probe volume per query. An inconclusive estimate, which search settles
+/// by sampling, is reported as routed. This is only a cost hint for filter sharing; it never
+/// changes which points match.
+pub fn learned_filter_checks(
+    state: &LmiRoutingState,
+    queries: usize,
+    cardinality: &CardinalityEstimation,
+    top: usize,
+) -> FilterChecks {
+    if top == 0 || queries == 0 {
+        return FilterChecks::Lazy { expected_checks: 0 };
+    }
+    let threshold = probe_volume(state);
+    if cardinality.max <= threshold {
+        FilterChecks::Full
+    } else {
+        FilterChecks::Lazy {
+            expected_checks: threshold.saturating_mul(queries),
+        }
+    }
 }
 
 /// Average number of postings an unfiltered probe at the configured `nprobe` touches.

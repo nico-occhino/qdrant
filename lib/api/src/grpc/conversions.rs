@@ -8,7 +8,6 @@ use std::time::Instant;
 
 use ahash::AHashSet;
 use chrono::{NaiveDateTime, Timelike};
-use common::ambient::AmbientContext;
 use common::ambient::hw::{HardwareData, HwMetric};
 use common::types::ScoreType;
 use itertools::Itertools;
@@ -1941,6 +1940,8 @@ impl From<segment::types::Condition> for Condition {
             // This type of condition should be only applied locally
             // and never be sent to the other peers
             segment::types::Condition::CustomIdChecker(_) => None,
+            // Offsets of one local segment, never sent to the other peers
+            segment::types::Condition::ResolvedPoints(_) => None,
             segment::types::Condition::HasVector(has_vector) => {
                 Some(ConditionOneOf::HasVector(HasVectorCondition {
                     has_vector: has_vector.has_vector,
@@ -2656,6 +2657,7 @@ impl From<StrictModeConfig> for segment::types::StrictModeConfig {
             sparse_config,
             max_payload_index_count,
             max_resident_memory_percent,
+            require_tenant_filter,
         } = value;
         Self {
             enabled,
@@ -2681,6 +2683,7 @@ impl From<StrictModeConfig> for segment::types::StrictModeConfig {
             sparse_config: sparse_config.map(segment::types::StrictModeSparseConfig::from),
             max_payload_index_count: max_payload_index_count.map(|i| i as usize),
             max_resident_memory_percent: max_resident_memory_percent.map(|i| i as u8),
+            require_tenant_filter,
         }
     }
 }
@@ -2785,6 +2788,7 @@ impl From<segment::types::StrictModeConfigOutput> for StrictModeConfig {
             sparse_config,
             max_payload_index_count,
             max_resident_memory_percent,
+            require_tenant_filter,
         } = value;
         Self {
             enabled,
@@ -2808,6 +2812,7 @@ impl From<segment::types::StrictModeConfigOutput> for StrictModeConfig {
             max_points_count: max_points_count.map(|i| i as u64),
             max_payload_index_count: max_payload_index_count.map(|i| i as u64),
             max_resident_memory_percent: max_resident_memory_percent.map(u32::from),
+            require_tenant_filter,
         }
     }
 }
@@ -2836,6 +2841,7 @@ impl From<StrictModeConfig> for segment::types::StrictModeConfigOutput {
             sparse_config,
             max_payload_index_count,
             max_resident_memory_percent,
+            require_tenant_filter,
         } = value;
         Self {
             enabled,
@@ -2861,6 +2867,7 @@ impl From<StrictModeConfig> for segment::types::StrictModeConfigOutput {
             sparse_config: sparse_config.map(segment::types::StrictModeSparseConfigOutput::from),
             max_payload_index_count: max_payload_index_count.map(|i| i as usize),
             max_resident_memory_percent: max_resident_memory_percent.map(|i| i as u8),
+            require_tenant_filter,
         }
     }
 }
@@ -3596,10 +3603,9 @@ impl From<rest::SearchMatrixPair> for SearchMatrixPair {
     }
 }
 
-impl From<AmbientContext> for HardwareUsage {
-    fn from(value: AmbientContext) -> Self {
-        let data = value.hw_data();
-        let m = |metric: HwMetric| data[metric] as u64;
+impl From<HardwareData> for HardwareUsage {
+    fn from(data: HardwareData) -> Self {
+        let m = |metric: HwMetric| Some(data[metric] as u64);
         Self {
             cpu: m(HwMetric::Cpu),
             payload_io_read: m(HwMetric::PayloadIoRead),
@@ -3608,6 +3614,10 @@ impl From<AmbientContext> for HardwareUsage {
             payload_index_io_write: m(HwMetric::PayloadIndexIoWrite),
             vector_io_read: m(HwMetric::VectorIoRead),
             vector_io_write: m(HwMetric::VectorIoWrite),
+            remote_io_cached_read: m(HwMetric::RemoteIoCachedRead),
+            remote_io_non_cached_read: m(HwMetric::RemoteIoNonCachedRead),
+            updated_bytes: None,
+            updated_indexed_bytes: None,
         }
     }
 }
@@ -3622,16 +3632,24 @@ impl From<HardwareUsage> for HardwareData {
             payload_index_io_write,
             vector_io_read,
             vector_io_write,
+            remote_io_cached_read,
+            remote_io_non_cached_read,
+            updated_bytes: _,
+            updated_indexed_bytes: _,
         } = value;
 
+        let m = |value: Option<u64>| value.unwrap_or_default() as usize;
+
         HardwareData::from_fn(|metric| match metric {
-            HwMetric::Cpu => cpu as usize,
-            HwMetric::PayloadIoRead => payload_io_read as usize,
-            HwMetric::PayloadIoWrite => payload_io_write as usize,
-            HwMetric::PayloadIndexIoRead => payload_index_io_read as usize,
-            HwMetric::PayloadIndexIoWrite => payload_index_io_write as usize,
-            HwMetric::VectorIoRead => vector_io_read as usize,
-            HwMetric::VectorIoWrite => vector_io_write as usize,
+            HwMetric::Cpu => m(cpu),
+            HwMetric::PayloadIoRead => m(payload_io_read),
+            HwMetric::PayloadIoWrite => m(payload_io_write),
+            HwMetric::PayloadIndexIoRead => m(payload_index_io_read),
+            HwMetric::PayloadIndexIoWrite => m(payload_index_io_write),
+            HwMetric::VectorIoRead => m(vector_io_read),
+            HwMetric::VectorIoWrite => m(vector_io_write),
+            HwMetric::RemoteIoCachedRead => m(remote_io_cached_read),
+            HwMetric::RemoteIoNonCachedRead => m(remote_io_non_cached_read),
         })
     }
 }

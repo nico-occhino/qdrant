@@ -76,7 +76,7 @@ fn candidate_order_and_duplicates_do_not_change_results() {
 fn point_and_vector_deletions_are_independent() {
     let _scope = common::ambient::unmeasured_guard(common::reason::reason("LMI v1.20 regression"));
     let (_root, segment) = fixture();
-    segment.id_tracker.borrow_mut().drop(2.into()).unwrap();
+    segment.id_tracker.borrow_mut().drop(2.into(), None).unwrap();
     assert!(
         !segment.vector_data[DEFAULT_VECTOR_NAME]
             .vector_storage
@@ -203,7 +203,7 @@ fn research_profiler_preserves_scores_and_counts_actual_scoring() {
 fn research_profiler_distinguishes_tracker_and_vector_visibility() {
     let _scope = common::ambient::unmeasured_guard(common::reason::reason("LMI research profiler"));
     let (_root, segment) = fixture();
-    segment.id_tracker.borrow_mut().drop(2.into()).unwrap();
+    segment.id_tracker.borrow_mut().drop(2.into(), None).unwrap();
     segment.vector_data[DEFAULT_VECTOR_NAME]
         .vector_storage
         .borrow_mut()
@@ -294,7 +294,7 @@ fn native_quantized_candidates_rerank_and_delete() {
     let original = score_candidates(&query, &[0, 1, 2, 3, 4], 3, &tracker, &storage, &ctx).unwrap();
     assert_eq!(reranked, original);
     drop(tracker);
-    segment.id_tracker.borrow_mut().drop(1.into()).unwrap();
+    segment.id_tracker.borrow_mut().drop(1.into(), None).unwrap();
     let tracker = segment.id_tracker.borrow();
     let approximate = score_candidates_with_quantization(
         &query,

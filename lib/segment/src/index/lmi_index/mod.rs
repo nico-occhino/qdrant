@@ -55,7 +55,9 @@ use crate::data_types::query_context::VectorQueryContext;
 use crate::data_types::vectors::{QueryVector, VectorInternal, VectorRef};
 use crate::id_tracker::{IdTrackerEnum, IdTrackerRead};
 use crate::index::candidate_scoring::score_candidates;
+use crate::index::field_index::CardinalityEstimation;
 use crate::index::plain_vector_index::PlainVectorIndex;
+use crate::index::query_optimization::filter_checks::FilterChecks;
 use crate::index::struct_payload_index::StructPayloadIndex;
 use crate::index::{PayloadIndexRead, VectorIndex, VectorIndexRead};
 use crate::telemetry::VectorIndexSearchesTelemetry;
@@ -652,6 +654,24 @@ impl VectorIndexRead for LmiIndex {
         self.plain_fallbacks
             .fetch_add(vectors.len() as u64, Ordering::Relaxed);
         Ok(result)
+    }
+
+    fn filter_checks(
+        &self,
+        query_vectors: &[QueryVector],
+        cardinality: &CardinalityEstimation,
+        top: usize,
+        params: Option<&SearchParams>,
+    ) -> OperationResult<FilterChecks> {
+        let queries: Vec<&QueryVector> = query_vectors.iter().collect();
+        match &self.routing_state {
+            Some(state) if self.learned_eligible(&queries, params) => Ok(
+                filtered::learned_filter_checks(state, queries.len(), cardinality, top),
+            ),
+            _ => self
+                .plain
+                .filter_checks(query_vectors, cardinality, top, params),
+        }
     }
 
     fn get_telemetry_data(&self, detail: TelemetryDetail) -> VectorIndexSearchesTelemetry {

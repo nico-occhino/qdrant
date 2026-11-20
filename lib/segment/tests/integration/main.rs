@@ -1,5 +1,6 @@
 #![expect(clippy::wildcard_enum_match_arm, reason = "test code")]
 
+mod append_only_storages;
 mod batch_search_test;
 mod bm25_compare;
 mod byte_storage_hnsw_test;
@@ -25,6 +26,7 @@ mod scroll_filtering_test;
 mod segment_builder_test;
 mod segment_on_disk_snapshot;
 mod segment_tests;
+mod shared_filter_test;
 mod sparse_discover_test;
 mod sparse_idf_corpus_test;
 mod sparse_vector_index_search_tests;
