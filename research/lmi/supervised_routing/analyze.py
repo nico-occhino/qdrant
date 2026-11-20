@@ -161,6 +161,11 @@ def figures(arr_by_set, out, n_points, occupancy, training, oracle_cov):
     import matplotlib.pyplot as plt
     figs = out / "figures"
     figs.mkdir(exist_ok=True)
+    arms_all = sorted({a for arr in arr_by_set.values() for a in arr})
+    palette = plt.get_cmap("tab20").colors
+    style = {a: ({"color": "black", "lw": 2.2, "zorder": 5} if a == "A0" else
+                 {"color": palette[(i * 2) % 20 if i < 10 else (i * 2 + 1) % 20], "lw": 1.0})
+             for i, a in enumerate(arms_all)}
     for set_name, arr in arr_by_set.items():
         for metric, label, fname in (("candidates", "mean candidates", "recall_vs_candidates"),
                                      ("p50", "median latency (ms)", "recall_vs_p50"),
@@ -172,7 +177,7 @@ def figures(arr_by_set, out, n_points, occupancy, training, oracle_cov):
                      (np.median if metric == "p50" else lambda v: np.percentile(v, 95))(arr[arm][p]["ns"]) / 1e6
                      for p in ps]
                 y = [arr[arm][p]["recall"].mean() for p in ps]
-                ax.plot(x, y, marker="o", ms=3, label=arm, lw=1.5 if arm in ("A0",) else 1)
+                ax.plot(x, y, marker="o", ms=3, label=arm, **style[arm])
             ax.axhline(0.95, color="grey", ls=":", lw=0.8)
             ax.set_xscale("log"); ax.set_xlabel(label); ax.set_ylabel("Recall@10"); ax.set_ylim(0.6, 1.0)
             ax.set_title(f"{set_name}: {fname.replace('_', ' ')}"); ax.legend(fontsize=7, ncol=2)
@@ -206,7 +211,7 @@ def figures(arr_by_set, out, n_points, occupancy, training, oracle_cov):
                 if a[0] and b[0]:
                     xs.append(1 - a[0][0] / b[0][0]); ys.append(1 - a[1][0] / b[1][0])
             if xs:
-                ax.plot(xs, ys, marker="o", label=arm)
+                ax.plot(xs, ys, marker="o", label=arm, **style[arm])
         ax.axhline(0, color="grey", lw=0.8); ax.axvline(0, color="grey", lw=0.8)
         ax.plot([-0.5, 0.5], [-0.5, 0.5], color="grey", ls=":", lw=0.8)
         ax.set_xlabel("candidate saving vs A0"); ax.set_ylabel("median-latency saving vs A0")
@@ -233,7 +238,7 @@ def figures(arr_by_set, out, n_points, occupancy, training, oracle_cov):
         for arm in sorted(arr):
             ps = sorted(arr[arm])
             ax.plot([arr[arm][p]["candidates"].mean() for p in ps], [arr[arm][p]["recall"].mean() for p in ps],
-                    marker=".", lw=0.8, label=arm)
+                    marker=".", label=arm, **style[arm])
         ax.set_xscale("log"); ax.set_xlabel("mean candidates"); ax.set_ylabel("coverage / Recall@10")
         ax.legend(fontsize=6); fig.tight_layout(); fig.savefig(figs / "oracle_vs_achieved.png", dpi=130)
         plt.close(fig)
