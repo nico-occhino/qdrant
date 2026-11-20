@@ -111,7 +111,7 @@ Corrections and additions made while writing the tooling. No data had been produ
    measured budgets that bracket the target, never extrapolating. Linear is used, as in
    H-10M. A curve that starts above or never reaches the target is reported, not filled.
 2. **Preflight stage.** Before the pilot, one preflight job runs the whole pipeline at
-   100K points (G0, E1; 8 queries per set; budgets 1K/4K/16K). Its numbers are pipeline
+   100K points (E1, E1R; G0 has no learned level below its 250K buffer; 8 queries per set; budgets 1K/4K/16K). Its numbers are pipeline
    checks only and are not interpreted.
 3. **Gold-tool check.** The preflight recomputes the full-corpus top-30 for the val and
    test rows with `prefix_gold.py` and compares it with the official SISAP23 gold. It

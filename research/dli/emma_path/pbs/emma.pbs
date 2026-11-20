@@ -5,7 +5,7 @@
 #
 # Emma-path DLI study (research/dli/emma_path/PREREGISTRATION.md).
 # Submit with: qsub -l walltime=HH:MM:SS -v MODE=preflight|pilot|10m,IN=<input dir> emma.pbs
-#   preflight: 100K points, arms G0,E1, 8 queries per set, 3 budgets (pipeline check only)
+#   preflight: 100K points, arms E1,E1R (G0 has no learned level below 250K), 8 queries per set, 3 budgets (pipeline check only)
 #   pilot:     300K points, arms G0,E1,E1R, preregistered 300K budgets
 #   10m:       10,120,191 points, arms G0,E1, preregistered 10M budgets
 # Phases: verify -> build -> gold (prefix only) -> per arm: ingest, frontier, copy -> analysis.
@@ -17,7 +17,7 @@ CORPUS_SHA=f5868d6e002a6e73aea47491ee040a70a151406fe9e4552292428e2bfe0616e5
 EXPECTED_COMMIT=$(cat "$IN/native.commit")
 POLICIES=slot,density,tdensity2,mdn,mdn_code,proportional,static_flat
 case "$MODE" in
-  preflight) N=100000;   ARMS="G0 E1";     BUDGETS=1000,4000,16000; QCAP=8 ;;
+  preflight) N=100000;   ARMS="E1 E1R";    BUDGETS=1000,4000,16000; QCAP=8 ;;
   pilot)     N=300000;   ARMS="G0 E1 E1R"; BUDGETS=1000,2000,4000,6000,8000,12000,16000,24000,32000,48000,64000; QCAP= ;;
   10m)       N=10120191; ARMS="G0 E1";     BUDGETS=10000,20000,40000,57000,80000,113000,160000,226000,320000,640000; QCAP= ;;
   *) echo "unknown MODE $MODE"; exit 2 ;;
