@@ -493,3 +493,28 @@ Remaining risks:
 **Resources.** The reported 7% CPU is `cpupercent` 118 over 16 cores. The measurement phases are serial by design: `tch::set_num_threads(1)`, one native job at a time, serial replay. Peak RSS 47.3 GB; PBS mem 76.6 GiB (likely includes page cache); no memory events.
 
 **No jobs submitted, no implementation changes.**
+
+## 2026-11-20 — Emma path, Phase 1 (Sommerová-faithful DLI)
+
+Branch `research/dli-emma-path-20261120`. Commits:
+- `9a0ae8c0a` preregistration
+- `7614f34f8` segment router reuse
+- `2cf5abbd5` level rule, router reuse and MDN routing
+- `6d6e9955e` gold tool, analysis, PBS, Amendment 1
+
+Details are in `emma_path/{PREREGISTRATION,IMPLEMENTATION,REPRODUCE}.md`.
+
+**Why.** Her code keeps bucket size ≈ buffer size b (aⁱ buckets per level; b = 5K, a = 10), so the buffer's priority of 1.0 costs about one bucket. Ours had 548 buckets per level with b = 250K, the root cause of the H-10M Plain penalty. Her code also routes into a non-empty level with that level's model instead of retraining, and its MDN score is P·aⁱ⁻¹ (0-based), not the thesis's P·aⁱ.
+
+**Implemented** (defaults unchanged):
+- `LmiConfig.reuse_router` with router fingerprints, and a reuse build path in which no training runs.
+- `LevelModelPolicy` with aⁱ buckets and a 40·B sample floor.
+- Reuse of the target's router in `DliMaintenance::destination_model`.
+- `ModelDrivenNormalized` and `ModelDrivenNormalizedCode` routing.
+- Harness arms G0, E1 and E1R.
+
+**Tests.** A configured-collection test runs b = 40, a = 4 with 22 publications per arm. Every level has aⁱ buckets. On non-empty targets the router is kept 15/15 times with reuse and retrained 15/15 times without. Full-budget search equals exact search with 0 fallbacks. The segment, collection and shard regression suites all pass.
+
+**Arithmetic.** With rebuild-everything, Emma's settings would need 2,024 publications and 14.4× retraining at 10M; with reuse, 0.85×. b = 50K would mean 50K-vector buckets, so the second arm is the E1R ablation (no reuse, 300K only).
+
+**Not run yet.** No job has been submitted: MetaCentrum Kerberos had expired. Staging is in `~/research-admin/experiments/2026-11-20-dli-emma-path/`.
