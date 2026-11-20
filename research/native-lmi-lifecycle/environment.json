@@ -1,0 +1,10 @@
+{
+  "recorded_utc": "2026-11-09T19:37:33.006662+00:00",
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+  "cargo": "cargo 1.98.0 (797e8a9bc 2026-08-05)",
+  "protoc": "libprotoc 3.21.12",
+  "torch": "2.5.1+cpu",
+  "build_jobs": 2,
+  "runtime_omp_threads": 1,
+  "local_service_only": true
+}

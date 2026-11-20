@@ -1,0 +1,110 @@
+{
+  "README.md": {
+    "bytes": 8605,
+    "sha256": "68a10f1cbfd95506b961fa46cd53fac66adeecbceebc4f171eb7cee8ca702836"
+  },
+  "api-smoke/.qdrant-initialized": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "api-smoke/requests-responses.json": {
+    "bytes": 3500061,
+    "sha256": "a257cfefbc5af94c3578f3b4d8e36efe563675f3efc69775468acb9e008b1376"
+  },
+  "api-smoke/server-1.log": {
+    "bytes": 8362,
+    "sha256": "42a1cc3855bcce3ffb02a979dfe6564492671138301e8f7c863153dc356b4a09"
+  },
+  "api-smoke/server-2.log": {
+    "bytes": 2747,
+    "sha256": "456e0c93c7d57569ed486c718d293d5dba9b47d91b389c69bd3b0ca1ea48c261"
+  },
+  "api-smoke/summary.json": {
+    "bytes": 541,
+    "sha256": "9f64486986dd23ae678183e7c91f1550f05b150d2b60d4da1c39b2c00e939582"
+  },
+  "api-smoke.log": {
+    "bytes": 521,
+    "sha256": "7a9ad37eecb5250799d4265a7d76acfdc7bcb4a19109e1cf52ef3d25c87ac47b"
+  },
+  "api_smoke.py": {
+    "bytes": 5431,
+    "sha256": "26a8c9daf1d71eef64dcfb8301e233a2b83f2da2676d181a8ce73db805b21ccd"
+  },
+  "commands.txt": {
+    "bytes": 1209,
+    "sha256": "348cccb99eebe16430bf42141342a4af2ff6392f9ca0f684db7adf9da7a15280"
+  },
+  "compile-corrected.log": {
+    "bytes": 312,
+    "sha256": "22946dd57fa6666848f1e338a25b284aebd9c3d6e2d849cf6478f33fda3437d2"
+  },
+  "compile.log": {
+    "bytes": 2587,
+    "sha256": "7f96fe8832d4368083834fbf499ff43a39ebbb15721ba894194a1b9495a417c7"
+  },
+  "env.sh": {
+    "bytes": 489,
+    "sha256": "a76f56553857d8010dc5167a673f8464afb0a12bf7705d2b481c6962cf947161"
+  },
+  "environment.json": {
+    "bytes": 291,
+    "sha256": "93f1d745bb30800cba6fd56347797e7b439392a2421565bb8805063bdd7021b5"
+  },
+  "existing-lifecycle.log": {
+    "bytes": 416,
+    "sha256": "b70130c0846f659c3b5ef2aff0572dfab41f0878b3cbd3ccf5fa0c2dee2a04b1"
+  },
+  "existing-wal-replay.log": {
+    "bytes": 420,
+    "sha256": "40269ba0fb71cbbba84ed98114908f03ebe56ec776478e31af83dee2a5b38802"
+  },
+  "final-status.txt": {
+    "bytes": 101,
+    "sha256": "a198474269335adfda65a2b3907f82a951a63e709b8d585bedcede9120870f61"
+  },
+  "native-lifecycle-corrected.log": {
+    "bytes": 2114,
+    "sha256": "4720daf53c3e3f33abcd34c8f08ff8654c6c1905bb42948ca00d41148d673074"
+  },
+  "native-lifecycle-final.log": {
+    "bytes": 2497,
+    "sha256": "9b4ee8ffc5a3531cf8c3a18f5805eb39b303c105b0292191d16148756b629c66"
+  },
+  "native-lifecycle.log": {
+    "bytes": 2801,
+    "sha256": "7c62088c12363ea5a6f8947b30e7d8af678209848be9ff620a14398dfa709702"
+  },
+  "original-status-final.txt": {
+    "bytes": 1163,
+    "sha256": "02207d862c6f645032fa7babb3279fb2d5f8be965f85d9b14950959876002178"
+  },
+  "original-status.txt": {
+    "bytes": 1163,
+    "sha256": "02207d862c6f645032fa7babb3279fb2d5f8be965f85d9b14950959876002178"
+  },
+  "original-uncommitted.patch": {
+    "bytes": 96592,
+    "sha256": "98348ec694869ea627db787a231a6bb26b1cdd4bf729e77d3d92584e8317071a"
+  },
+  "results.json": {
+    "bytes": 1363,
+    "sha256": "03c942adfd8e5d3abfd6325e90923e3e2faf47e8a71c5024def6bab3639f46b2"
+  },
+  "service-build-resumed.log": {
+    "bytes": 10303,
+    "sha256": "d45e6c15b17697355801cbd76b60b083f55e198764c3856400cfc9fae47d30a3"
+  },
+  "service-build.log": {
+    "bytes": 1238,
+    "sha256": "75565412a0ac5ea7c12da3e25f2b490e6fb934c056792bd50a71d35982a1324f"
+  },
+  "source-provenance.json": {
+    "bytes": 1159,
+    "sha256": "46b560ca13782a0c37578ef13d4477564e3a98bacd3eb0cea1b12bb55ba29fb4"
+  },
+  "test-only-source.patch": {
+    "bytes": 19020,
+    "sha256": "e3e9fd731bc25e33d7bcb405d40581b664ed9f61f20dd40d1422b64b505c3105"
+  }
+}

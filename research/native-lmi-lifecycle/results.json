@@ -1,0 +1,30 @@
+{
+  "source_commit": "9b12d583b1bf9df802b2cc420244bd3c24732d86",
+  "branch": "research/native-lmi-lifecycle-20261109",
+  "production_source_modified": false,
+  "new_test": "tests::lmi_lifecycle::native_segment_delta::native_lmi_mixed_segments_mutation_restart_and_optimizer",
+  "new_test_final_seconds": 1.67,
+  "new_test_result": "passed",
+  "existing_lmi_lifecycle": "passed (0.41 s)",
+  "existing_wal_replay": "passed (0.32 s); generic native WAL, not mixed-state crash injection",
+  "api_smoke": "passed, including process restart",
+  "api_runtime_learned_counter": "not exposed; directly observed only in Rust collection test",
+  "initial_points": 10001,
+  "final_points": 10065,
+  "configured_nprobe": 2,
+  "independent_oracle": "read actual Float16 axis vectors; exact scores 0/1; tie permutations accepted",
+  "upsert_external_id": 1000003,
+  "physical_offsets": [
+    10000,
+    2,
+    9999
+  ],
+  "internal_delta_required_for_tested_visibility": false,
+  "remaining_limits": [
+    "all buckets probed; no low-budget ANN recall claim",
+    "clean mixed-state reopen; no mixed-state crash injection",
+    "no concurrent mutation/publication fault injection",
+    "REST attribution uses eligible requests and persisted generation; no direct REST counter"
+  ],
+  "service_binary_sha256": "bb0c94c1381d87a797b011d6dbdcfaa1d22bdaac57e9bacfd5a5ec3aff37b458"
+}

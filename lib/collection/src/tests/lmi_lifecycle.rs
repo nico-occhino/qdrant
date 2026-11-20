@@ -502,3 +502,6 @@ async fn lmi_collection_builds_and_searches_with_fresh_plain_writes() {
     );
     restored.stop_gracefully().await;
 }
+
+#[cfg(test)]
+mod native_segment_delta;

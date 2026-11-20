@@ -1,0 +1,22 @@
+ M lib/collection/src/tests/lmi_sisap23_matched.rs
+ M lib/collection/src/tests/lmi_sisap23_matched_wal_replay.rs
+ M lib/collection/src/tests/lmi_sisap23_memory_recovery.rs
+ M lib/collection/src/tests/lmi_sisap23_small_lifecycle.rs
+ M lib/segment/src/index/lmi_index/mod.rs
+ M tools/lmi/sisap23_matched/generation_publication.py
+ M tools/lmi/sisap23_matched/pbs/56_small_stage_a.pbs
+ M tools/lmi/sisap23_matched/recovery_stages.py
+ M tools/lmi/sisap23_matched/test_generation_publication.py
+ M tools/lmi/sisap23_matched/test_recovery_stages.py
+ M tools/lmi/sisap23_matched/test_validate.py
+ M tools/lmi/sisap23_matched/validate.py
+?? codex-session-01a16419-2d60-7fd1-bb6f-1003e41b3659.md
+?? target-evaluator-v9/
+?? tools/lmi/sisap23_matched/FULL_SCALE_SEARCH_TIMEOUT_POSTMORTEM.md
+?? tools/lmi/sisap23_matched/IMPLEMENTATION_GUIDE.md
+?? tools/lmi/sisap23_matched/RECOVERY_DECISION_24991758.json
+?? tools/lmi/sisap23_matched/RECOVERY_DECISION_24991758.md
+?? tools/lmi/sisap23_matched/development/
+?? tools/lmi/sisap23_matched/recover_constructed_index.py
+?? tools/lmi/sisap23_matched/test_plain_ssd_panel.py
+?? tools/lmi/sisap23_matched/validate_plain_ssd_panel.py

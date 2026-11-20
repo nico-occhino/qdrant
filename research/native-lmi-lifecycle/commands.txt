@@ -1,0 +1,11 @@
+git worktree add -b research/native-lmi-lifecycle-20261109 /home/nicoo/work/qdrant-native-lmi-lifecycle-20261109 9b12d583b1bf9df802b2cc420244bd3c24732d86
+cp -a --reflink=auto /home/nicoo/work/qdrant-sisap23-small-lifecycle/target-evaluator-v9 /home/nicoo/work/qdrant-native-lmi-lifecycle-20261109-target
+source research/native-lmi-lifecycle/env.sh
+cargo test --offline -p collection --features lmi-training,testing --lib --no-run
+cargo test --offline -p collection --features lmi-training,testing --lib tests::lmi_lifecycle::native_segment_delta::native_lmi_mixed_segments_mutation_restart_and_optimizer -- --exact --nocapture
+cargo test --offline -p collection --features lmi-training,testing --lib tests::lmi_lifecycle::lmi_collection_builds_and_searches_with_fresh_plain_writes -- --exact --nocapture
+cargo test --offline -p collection --features lmi-training,testing --lib tests::wal_recovery_test::test_wal_replay_is_synchronous_without_prevent_unoptimized -- --exact --nocapture
+cargo build --offline --bin qdrant --features collection/lmi-training
+rustfmt --edition 2024 lib/collection/src/tests/lmi_lifecycle/native_segment_delta.rs
+git diff --check
+python3 research/native-lmi-lifecycle/api_smoke.py

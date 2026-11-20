@@ -1,0 +1,17 @@
+{
+  "base_commit": "9b12d583b1bf9df802b2cc420244bd3c24732d86",
+  "branch": "research/native-lmi-lifecycle-20261109",
+  "selected_source_patches": [],
+  "source_choice": "Exact audited committed implementation; existing committed learned/fallback counters suffice. No uncommitted research changes or frozen evaluator overlays are needed by this independent collection fixture.",
+  "original_checkout": "/home/nicoo/work/qdrant-sisap23-small-lifecycle",
+  "original_status_sha256": "02207d862c6f645032fa7babb3279fb2d5f8be965f85d9b14950959876002178",
+  "original_tracked_diff_sha256": "98348ec694869ea627db787a231a6bb26b1cdd4bf729e77d3d92584e8317071a",
+  "original_patch_snapshot_sha256": "98348ec694869ea627db787a231a6bb26b1cdd4bf729e77d3d92584e8317071a",
+  "accepted_artifacts_used": false,
+  "cache": "Independent copy of target-evaluator-v9; original build cache not used as writable target",
+  "unresolved_provenance": [
+    "Remote GitHub state not refreshed",
+    "Accepted scientific evaluator is pinned commit plus v12 overlay, intentionally not used here",
+    "Existing cached dependencies are rebuilt by Cargo as required for this source path"
+  ]
+}

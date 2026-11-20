@@ -1,0 +1,2072 @@
+diff --git a/lib/collection/src/tests/lmi_sisap23_matched.rs b/lib/collection/src/tests/lmi_sisap23_matched.rs
+index db8bb8879..3380d9307 100644
+--- a/lib/collection/src/tests/lmi_sisap23_matched.rs
++++ b/lib/collection/src/tests/lmi_sisap23_matched.rs
+@@ -19,10 +19,9 @@ use segment::data_types::query_context::VectorQueryContext;
+ use segment::data_types::vectors::{DEFAULT_VECTOR_NAME, QueryVector};
+ use segment::entry::ReadSegmentEntry;
+ use segment::id_tracker::IdTrackerRead;
+-use segment::index::VectorIndexRead;
+ use segment::index::candidate_scoring::score_candidates;
+ use segment::index::lmi_index::{LmiConfig, LmiStateMetadata};
+-use segment::index::{VectorIndex, VectorIndexEnum};
++use segment::index::{VectorIndex, VectorIndexEnum, VectorIndexRead};
+ use segment::segment::SegmentVersion;
+ use segment::segment_constructor::load_segment;
+ use segment::types::{
+@@ -346,11 +345,9 @@ fn verify_persisted_generation_with_lmi_config(
+     expected: usize,
+     expected_lmi_config: &LmiConfig,
+ ) -> serde_json::Value {
+-    let segment_paths = if variant == Variant::Lmi {
+-        live_segment_paths(collection_path)
+-    } else {
+-        vec![locate_segment(collection_path)]
+-    };
++    // Every index variant is persisted independently per active segment.
++    // Never collapse a collection topology to an arbitrary single directory.
++    let segment_paths = live_segment_paths(collection_path);
+     assert!(!segment_paths.is_empty(), "no live persisted segment");
+     let expected_kind = match variant {
+         Variant::Plain => "plain",
+@@ -704,10 +701,11 @@ fn sisap23_optimizer_error_fails_even_with_a_complete_count() {
+ 
+ #[test]
+ fn sisap23_one_live_segment_and_empty_segment_is_accepted_after_reload() {
+-    use crate::collection_manager::fixtures::random_segment;
+     use segment::entry::StorageSegmentEntry;
+     use segment::segment_constructor::simple_segment_constructor::build_simple_segment;
+ 
++    use crate::collection_manager::fixtures::random_segment;
++
+     let temp = tempfile::tempdir().unwrap();
+     let segment_dir = temp.path().join("0/segments");
+     fs::create_dir_all(&segment_dir).unwrap();
+@@ -725,9 +723,10 @@ fn sisap23_one_live_segment_and_empty_segment_is_accepted_after_reload() {
+ 
+ #[test]
+ fn sisap23_live_segment_discovery_accepts_two_after_reload() {
+-    use crate::collection_manager::fixtures::random_segment;
+     use segment::entry::StorageSegmentEntry;
+ 
++    use crate::collection_manager::fixtures::random_segment;
++
+     let temp = tempfile::tempdir().unwrap();
+     let segment_dir = temp.path().join("0/segments");
+     fs::create_dir_all(&segment_dir).unwrap();
+@@ -1234,14 +1233,14 @@ fn verify_existing_plain() -> serde_json::Value {
+     drop(storage);
+     drop(index);
+     let warm = read_f32(&root.join("queries_warmup.f32le"), 20);
+-    let (hits, scanned) = search_one(&segment, Variant::Plain, 0, &warm[0]);
++    let (hits, scanned, _) = search_one(&segment, Variant::Plain, 0, &warm[0]);
+     assert_eq!(
+         hits.len(),
+         10,
+         "reopened Plain exact search did not return top ten"
+     );
+     assert_eq!(scanned, Some(N));
+-    assert!(hits.iter().all(|id| (1..=N as u64).contains(id)));
++    assert!(hits.iter().all(|(id, _)| (1..=N as u64).contains(id)));
+     drop(segment);
+     let recovery_commit = std::env::var("SISAP23_RECOVERY_COMMIT")
+         .expect("SISAP23_RECOVERY_COMMIT must identify the repair executable");
+@@ -1615,7 +1614,8 @@ fn sisap23_matched_diagnose_plain() {
+         ) == "plain"
+     {
+         let warm = read_f32(&root().join("queries_warmup.f32le"), 20);
+-        let (ids, _) = search_one(&segment, Variant::Plain, 0, &warm[0]);
++        let (hits, _, _) = search_one(&segment, Variant::Plain, 0, &warm[0]);
++        let ids: Vec<_> = hits.into_iter().map(|(id, _)| id).collect();
+         let all_ids_valid = ids
+             .iter()
+             .all(|id| (1..=N as u64).contains(id) && mappings.seen[(*id - 1) as usize]);
+@@ -1661,7 +1661,7 @@ fn sisap23_matched_diagnose_plain() {
+ }
+ 
+ fn selected_settings(v: Variant) -> Vec<(String, usize)> {
+-    match v {
++    let settings = match v {
+         Variant::Plain => vec![("full".to_string(), 0)],
+         Variant::Lmi => LMI_PROBES
+             .iter()
+@@ -1671,6 +1671,21 @@ fn selected_settings(v: Variant) -> Vec<(String, usize)> {
+             .iter()
+             .map(|e| (format!("hnsw-ef-{e}"), *e))
+             .collect(),
++    };
++    if let Ok(selected) = std::env::var("SISAP23_ONLY_SETTING") {
++        let filtered: Vec<_> = settings
++            .into_iter()
++            .filter(|(label, _)| label == &selected)
++            .collect();
++        assert_eq!(
++            filtered.len(),
++            1,
++            "unsupported SISAP23_ONLY_SETTING={selected} for {}",
++            v.name()
++        );
++        filtered
++    } else {
++        settings
+     }
+ }
+ fn search_one(
+@@ -1678,7 +1693,7 @@ fn search_one(
+     v: Variant,
+     setting: usize,
+     values: &[f32],
+-) -> (Vec<u64>, Option<usize>) {
++) -> (Vec<(u64, f32)>, Option<usize>, SearchTelemetry) {
+     let idx = segment.vector_data[DEFAULT_VECTOR_NAME]
+         .vector_index
+         .borrow();
+@@ -1695,6 +1710,7 @@ fn search_one(
+             };
+             let state = lmi.routing_state().expect("LMI routing state missing");
+             let normalized = Distance::Cosine.preprocess_vector::<f32>(values.to_vec());
++            let routing_started = Instant::now();
+             let buckets = state.router().top_buckets(&normalized, setting).unwrap();
+             let mut offsets = Vec::new();
+             for b in buckets {
+@@ -1703,16 +1719,30 @@ fn search_one(
+             offsets.sort_unstable();
+             offsets.dedup();
+             let count = offsets.len();
++            let routing_ms = routing_started.elapsed().as_secs_f64() * 1000.0;
++            let scoring_started = Instant::now();
+             let scored =
+                 score_candidates(&query, &offsets, 10, &*tracker, &*storage, &ctx).unwrap();
+-            let ids = scored
++            let scoring_ms = scoring_started.elapsed().as_secs_f64() * 1000.0;
++            let hits = scored
+                 .iter()
+-                .map(|h| match tracker.external_id(h.idx).unwrap() {
+-                    PointIdType::NumId(id) => id,
+-                    _ => panic!("expected numeric SISAP ids"),
++                .map(|h| {
++                    let id = match tracker.external_id(h.idx).unwrap() {
++                        PointIdType::NumId(id) => id,
++                        _ => panic!("expected numeric SISAP ids"),
++                    };
++                    (id, h.score)
+                 })
+                 .collect();
+-            return (ids, Some(count));
++            return (
++                hits,
++                Some(count),
++                SearchTelemetry {
++                    learned_route_calls: 1,
++                    routing_ms: Some(routing_ms),
++                    scoring_ms: Some(scoring_ms),
++                },
++            );
+         }
+         Variant::HnswA | Variant::HnswB => {
+             let VectorIndexEnum::Hnsw(hnsw) = &*idx else {
+@@ -1738,12 +1768,145 @@ fn search_one(
+     };
+     let ids = hits
+         .iter()
+-        .map(|h| match tracker.external_id(h.idx).unwrap() {
+-            PointIdType::NumId(id) => id,
+-            _ => panic!("expected numeric SISAP ids"),
++        .map(|h| {
++            let id = match tracker.external_id(h.idx).unwrap() {
++                PointIdType::NumId(id) => id,
++                _ => panic!("expected numeric SISAP ids"),
++            };
++            (id, h.score)
+         })
+         .collect();
+-    (ids, if v == Variant::Plain { Some(N) } else { None })
++    (
++        ids,
++        if v == Variant::Plain {
++            Some(segment.available_point_count())
++        } else {
++            None
++        },
++        SearchTelemetry::default(),
++    )
++}
++
++#[derive(Default)]
++struct SearchTelemetry {
++    learned_route_calls: usize,
++    routing_ms: Option<f64>,
++    scoring_ms: Option<f64>,
++}
++
++struct CollectionSearchResult {
++    ids: Vec<u64>,
++    candidate_count: Option<usize>,
++    segment_count: usize,
++    learned_route_segments: usize,
++    routing_ms: Option<f64>,
++    scoring_ms: Option<f64>,
++}
++
++fn checked_segment_paths(collection: &Path, relatives: &[String]) -> Vec<PathBuf> {
++    assert!(!relatives.is_empty(), "empty persisted segment list");
++    let mut paths = Vec::with_capacity(relatives.len());
++    for relative in relatives {
++        let relative = Path::new(relative);
++        assert!(
++            !relative.is_absolute(),
++            "absolute segment path in generation"
++        );
++        assert!(
++            relative
++                .components()
++                .all(|c| !matches!(c, std::path::Component::ParentDir)),
++            "parent traversal in segment path"
++        );
++        paths.push(collection.join(relative));
++    }
++    paths.sort();
++    assert!(
++        paths.windows(2).all(|w| w[0] != w[1]),
++        "duplicate segment path in generation"
++    );
++    paths
++}
++
++fn merge_segment_hits(
++    per_segment: impl IntoIterator<Item = Vec<(u64, f32)>>,
++    limit: usize,
++) -> Vec<(u64, f32)> {
++    let mut hits: Vec<_> = per_segment.into_iter().flatten().collect();
++    assert!(
++        hits.iter().all(|(_, score)| score.is_finite()),
++        "non-finite search score"
++    );
++    hits.sort_by(|(id_a, score_a), (id_b, score_b)| {
++        score_b.total_cmp(score_a).then_with(|| id_a.cmp(id_b))
++    });
++    let mut seen = HashSet::with_capacity(hits.len());
++    assert!(
++        hits.iter().all(|(id, _)| seen.insert(*id)),
++        "duplicate point ID across active segments"
++    );
++    hits.truncate(limit);
++    hits
++}
++
++fn search_segments(
++    segments: &[segment::segment::Segment],
++    v: Variant,
++    setting: usize,
++    values: &[f32],
++) -> CollectionSearchResult {
++    assert!(
++        !segments.is_empty(),
++        "collection has no indexed search segments"
++    );
++    let mut per_segment = Vec::with_capacity(segments.len());
++    let mut candidate_sum = 0usize;
++    let mut candidates_known = true;
++    let mut learned_route_segments = 0usize;
++    let mut routing_ms = 0.0;
++    let mut scoring_ms = 0.0;
++    let mut lmi_timings_known = v == Variant::Lmi;
++    for segment in segments {
++        let (hits, candidates, telemetry) = search_one(segment, v, setting, values);
++        per_segment.push(hits);
++        learned_route_segments += telemetry.learned_route_calls;
++        if let Some(elapsed) = telemetry.routing_ms {
++            routing_ms += elapsed;
++        } else {
++            lmi_timings_known = false;
++        }
++        if let Some(elapsed) = telemetry.scoring_ms {
++            scoring_ms += elapsed;
++        } else {
++            lmi_timings_known = false;
++        }
++        if let Some(count) = candidates {
++            candidate_sum += count;
++        } else {
++            candidates_known = false;
++        }
++    }
++    let merged = merge_segment_hits(per_segment, 10);
++    CollectionSearchResult {
++        ids: merged.into_iter().map(|(id, _)| id).collect(),
++        candidate_count: candidates_known.then_some(candidate_sum),
++        segment_count: segments.len(),
++        learned_route_segments,
++        routing_ms: lmi_timings_known.then_some(routing_ms),
++        scoring_ms: lmi_timings_known.then_some(scoring_ms),
++    }
++}
++
++#[test]
++fn sisap23_collection_top_k_merges_two_segment_scores() {
++    let merged = merge_segment_hits([vec![(1, 0.8), (2, 0.3)], vec![(33, 0.9), (34, 0.4)]], 2);
++    assert_eq!(merged, vec![(33, 0.9), (1, 0.8)]);
++}
++
++#[test]
++#[should_panic(expected = "duplicate point ID across active segments")]
++fn sisap23_collection_top_k_rejects_duplicate_segment_ids() {
++    merge_segment_hits([vec![(1, 0.8)], vec![(1, 0.7)]], 10);
+ }
+ fn write_chunk(path: &Path, rows: &[serde_json::Value]) {
+     let tmp = path.with_extension("jsonl.tmp");
+@@ -1772,7 +1935,7 @@ fn recall(ids: &[u64], gold: &[i32]) -> f64 {
+         / 10.0
+ }
+ fn run_setting(
+-    segment: &segment::segment::Segment,
++    segments: &[segment::segment::Segment],
+     v: Variant,
+     label: &str,
+     effort: usize,
+@@ -1800,8 +1963,25 @@ fn run_setting(
+     }
+     fs::create_dir_all(dest).unwrap();
+     let warm = read_f32(&root().join("queries_warmup.f32le"), 20);
+-    for q in &warm {
+-        let _ = search_one(segment, v, effort, q);
++    let warmup_path = dest.join("warmup-rows.jsonl");
++    if !warmup_path.exists() {
++        let mut warmup_records = Vec::with_capacity(warm.len());
++        for (warmup_order, query) in warm.iter().enumerate() {
++            let started = Instant::now();
++            let result = search_segments(segments, v, effort, query);
++            warmup_records.push(serde_json::json!({
++                "warmup_order":warmup_order,"query_row":warmup_order,"parameter":label,
++                "native_search_ms":started.elapsed().as_secs_f64()*1000.0,
++                "hnsw_ef":if v==Variant::HnswA||v==Variant::HnswB{Some(effort)}else{None},
++                "candidate_count":result.candidate_count,"segment_count":result.segment_count,
++                "learned_route_segments":result.learned_route_segments,
++                "routing_ms":result.routing_ms,"candidate_scoring_ms":result.scoring_ms,
++                "fallback_observation":"not_applicable_direct_segment_index",
++                "search_interface":"direct_segment_indices_sequential_merge",
++                "returned_ids_1_based":result.ids
++            }));
++        }
++        write_chunk(&warmup_path, &warmup_records);
+     }
+     let chunks = dest.join("chunks");
+     fs::create_dir_all(&chunks).unwrap();
+@@ -1823,10 +2003,18 @@ fn run_setting(
+         let mut records = Vec::with_capacity(part.len());
+         for (row, values) in part {
+             let started = Instant::now();
+-            let (ids, candidates) = search_one(segment, v, effort, values);
++            let result = search_segments(segments, v, effort, values);
+             let ms = started.elapsed().as_secs_f64() * 1000.0;
+             let g = &gold[row - 20];
+-            records.push(serde_json::json!({"query_row":row,"parameter":label,"recall_at_10":recall(&ids,g),"candidate_count":candidates,"hnsw_ef":if v==Variant::HnswA||v==Variant::HnswB{Some(effort)}else{None},"native_search_ms":ms,"returned_ids_1_based":ids}));
++            records.push(serde_json::json!({"query_row":row,"parameter":label,
++                "recall_at_10":recall(&result.ids,g),"candidate_count":result.candidate_count,
++                "hnsw_ef":if v==Variant::HnswA||v==Variant::HnswB{Some(effort)}else{None},
++                "segment_count":result.segment_count,
++                "learned_route_segments":result.learned_route_segments,
++                "routing_ms":result.routing_ms,"candidate_scoring_ms":result.scoring_ms,
++                "fallback_observation":"not_applicable_direct_segment_index",
++                "search_interface":"direct_segment_indices_sequential_merge",
++                "native_search_ms":ms,"returned_ids_1_based":result.ids}));
+         }
+         write_chunk(&path, &records);
+     }
+@@ -1927,11 +2115,15 @@ fn sisap23_matched_evaluate() {
+         assert_eq!(generation["kind"], "index");
+         assert_eq!(generation["variant"], v.name());
+         assert_eq!(generation["producer_commit"], manifest["source_commit"]);
++        let report_paths: Vec<String> = generation["report"]["index"]["segment_relative_paths"]
++            .as_array()
++            .expect("accepted index report must list all active segments")
++            .iter()
++            .map(|p| p.as_str().expect("segment path must be text").to_string())
++            .collect();
+         assert_eq!(
+-            build["segment_path"],
+-            locate_segment(&run.join("collection"))
+-                .to_string_lossy()
+-                .as_ref()
++            build["segment_relative_paths"],
++            serde_json::json!(report_paths)
+         );
+     } else if imported {
+         assert_eq!(build["format"], "sisap23-imported-plain-v1");
+@@ -1964,11 +2156,19 @@ fn sisap23_matched_evaluate() {
+         manifest["source_commit"].as_str(),
+         std::env::var("SISAP23_REVIEWED_COMMIT").ok().as_deref()
+     );
+-    let segment_path = PathBuf::from(build["segment_path"].as_str().unwrap());
+-    let segment = load_index(&segment_path);
+-    let idx = segment.vector_data[DEFAULT_VECTOR_NAME]
+-        .vector_index
+-        .borrow();
++    let source_collection = run.join("collection").canonicalize().unwrap();
++    let scratch_root = PathBuf::from(std::env::var("SCRATCHDIR").expect("PBS scratch required"))
++        .canonicalize()
++        .unwrap();
++    let evaluation_collection = PathBuf::from(
++        std::env::var("SISAP23_EVAL_COLLECTION").expect("isolated SSD evaluation copy required"),
++    )
++    .canonicalize()
++    .unwrap();
++    assert!(
++        evaluation_collection.starts_with(&scratch_root) && evaluation_collection != scratch_root,
++        "searches must use the isolated PBS scratch copy"
++    );
+     let expected = if v == Variant::Plain {
+         "plain"
+     } else if v == Variant::Lmi {
+@@ -1976,14 +2176,62 @@ fn sisap23_matched_evaluate() {
+     } else {
+         "hnsw"
+     };
++    let segment_paths: Vec<PathBuf> = if recovered {
++        let relatives: Vec<String> = build["segment_relative_paths"]
++            .as_array()
++            .expect("accepted evaluator marker must list every indexed segment")
++            .iter()
++            .map(|relative| {
++                relative
++                    .as_str()
++                    .expect("segment path must be text")
++                    .to_string()
++            })
++            .collect();
++        checked_segment_paths(&evaluation_collection, &relatives)
++    } else {
++        let persisted = PathBuf::from(build["segment_path"].as_str().unwrap())
++            .canonicalize()
++            .unwrap();
++        let relative = persisted
++            .strip_prefix(&source_collection)
++            .expect("generation segment path outside copied collection");
++        checked_segment_paths(
++            &evaluation_collection,
++            &[relative.to_string_lossy().to_string()],
++        )
++    };
++    assert!(
++        !segment_paths.is_empty(),
++        "no indexed segment paths in generation"
++    );
++    let mut physical_live_paths = live_segment_paths(&evaluation_collection);
++    physical_live_paths.sort();
++    assert_eq!(
++        physical_live_paths, segment_paths,
++        "persisted active topology differs from accepted generation"
++    );
++    let segments: Vec<_> = segment_paths.iter().map(|path| load_index(path)).collect();
++    let indexed_points: usize = segments
++        .iter()
++        .map(|segment| segment.available_point_count())
++        .sum();
+     assert_eq!(
+-        index_kind(&idx),
+-        expected,
+-        "index generation does not match requested algorithm"
++        indexed_points, N,
++        "indexed segments do not cover the collection"
+     );
++    for segment in &segments {
++        let idx = segment.vector_data[DEFAULT_VECTOR_NAME]
++            .vector_index
++            .borrow();
++        assert_eq!(
++            index_kind(&idx),
++            expected,
++            "segment index kind differs from requested algorithm"
++        );
++    }
+     assert_eq!(manifest["format"], "sisap23-matched-v1");
+     let queries = read_f32(&root().join("queries_20_9999.f32le"), 9980);
+-    let warm = read_f32(&root().join("queries_warmup.f32le"), 20);
+     let gold_bytes = fs::read(root().join("gold_20_9999_top10.i32le")).unwrap();
+     assert_eq!(gold_bytes.len(), 9980 * 10 * 4);
+     let gold: Vec<Vec<i32>> = gold_bytes
+@@ -1994,9 +2242,6 @@ fn sisap23_matched_evaluate() {
+                 .collect()
+         })
+         .collect();
+-    for q in &warm {
+-        let _ = search_one(&segment, v, selected_settings(v)[0].1, q);
+-    }
+     let measured: Vec<(usize, Vec<f32>)> = queries
+         .into_iter()
+         .enumerate()
+@@ -2006,7 +2251,7 @@ fn sisap23_matched_evaluate() {
+     fs::create_dir_all(&full).unwrap();
+     for (label, effort) in selected_settings(v) {
+         run_setting(
+-            &segment,
++            &segments,
+             v,
+             &label,
+             effort,
+@@ -2042,11 +2287,157 @@ fn sisap23_matched_evaluate() {
+                 .join("panel")
+                 .join(format!("rep-{}", rep + 1))
+                 .join(&label);
+-            run_setting(&segment, v, &label, effort, &panel, &gold, &dest);
++            run_setting(&segments, v, &label, effort, &panel, &gold, &dest);
+         }
+     }
+     println!("sisap23_native_evaluation_complete variant={}", v.name());
+ }
++
++#[test]
++#[ignore = "exact Plain local-SSD paired-panel benchmark; requires accepted 10M data generation"]
++fn sisap23_plain_local_ssd_panel() {
++    let collection = PathBuf::from(
++        std::env::var("SISAP23_EVAL_COLLECTION").expect("isolated SSD Plain collection required"),
++    )
++    .canonicalize()
++    .unwrap();
++    let scratch = PathBuf::from(std::env::var("SCRATCHDIR").expect("PBS scratch required"))
++        .canonicalize()
++        .unwrap();
++    assert!(
++        collection.starts_with(&scratch),
++        "Plain queries must use PBS scratch SSD"
++    );
++    let relative_paths = live_segment_paths(&collection)
++        .iter()
++        .map(|path| {
++            path.strip_prefix(&collection)
++                .unwrap()
++                .to_string_lossy()
++                .to_string()
++        })
++        .collect::<Vec<_>>();
++    assert!(
++        !relative_paths.is_empty(),
++        "Plain collection has no live segments"
++    );
++    let segment_paths = checked_segment_paths(&collection, &relative_paths);
++    let segments = segment_paths
++        .iter()
++        .map(|path| load_index(path))
++        .collect::<Vec<_>>();
++    assert!(segments.iter().all(|segment| {
++        index_kind(
++            &segment.vector_data[DEFAULT_VECTOR_NAME]
++                .vector_index
++                .borrow(),
++        ) == "plain"
++    }));
++    assert_eq!(
++        segments
++            .iter()
++            .map(|segment| segment.available_point_count())
++            .sum::<usize>(),
++        N,
++        "Plain segments do not account for the expected vector population"
++    );
++
++    let panel_bytes = fs::read(root().join("panel_rows.u32le")).unwrap();
++    assert_eq!(panel_bytes.len(), 1000 * 4);
++    let panel_ids = panel_bytes
++        .chunks_exact(4)
++        .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()) as usize)
++        .collect::<Vec<_>>();
++    assert_eq!(
++        panel_ids.iter().copied().collect::<HashSet<_>>().len(),
++        1000
++    );
++    assert!(panel_ids.iter().all(|row| (20..10000).contains(row)));
++    let gold_bytes = fs::read(root().join("gold_20_9999_top10.i32le")).unwrap();
++    assert_eq!(gold_bytes.len(), 9980 * 10 * 4);
++    let gold = gold_bytes
++        .chunks_exact(40)
++        .map(|row| {
++            row.chunks_exact(4)
++                .map(|bytes| i32::from_le_bytes(bytes.try_into().unwrap()))
++                .collect::<Vec<_>>()
++        })
++        .collect::<Vec<_>>();
++
++    let output = PathBuf::from(
++        std::env::var("SISAP23_PLAIN_PANEL_OUTPUT").expect("Plain panel output path required"),
++    );
++    assert!(output.is_absolute() && output.is_dir());
++    assert!(
++        !output.join("plain-ssd-panel.json").exists(),
++        "Plain panel output already exists"
++    );
++    let warmup = read_f32(&root().join("queries_warmup.f32le"), 20);
++    let mut warmup_records = Vec::with_capacity(warmup.len());
++    for (warmup_order, query) in warmup.iter().enumerate() {
++        let started = Instant::now();
++        let result = search_segments(&segments, Variant::Plain, 0, query);
++        let elapsed = started.elapsed().as_secs_f64() * 1000.0;
++        assert_eq!(result.segment_count, relative_paths.len());
++        assert_eq!(result.candidate_count, Some(N));
++        warmup_records.push(serde_json::json!({
++            "warmup_order":warmup_order,"query_row":warmup_order,"parameter":"plain-exact",
++            "native_search_ms":elapsed,"candidate_count":result.candidate_count,
++            "segment_count":result.segment_count,"search_interface":"direct_segment_indices_sequential_merge",
++            "fallback_observation":"not_applicable_direct_segment_index",
++            "returned_ids_1_based":result.ids
++        }));
++    }
++    write_chunk(&output.join("warmup-rows.jsonl"), &warmup_records);
++
++    for repetition in 1..=3 {
++        let mut records = Vec::with_capacity(panel_ids.len());
++        for row in &panel_ids {
++            let query = read_query_at(&root().join("queries_20_9999.f32le"), row - 20);
++            let started = Instant::now();
++            let result = search_segments(&segments, Variant::Plain, 0, &query);
++            let elapsed = started.elapsed().as_secs_f64() * 1000.0;
++            assert_eq!(result.segment_count, relative_paths.len());
++            assert_eq!(result.candidate_count, Some(N));
++            let query_recall = recall(&result.ids, &gold[row - 20]);
++            assert_eq!(
++                query_recall, 1.0,
++                "exact Plain result disagrees with ground truth at row {row}"
++            );
++            records.push(serde_json::json!({
++                "repetition":repetition,"query_row":row,"parameter":"plain-exact",
++                "native_search_ms":elapsed,"recall_at_10":query_recall,
++                "candidate_count":result.candidate_count,"segment_count":result.segment_count,
++                "search_interface":"direct_segment_indices_sequential_merge",
++                "fallback_observation":"not_applicable_direct_segment_index",
++                "returned_ids_1_based":result.ids
++            }));
++        }
++        write_chunk(
++            &output.join(format!("panel-rep-{repetition}.jsonl")),
++            &records,
++        );
++    }
++
++    let source_generation = std::env::var("SISAP23_DATA_GENERATION")
++        .expect("accepted Plain source-generation path required");
++    let source_generation_sha = std::env::var("SISAP23_DATA_GENERATION_SHA256")
++        .expect("accepted Plain generation SHA-256 required");
++    write_json_new(
++        &output.join("plain-ssd-panel.json"),
++        &serde_json::json!({
++            "format":"sisap23-plain-ssd-panel-v1","test_executed":true,
++            "source_commit":std::env::var("SISAP23_REVIEWED_COMMIT").unwrap(),
++            "source_generation":source_generation,"source_generation_sha256":source_generation_sha,
++            "point_count":N,"segment_count":relative_paths.len(),
++            "segment_relative_paths":relative_paths,"query_rows":panel_ids,
++            "repetitions":3,"warmup_rows":20,"warmup_protocol":"official queries 0 through 19",
++            "evaluation_storage":"isolated_pbs_scratch_local_ssd",
++            "cache_advice":"POSIX_FADV_DONTNEED before official warmup; advisory only",
++            "hardware_host":std::env::var("HOSTNAME").unwrap_or_default()
++        }),
++    );
++}
+ fn read_query_at(path: &Path, row: usize) -> Vec<f32> {
+     let mut f = File::open(path).unwrap();
+     f.seek(std::io::SeekFrom::Start((row * DIM * 4) as u64))
+diff --git a/lib/collection/src/tests/lmi_sisap23_matched_wal_replay.rs b/lib/collection/src/tests/lmi_sisap23_matched_wal_replay.rs
+index 1b25f7961..67905b5e8 100644
+--- a/lib/collection/src/tests/lmi_sisap23_matched_wal_replay.rs
++++ b/lib/collection/src/tests/lmi_sisap23_matched_wal_replay.rs
+@@ -1,8 +1,10 @@
+ //! Opt-in WAL inspection and collection replay on a verified scratch copy only.
+-use super::*;
+-use shard::wal::{SerdeWal, WalRawRecord};
+ use std::collections::{BTreeMap, HashMap};
+ 
++use shard::wal::{SerdeWal, WalRawRecord};
++
++use super::*;
++
+ struct WalAudit {
+     report: serde_json::Value,
+     complete: bool,
+diff --git a/lib/collection/src/tests/lmi_sisap23_memory_recovery.rs b/lib/collection/src/tests/lmi_sisap23_memory_recovery.rs
+index b18fd9f10..52f48bc36 100644
+--- a/lib/collection/src/tests/lmi_sisap23_memory_recovery.rs
++++ b/lib/collection/src/tests/lmi_sisap23_memory_recovery.rs
+@@ -1,9 +1,10 @@
+ //! Opt-in, process-separated recovery of vector data and index-only construction.
+-use super::*;
+ use segment::data_types::vectors::VectorInternal;
+ use segment::entry::ReadSegmentEntry;
+ use segment::utils::mem::Mem;
+ 
++use super::*;
++
+ /// Full audit across all active segments after normal Collection startup has
+ /// reconciled temporary/deleted optimizer output. No synthetic inserts occur.
+ pub(super) fn audit_data(path: &Path, expected: usize, corpus: Option<&Path>) -> serde_json::Value {
+@@ -384,8 +385,30 @@ async fn sisap23_recovery_verify() {
+     } else {
+         None
+     };
++    let query_proof_copy = std::env::var("SISAP23_QUERY_PROOF_COLLECTION")
++        .ok()
++        .map(|raw| {
++            let proof = PathBuf::from(raw).canonicalize().unwrap();
++            let scratch = PathBuf::from(std::env::var("SCRATCHDIR").expect("PBS scratch required"))
++                .canonicalize()
++                .unwrap();
++            assert_ne!(proof, path, "query proof must use an isolated copy");
++            assert!(
++                proof.starts_with(&scratch),
++                "query proof copy must be inside PBS scratch"
++            );
++            config_is_compatible(&proof);
++            proof
++        });
+     let ordinary_lmi_query_path = if variant == "lmi" {
+-        Some(verify_normal_lmi_query(&path, &snapshots).await)
++        let proof_path = query_proof_copy.as_deref().unwrap_or(&path);
++        let proof_snapshots = if query_proof_copy.is_some() {
++            proof_path.parent().unwrap().join("snapshots-query-proof")
++        } else {
++            snapshots.clone()
++        };
++        fs::create_dir_all(&proof_snapshots).unwrap();
++        Some(verify_normal_lmi_query(proof_path, &proof_snapshots).await)
+     } else {
+         None
+     };
+@@ -399,7 +422,9 @@ async fn sisap23_recovery_verify() {
+     report(
+         serde_json::json!({"format":"sisap23-persistent-verified-v2","accepted":true,
+         "data":after,"normal_restarts":2,"index_files_unchanged":true,"ingested_points":0,
+-        "index":index_audit,"ordinary_lmi_query_path":ordinary_lmi_query_path}),
++        "index":index_audit,"ordinary_lmi_query_path":ordinary_lmi_query_path,
++        "query_proof_storage":if query_proof_copy.is_some() {"isolated_pbs_scratch"} else {"persistent_nfs"},
++        "query_proof_collection":query_proof_copy.as_deref().unwrap_or(&path)}),
+     );
+ }
+ 
+@@ -531,6 +556,541 @@ async fn verify_normal_lmi_query(path: &Path, snapshots: &Path) -> serde_json::V
+         "learned_delta":after.len(),"plain_fallback_delta":0,"returned_ids_1_based":ids})
+ }
+ 
++/// Run only the persistent learned-query proof and retain per-segment stage
++/// diagnostics even when Qdrant's ordinary search deadline expires.
++#[tokio::test(flavor = "multi_thread")]
++#[ignore = "bounded search-path diagnosis on an isolated verified collection copy"]
++async fn sisap23_recovery_query_diagnostic() {
++    use segment::data_types::vectors::NamedQuery;
++    use shard::query::query_enum::QueryEnum;
++
++    use crate::operations::types::CoreSearchRequest;
++
++    let path = checked_collection();
++    config_is_compatible(&path);
++    let snapshots = path.parent().unwrap().join("snapshots-query-diagnostic");
++    let load_started = std::time::Instant::now();
++    let collection = open_paused(&path, &snapshots).await;
++    let load_elapsed = load_started.elapsed().as_secs_f64();
++    let shard = collection
++        .shards_holder()
++        .read()
++        .await
++        .get_shard(0)
++        .unwrap()
++        .clone();
++
++    let (query, query_source) = if let Ok(query_path) = std::env::var("SISAP23_QUERY_VECTOR_PATH") {
++        let bytes = fs::read(&query_path).unwrap();
++        assert_eq!(
++            bytes.len(),
++            DIM * std::mem::size_of::<f32>(),
++            "query vector file must contain exactly one little-endian dense vector"
++        );
++        let query = bytes
++            .chunks_exact(std::mem::size_of::<f32>())
++            .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
++            .collect();
++        (
++            query,
++            serde_json::json!({"kind":"prepared_query","path":query_path}),
++        )
++    } else {
++        let mut query = vec![0.0f32; DIM];
++        query[0] = 1.0;
++        (query, serde_json::json!({"kind":"one_hot"}))
++    };
++    let normalized = Distance::Cosine.preprocess_vector::<f32>(query.clone());
++    let holder = shard.local_segments_for_test().await.unwrap();
++    let active: Vec<_> = holder
++        .read()
++        .iter_original()
++        .filter_map(|(_, locked)| {
++            let segment = locked.read();
++            let points = segment.available_point_count();
++            if points == 0 {
++                return None;
++            }
++            let index = segment.vector_data[DEFAULT_VECTOR_NAME]
++                .vector_index
++                .borrow();
++            let VectorIndexEnum::Lmi(lmi) = &*index else {
++                panic!("active nonempty segment is not LMI");
++            };
++            let state = lmi.routing_state().expect("trained LMI state missing");
++            let buckets = state
++                .router()
++                .top_buckets(&normalized, state.nprobe())
++                .unwrap();
++            let bucket_sizes: Vec<_> = buckets
++                .iter()
++                .map(|bucket| state.postings().get(*bucket).unwrap().len())
++                .collect();
++            let (learned, fallbacks) = lmi.search_path_counts_for_test();
++            let (routed, candidates, route_ns, scored, score_ns) =
++                lmi.search_stage_counts_for_test();
++            Some(serde_json::json!({
++                "segment":segment.uuid.to_string(),
++                "live_points":points,
++                "indexed_points":index.indexed_vector_count(),
++                "nprobe":state.nprobe(),
++                "selected_buckets":buckets,
++                "selected_bucket_sizes":bucket_sizes,
++                "counters_before":{
++                    "learned":learned,"plain_fallback":fallbacks,
++                    "routed":routed,"candidates":candidates,
++                    "routing_ns":route_ns,"scored":scored,"scoring_ns":score_ns
++                }
++            }))
++        })
++        .collect();
++    let active_points: usize = active
++        .iter()
++        .map(|segment| segment["live_points"].as_u64().unwrap() as usize)
++        .sum();
++    assert_eq!(
++        active_points, N,
++        "active LMI segments do not account for all points"
++    );
++    drop(holder);
++
++    let query_started = std::time::Instant::now();
++    let result = collection
++        .search(
++            CoreSearchRequest {
++                query: QueryEnum::Nearest(NamedQuery::default_dense(query)),
++                filter: None,
++                params: None,
++                limit: 10,
++                offset: 0,
++                with_payload: None,
++                with_vector: None,
++                score_threshold: None,
++            },
++            None,
++            None,
++            &ShardSelectorInternal::All,
++            None,
++            HwMeasurementAcc::new(),
++        )
++        .await;
++    let query_elapsed = query_started.elapsed().as_secs_f64();
++    let (returned_ids, error) = match result {
++        Ok(points) => (
++            points
++                .into_iter()
++                .map(|point| match point.id {
++                    segment::types::ExtendedPointId::NumId(id) => id,
++                    _ => panic!("unexpected point ID type"),
++                })
++                .collect::<Vec<_>>(),
++            None,
++        ),
++        Err(error) => (Vec::new(), Some(error.to_string())),
++    };
++
++    let holder = shard.local_segments_for_test().await.unwrap();
++    let after: Vec<_> = holder
++        .read()
++        .iter_original()
++        .filter_map(|(_, locked)| {
++            let segment = locked.read();
++            if segment.available_point_count() == 0 {
++                return None;
++            }
++            let index = segment.vector_data[DEFAULT_VECTOR_NAME]
++                .vector_index
++                .borrow();
++            let VectorIndexEnum::Lmi(lmi) = &*index else {
++                panic!("active nonempty segment changed index kind during search");
++            };
++            let (learned, fallbacks) = lmi.search_path_counts_for_test();
++            let (routed, candidates, route_ns, scored, score_ns) =
++                lmi.search_stage_counts_for_test();
++            Some(serde_json::json!({
++                "segment":segment.uuid.to_string(),
++                "counters_after":{
++                    "learned":learned,"plain_fallback":fallbacks,
++                    "routed":routed,"candidates":candidates,
++                    "routing_ns":route_ns,"scored":scored,"scoring_ns":score_ns
++                }
++            }))
++        })
++        .collect();
++    drop(holder);
++    drop(shard);
++    collection.stop_gracefully().await;
++
++    let diagnostic = serde_json::json!({
++        "format":"sisap23-query-diagnostic-v1",
++        "source_commit":std::env::var("SISAP23_REVIEWED_COMMIT").unwrap_or_default(),
++        "points":N,
++        "collection_path":path,
++        "query_source":query_source,
++        "load_seconds":load_elapsed,
++        "query_seconds":query_elapsed,
++        "query_error":error,
++        "returned_ids_1_based":returned_ids,
++        "active_segments_before":active,
++        "active_segments_after":after
++    });
++    println!("SISAP23_QUERY_DIAGNOSTIC {diagnostic}");
++    if let Ok(report_path) = std::env::var("SISAP23_DIAGNOSTIC_REPORT") {
++        write_json_new(Path::new(&report_path), &diagnostic);
++    }
++}
++
++/// Reproduce the matched evaluator's twenty direct-index warmup calls, then
++/// independently exercise an ordinary collection search on measured row 20.
++/// This is diagnostic evidence only and cannot publish a generation.
++#[tokio::test(flavor = "multi_thread")]
++#[ignore = "bounded official-query warmup on an isolated verified collection copy"]
++async fn sisap23_recovery_official_warmup_diagnostic() {
++    use segment::data_types::vectors::NamedQuery;
++    use shard::query::query_enum::QueryEnum;
++
++    use crate::operations::types::CoreSearchRequest;
++
++    let collection_path = checked_collection();
++    config_is_compatible(&collection_path);
++    let root = PathBuf::from(std::env::var("SISAP23_OFFICIAL_QUERY_ROOT").unwrap());
++    let output = PathBuf::from(std::env::var("SISAP23_WARMUP_DIAGNOSTIC_JSONL").unwrap());
++    let warm = read_f32(&root.join("queries_warmup.f32le"), 20);
++    let measured_path = root.join("queries_20_9999.f32le");
++    let mut measured_file = File::open(&measured_path).unwrap();
++    let mut measured_bytes = vec![0u8; DIM * 4];
++    measured_file.read_exact(&mut measured_bytes).unwrap();
++    let measured: Vec<f32> = measured_bytes
++        .chunks_exact(4)
++        .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
++        .collect();
++    let mut gold_file = File::open(root.join("gold_20_9999_top10.i32le")).unwrap();
++    let mut gold_bytes = [0u8; 40];
++    gold_file.read_exact(&mut gold_bytes).unwrap();
++    let gold: Vec<i32> = gold_bytes
++        .chunks_exact(4)
++        .map(|bytes| i32::from_le_bytes(bytes.try_into().unwrap()))
++        .collect();
++    let mut log = File::options()
++        .write(true)
++        .create_new(true)
++        .open(&output)
++        .unwrap();
++    let mut record = |value: serde_json::Value| {
++        serde_json::to_writer(&mut log, &value).unwrap();
++        log.write_all(b"\n").unwrap();
++        log.sync_data().unwrap();
++        println!("SISAP23_WARMUP_DIAGNOSTIC {value}");
++    };
++
++    let load_start = Instant::now();
++    let collection = open_paused(
++        &collection_path,
++        &collection_path
++            .parent()
++            .unwrap()
++            .join("snapshots-official-warmup"),
++    )
++    .await;
++    record(serde_json::json!({"phase":"reopen","seconds":load_start.elapsed().as_secs_f64()}));
++    let shard = collection
++        .shards_holder()
++        .read()
++        .await
++        .get_shard(0)
++        .unwrap()
++        .clone();
++    let holder = shard.local_segments_for_test().await.unwrap();
++    let active: Vec<_> = holder
++        .read()
++        .iter_original()
++        .filter_map(|(_, locked)| {
++            let segment = locked.read();
++            (segment.available_point_count() > 0).then(|| locked.clone())
++        })
++        .collect();
++    // The direct-index benchmark implementation accepts one Segment. Fail
++    // explicitly if this artifact has a topology it cannot evaluate.
++    assert_eq!(
++        active.len(),
++        1,
++        "direct-index warmup requires exactly one active nonempty segment"
++    );
++    let segment = active[0].read();
++    assert_eq!(segment.available_point_count(), N);
++    let index = segment.vector_data[DEFAULT_VECTOR_NAME]
++        .vector_index
++        .borrow();
++    let VectorIndexEnum::Lmi(lmi) = &*index else {
++        panic!("active segment is not LMI")
++    };
++    let nprobe = lmi
++        .routing_state()
++        .expect("trained LMI state missing")
++        .nprobe();
++    record(serde_json::json!({"phase":"topology","active_segments":1,
++        "segment":segment.uuid.to_string(),"live_points":N,"nprobe":nprobe,
++        "indexed_points":index.indexed_vector_count()}));
++    drop(index);
++
++    for (row, query) in warm.iter().enumerate() {
++        let normalized = Distance::Cosine.preprocess_vector::<f32>(query.clone());
++        let index = segment.vector_data[DEFAULT_VECTOR_NAME]
++            .vector_index
++            .borrow();
++        let VectorIndexEnum::Lmi(lmi) = &*index else {
++            unreachable!()
++        };
++        let buckets = lmi
++            .routing_state()
++            .unwrap()
++            .router()
++            .top_buckets(&normalized, nprobe)
++            .unwrap();
++        let (before_learned, before_fallback) = lmi.search_path_counts_for_test();
++        drop(index);
++        let began = Instant::now();
++        record(serde_json::json!({"phase":"direct_start","query_row":row,
++            "utc":chrono::Utc::now().to_rfc3339()}));
++        let (ids, candidates) = search_one(&segment, Variant::Lmi, nprobe, query);
++        let index = segment.vector_data[DEFAULT_VECTOR_NAME]
++            .vector_index
++            .borrow();
++        let VectorIndexEnum::Lmi(lmi) = &*index else {
++            unreachable!()
++        };
++        let (after_learned, after_fallback) = lmi.search_path_counts_for_test();
++        drop(index);
++        record(serde_json::json!({"phase":"warmup","query_row":row,
++            "method":"matched_evaluator_manual_lmi_routing_and_candidate_scoring",
++            "seconds":began.elapsed().as_secs_f64(),"selected_buckets":buckets,
++            "candidate_count":candidates,"returned_ids_1_based":ids,
++            "learned_delta":after_learned-before_learned,
++            "plain_fallback_delta":after_fallback-before_fallback}));
++    }
++    let began = Instant::now();
++    let normalized = Distance::Cosine.preprocess_vector::<f32>(measured.clone());
++    let index = segment.vector_data[DEFAULT_VECTOR_NAME]
++        .vector_index
++        .borrow();
++    let VectorIndexEnum::Lmi(lmi) = &*index else {
++        unreachable!()
++    };
++    let measured_buckets = lmi
++        .routing_state()
++        .unwrap()
++        .router()
++        .top_buckets(&normalized, nprobe)
++        .unwrap();
++    drop(index);
++    record(serde_json::json!({"phase":"direct_start","query_row":20,
++        "utc":chrono::Utc::now().to_rfc3339()}));
++    let (direct_ids, candidates) = search_one(&segment, Variant::Lmi, nprobe, &measured);
++    let direct_overlap_raw = direct_ids
++        .iter()
++        .filter(|id| gold.contains(&(**id as i32)))
++        .count();
++    let direct_overlap_zero_based = direct_ids
++        .iter()
++        .filter(|id| **id > 0 && gold.contains(&((**id - 1) as i32)))
++        .count();
++    record(serde_json::json!({"phase":"measured_direct","query_row":20,
++        "method":"matched_evaluator_manual_lmi_routing_and_candidate_scoring",
++        "seconds":began.elapsed().as_secs_f64(),"selected_buckets":measured_buckets,
++        "candidate_count":candidates,
++        "returned_ids_1_based":direct_ids,"overlap_gold_raw":direct_overlap_raw,
++        "overlap_gold_if_zero_based":direct_overlap_zero_based,"ground_truth_raw":gold}));
++    drop(segment);
++    drop(holder);
++
++    let shard_holder = shard.local_segments_for_test().await.unwrap();
++    let segment = active[0].read();
++    let index = segment.vector_data[DEFAULT_VECTOR_NAME]
++        .vector_index
++        .borrow();
++    let VectorIndexEnum::Lmi(lmi) = &*index else {
++        unreachable!()
++    };
++    let before = lmi.search_path_counts_for_test();
++    drop(index);
++    drop(segment);
++    drop(shard_holder);
++    let began = Instant::now();
++    record(
++        serde_json::json!({"phase":"collection_start","query_row":20,
++        "utc":chrono::Utc::now().to_rfc3339()}),
++    );
++    let result = collection
++        .search(
++            CoreSearchRequest {
++                query: QueryEnum::Nearest(NamedQuery::default_dense(measured)),
++                filter: None,
++                params: None,
++                limit: 10,
++                offset: 0,
++                with_payload: None,
++                with_vector: None,
++                score_threshold: None,
++            },
++            None,
++            None,
++            &ShardSelectorInternal::All,
++            None,
++            HwMeasurementAcc::new(),
++        )
++        .await;
++    let segment = active[0].read();
++    let index = segment.vector_data[DEFAULT_VECTOR_NAME]
++        .vector_index
++        .borrow();
++    let VectorIndexEnum::Lmi(lmi) = &*index else {
++        unreachable!()
++    };
++    let after = lmi.search_path_counts_for_test();
++    let ids: Vec<u64> = result
++        .as_ref()
++        .map(|points| {
++            points
++                .iter()
++                .map(|point| match point.id {
++                    segment::types::ExtendedPointId::NumId(id) => id,
++                    _ => panic!("unexpected point ID type"),
++                })
++                .collect()
++        })
++        .unwrap_or_default();
++    let overlap_raw = ids
++        .iter()
++        .filter(|id| gold.contains(&(**id as i32)))
++        .count();
++    let overlap_zero_based = ids
++        .iter()
++        .filter(|id| **id > 0 && gold.contains(&((**id - 1) as i32)))
++        .count();
++    record(
++        serde_json::json!({"phase":"measured_collection","query_row":20,
++        "seconds":began.elapsed().as_secs_f64(),"query_error":result.err().map(|e| e.to_string()),
++        "returned_ids_1_based":ids,"overlap_gold_raw":overlap_raw,
++        "overlap_gold_if_zero_based":overlap_zero_based,
++        "learned_delta":after.0-before.0,"plain_fallback_delta":after.1-before.1}),
++    );
++    drop(index);
++    drop(segment);
++    drop(active);
++    drop(shard);
++    collection.stop_gracefully().await;
++}
++
++/// Diagnose whether exact row-20 neighbors were routed into nprobe=4, and
++/// retain scored candidate rankings without changing the index or query.
++#[test]
++#[ignore = "bounded candidate-coverage diagnosis on an isolated full-scale copy"]
++fn sisap23_recovery_row20_candidate_coverage() {
++    use common::types::DeferredBehavior;
++
++    let path = checked_collection();
++    config_is_compatible(&path);
++    let root = PathBuf::from(std::env::var("SISAP23_OFFICIAL_QUERY_ROOT").unwrap());
++    let mut query_file = File::open(root.join("queries_20_9999.f32le")).unwrap();
++    let mut query_bytes = vec![0u8; DIM * 4];
++    query_file.read_exact(&mut query_bytes).unwrap();
++    let values: Vec<f32> = query_bytes
++        .chunks_exact(4)
++        .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
++        .collect();
++    let mut gold_file = File::open(root.join("gold_20_9999_top10.i32le")).unwrap();
++    let mut gold_bytes = [0u8; 40];
++    gold_file.read_exact(&mut gold_bytes).unwrap();
++    let gold: Vec<u64> = gold_bytes
++        .chunks_exact(4)
++        .map(|bytes| i32::from_le_bytes(bytes.try_into().unwrap()) as u64)
++        .collect();
++
++    let segment_path = locate_segment(&path);
++    let segment = load_index(&segment_path);
++    assert_eq!(segment.available_point_count(), N);
++    let index = segment.vector_data[DEFAULT_VECTOR_NAME]
++        .vector_index
++        .borrow();
++    let VectorIndexEnum::Lmi(lmi) = &*index else {
++        panic!("active segment is not LMI")
++    };
++    let state = lmi.routing_state().expect("trained LMI state missing");
++    let normalized = Distance::Cosine.preprocess_vector::<f32>(values.clone());
++    let buckets = state
++        .router()
++        .top_buckets(&normalized, state.nprobe())
++        .unwrap();
++    let mut offsets: Vec<_> = buckets
++        .iter()
++        .flat_map(|bucket| state.postings().get(*bucket).unwrap().iter().copied())
++        .collect();
++    offsets.sort_unstable();
++    offsets.dedup();
++    assert_eq!(
++        state.nprobe(),
++        4,
++        "fixed full-scale LMI configuration changed"
++    );
++
++    let tracker = segment.id_tracker.borrow();
++    let gold_coverage: Vec<_> = gold
++        .iter()
++        .map(|&id| {
++            assert!((1..=N as u64).contains(&id));
++            let offset = tracker
++                .internal_id_with_behavior(PointIdType::NumId(id), DeferredBehavior::VisibleOnly)
++                .expect("ground-truth point is absent from the index segment");
++            serde_json::json!({"id_1_based":id,"segment_offset":offset,
++                "selected_candidate":offsets.binary_search(&offset).is_ok()})
++        })
++        .collect();
++    let storage = segment.vector_data[DEFAULT_VECTOR_NAME]
++        .vector_storage
++        .borrow();
++    let query: QueryVector = values.into();
++    let scored = score_candidates(
++        &query,
++        &offsets,
++        10,
++        &*tracker,
++        &*storage,
++        &VectorQueryContext::default(),
++    )
++    .unwrap();
++    let ranked: Vec<_> = scored
++        .iter()
++        .map(|hit| {
++            serde_json::json!({
++                "id_1_based":match tracker.external_id(hit.idx).unwrap() {
++                    PointIdType::NumId(id) => id,
++                    _ => panic!("unexpected point ID type"),
++                },
++                "segment_offset":hit.idx,"cosine_score":hit.score
++            })
++        })
++        .collect();
++    assert_eq!(ranked.len(), 10);
++    assert!(scored.windows(2).all(|pair| pair[0].score >= pair[1].score));
++    let covered = gold_coverage
++        .iter()
++        .filter(|item| item["selected_candidate"] == true)
++        .count();
++    let report_path = PathBuf::from(std::env::var("SISAP23_CANDIDATE_REPORT").unwrap());
++    let report = serde_json::json!({
++        "format":"sisap23-row20-candidate-coverage-v1",
++        "query_row":20,"segment":segment.uuid.to_string(),
++        "active_points":N,"nprobe":state.nprobe(),"selected_buckets":buckets,
++        "candidate_count":offsets.len(),"ground_truth_coverage":gold_coverage,
++        "ground_truth_candidates_selected":covered,
++        "ranked_candidate_top10":ranked,
++        "scored_in_descending_order":true,
++        "scientific_acceptance":false
++    });
++    write_json_new(&report_path, &report);
++    println!("SISAP23_ROW20_CANDIDATE_COVERAGE {report}");
++}
++
+ #[test]
+ #[ignore = "opt-in memory admission probe; no data ingestion or training"]
+ fn sisap23_recovery_memory_probe() {
+@@ -666,6 +1226,16 @@ async fn sisap23_reuse_vectors_without_reingestion() {
+         wait_for_index(&collection, Variant::HnswA, count),
+     )
+     .await;
++    if matches!(result, Ok(Ok(_))) {
++        let shard = collection
++            .shards_holder()
++            .read()
++            .await
++            .get_shard(0)
++            .unwrap()
++            .clone();
++        shard.force_flush_local_for_test().await;
++    }
+     collection.stop_gracefully().await;
+     drop(collection);
+     result.unwrap().unwrap();
+diff --git a/lib/collection/src/tests/lmi_sisap23_small_lifecycle.rs b/lib/collection/src/tests/lmi_sisap23_small_lifecycle.rs
+index f513f8211..4ce5f7b2b 100644
+--- a/lib/collection/src/tests/lmi_sisap23_small_lifecycle.rs
++++ b/lib/collection/src/tests/lmi_sisap23_small_lifecycle.rs
+@@ -1,16 +1,14 @@
+ //! Disposable native Float16 lifecycle diagnostics. Never reads SISAP inputs.
+-use super::*;
+ use segment::data_types::named_vectors::NamedVectors;
+-use segment::data_types::vectors::NamedQuery;
+-use segment::data_types::vectors::VectorInternal;
++use segment::data_types::vectors::{NamedQuery, VectorInternal};
+ use segment::entry::{SegmentEntry, StorageSegmentEntry};
+ use segment::segment::Segment;
+ use segment::segment_constructor::build_segment;
+ use segment::types::{SegmentConfig, VectorDataConfig, VectorStorageType};
+ use shard::query::query_enum::QueryEnum;
+-use shard::segment_holder::FlushMode;
+-use shard::segment_holder::SegmentHolder;
++use shard::segment_holder::{FlushMode, SegmentHolder};
+ 
++use super::*;
+ use crate::operations::types::CoreSearchRequest;
+ use crate::shards::replica_set::ShardReplicaSet;
+ 
+diff --git a/lib/segment/src/index/lmi_index/mod.rs b/lib/segment/src/index/lmi_index/mod.rs
+index a84712006..3ddc309fe 100755
+--- a/lib/segment/src/index/lmi_index/mod.rs
++++ b/lib/segment/src/index/lmi_index/mod.rs
+@@ -30,14 +30,6 @@ pub fn check_build_memory(
+ pub const fn training_available() -> bool {
+     cfg!(feature = "lmi-training")
+ }
+-pub use postings::CompactPostings;
+-pub use routing::{LinearLayer, LmiRoutingState, MlpRouter, RouterLayer};
+-#[cfg(feature = "testing")]
+-pub use state::save_fixture_state;
+-pub use state::{
+-    LMI_POSTINGS_FILE, LMI_ROUTER_FILE, LMI_STATE_FILE, LmiStateMetadata, RouterPreprocessing,
+-};
+-
+ use std::collections::HashMap;
+ use std::path::{Path, PathBuf};
+ use std::sync::Arc;
+@@ -48,12 +40,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
+ use atomic_refcell::AtomicRefCell;
+ use common::counter::hardware_counter::HardwareCounterCell;
+ use common::types::{PointOffsetType, ScoredPointOffset, TelemetryDetail};
++pub use postings::CompactPostings;
++pub use routing::{LinearLayer, LmiRoutingState, MlpRouter, RouterLayer};
+ use sparse::common::types::DimId;
++#[cfg(feature = "testing")]
++pub use state::save_fixture_state;
++pub use state::{
++    LMI_POSTINGS_FILE, LMI_ROUTER_FILE, LMI_STATE_FILE, LmiStateMetadata, RouterPreprocessing,
++};
+ 
+ use crate::common::operation_error::{OperationError, OperationResult};
+ use crate::data_types::query_context::VectorQueryContext;
+-use crate::data_types::vectors::VectorInternal;
+-use crate::data_types::vectors::{QueryVector, VectorRef};
++use crate::data_types::vectors::{QueryVector, VectorInternal, VectorRef};
+ use crate::id_tracker::IdTrackerEnum;
+ use crate::index::candidate_scoring::score_candidates;
+ use crate::index::plain_vector_index::PlainVectorIndex;
+@@ -77,6 +75,16 @@ pub struct LmiIndex {
+     learned_searches: AtomicU64,
+     #[cfg(feature = "testing")]
+     plain_fallbacks: AtomicU64,
++    #[cfg(feature = "testing")]
++    routed_queries: AtomicU64,
++    #[cfg(feature = "testing")]
++    candidate_offsets: AtomicU64,
++    #[cfg(feature = "testing")]
++    routing_elapsed_ns: AtomicU64,
++    #[cfg(feature = "testing")]
++    scored_queries: AtomicU64,
++    #[cfg(feature = "testing")]
++    scoring_elapsed_ns: AtomicU64,
+     routing_state: Option<LmiRoutingState>,
+     routing_distance: Option<Distance>,
+     state_files: Vec<PathBuf>,
+@@ -106,6 +114,16 @@ impl LmiIndex {
+             learned_searches: AtomicU64::new(0),
+             #[cfg(feature = "testing")]
+             plain_fallbacks: AtomicU64::new(0),
++            #[cfg(feature = "testing")]
++            routed_queries: AtomicU64::new(0),
++            #[cfg(feature = "testing")]
++            candidate_offsets: AtomicU64::new(0),
++            #[cfg(feature = "testing")]
++            routing_elapsed_ns: AtomicU64::new(0),
++            #[cfg(feature = "testing")]
++            scored_queries: AtomicU64::new(0),
++            #[cfg(feature = "testing")]
++            scoring_elapsed_ns: AtomicU64::new(0),
+             routing_state: None,
+             routing_distance: None,
+             state_files: Vec::new(),
+@@ -166,6 +184,17 @@ impl LmiIndex {
+         )
+     }
+ 
++    #[cfg(feature = "testing")]
++    pub fn search_stage_counts_for_test(&self) -> (u64, u64, u64, u64, u64) {
++        (
++            self.routed_queries.load(Ordering::Relaxed),
++            self.candidate_offsets.load(Ordering::Relaxed),
++            self.routing_elapsed_ns.load(Ordering::Relaxed),
++            self.scored_queries.load(Ordering::Relaxed),
++            self.scoring_elapsed_ns.load(Ordering::Relaxed),
++        )
++    }
++
+     fn supports_candidates(
+         &self,
+         vectors: &[&QueryVector],
+@@ -209,21 +238,47 @@ impl VectorIndexRead for LmiIndex {
+                             )),
+                             _ => (*query).clone(),
+                         };
+-                        let candidates = state
+-                            .candidates_for_query(&routed_query, &query_context.is_stopped())?
+-                            .ok_or_else(|| {
+-                                OperationError::service_error(
+-                                    "LMI candidate routing received unsupported query",
+-                                )
+-                            })?;
+-                        score_candidates(
++                        #[cfg(feature = "testing")]
++                        let routing_started = std::time::Instant::now();
++                        let candidates_result =
++                            state.candidates_for_query(&routed_query, &query_context.is_stopped());
++                        #[cfg(feature = "testing")]
++                        self.routing_elapsed_ns.fetch_add(
++                            routing_started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
++                            Ordering::Relaxed,
++                        );
++                        let candidates = candidates_result?.ok_or_else(|| {
++                            OperationError::service_error(
++                                "LMI candidate routing received unsupported query",
++                            )
++                        })?;
++                        #[cfg(feature = "testing")]
++                        {
++                            self.routed_queries.fetch_add(1, Ordering::Relaxed);
++                            self.candidate_offsets
++                                .fetch_add(candidates.len() as u64, Ordering::Relaxed);
++                        }
++                        #[cfg(feature = "testing")]
++                        let scoring_started = std::time::Instant::now();
++                        let scored = score_candidates(
+                             query,
+                             &candidates,
+                             top,
+                             &*tracker,
+                             &*storage,
+                             query_context,
+-                        )
++                        );
++                        #[cfg(feature = "testing")]
++                        {
++                            self.scoring_elapsed_ns.fetch_add(
++                                scoring_started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
++                                Ordering::Relaxed,
++                            );
++                            if scored.is_ok() {
++                                self.scored_queries.fetch_add(1, Ordering::Relaxed);
++                            }
++                        }
++                        scored
+                     })
+                     .collect();
+             }
+diff --git a/tools/lmi/sisap23_matched/generation_publication.py b/tools/lmi/sisap23_matched/generation_publication.py
+index 0aaba1bff..ba3a809b1 100644
+--- a/tools/lmi/sisap23_matched/generation_publication.py
++++ b/tools/lmi/sisap23_matched/generation_publication.py
+@@ -62,6 +62,30 @@ def review_staging(staging, producer, job):
+         hashes[name] = hashlib.sha256(raw).hexdigest()
+         values[name] = json.loads(raw)
+     meta = values["generation.json"]
++    if meta.get("recovery_mode") == "reuse-built-index":
++        path = staging / "query-proof-inventory.json"
++        require(path.is_file() and not path.is_symlink(), "missing isolated query-copy inventory")
++        raw = path.read_bytes()
++        hashes[path.name] = hashlib.sha256(raw).hexdigest()
++        values[path.name] = json.loads(raw)
++        original = canonical(meta["source_build_stage"])
++        require(original != staging and original.is_dir()
++                and original / "collection" == Path(meta["source_path"]),
++                "retained construction source differs")
++        require(meta["source_build_report_sha256"] == digest(original / "scratch.json")
++                and values["scratch.json"] == read(original / "scratch.json")
++                and values["scratch.exit.json"].get("exit_code") == 0,
++                "retained construction report differs")
++        require(values[path.name] == values["copied-inventory.json"]
++                and meta["query_proof_inventory_sha256"] == hashes[path.name],
++                "isolated query proof was not byte-identical to persistent collection")
++        proof = values["persistent.json"]
++        scratch_root = Path(meta["query_proof_scratchdir"])
++        query_copy = Path(meta["query_proof_collection"])
++        require(proof.get("query_proof_storage") == "isolated_pbs_scratch"
++                and Path(proof.get("query_proof_collection", "")) == query_copy
++                and query_copy.is_relative_to(scratch_root) and query_copy != scratch_root,
++                "query proof storage or scratch path differs")
+     check_generation_metadata(meta, producer)
+     require(meta["job_id"] == job, "producer job mismatch")
+     require(meta.get("data_origin_commit") == BASE and
+diff --git a/tools/lmi/sisap23_matched/pbs/56_small_stage_a.pbs b/tools/lmi/sisap23_matched/pbs/56_small_stage_a.pbs
+index c42835674..3315ca179 100644
+--- a/tools/lmi/sisap23_matched/pbs/56_small_stage_a.pbs
++++ b/tools/lmi/sisap23_matched/pbs/56_small_stage_a.pbs
+@@ -50,14 +50,23 @@ run_one() {
+   local log="$SISAP23_BENCH_ROOT/$label.log"
+   local flags=(--exact "$name" --nocapture)
+   if [ "$ignored" = yes ]; then flags+=(--ignored); fi
++  if ! grep -Fqx "$name: test" "$SISAP23_BENCH_ROOT/test-list.txt"; then
++    echo "test selector not present in compiled binary: $name" >&2
++    return 2
++  fi
+   printf 'running=%s ignored=%s\n' "$name" "$ignored"
+   timeout --signal=TERM --kill-after=30s 600s "$SISAP23_TEST_BIN" "${flags[@]}" > "$log" 2>&1
+-  grep -q 'test result: ok. 1 passed; 0 failed;' "$log"
++  grep -Eq '^test result: ok\. 1 passed; 0 failed;' "$log" || {
++    echo "selector did not execute exactly one passing test: $name" >&2
++    cat "$log" >&2
++    return 2
++  }
+ }
++"$SISAP23_TEST_BIN" --list > "$SISAP23_BENCH_ROOT/test-list.txt"
+ run_one 'collection_manager::optimizers::merge_optimizer::tests::two_live_segments_can_remain_at_one_segment_target' no merge_planner
+ run_one 'tests::lmi_sisap23_matched::sisap23_optimizer_error_fails_even_with_a_complete_count' no optimizer_completion
+ run_one 'tests::lmi_sisap23_matched::sisap23_one_live_segment_and_empty_segment_is_accepted_after_reload' no one_live
+-run_one 'tests::lmi_sisap23_matched::sisap23_two_live_segments_remain_rejected_after_reload' no two_live
++run_one 'tests::lmi_sisap23_matched::sisap23_live_segment_discovery_accepts_two_after_reload' no two_live
+ run_one 'tests::lmi_sisap23_matched::memory_recovery::sisap23_reuse_vectors_without_reingestion' yes float16_reuse
+ python - "$SISAP23_BENCH_ROOT/stage-a.complete.json" "$SISAP23_REVIEWED_COMMIT" "$PBS_JOBID" <<'PY'
+ import json, sys
+diff --git a/tools/lmi/sisap23_matched/recovery_stages.py b/tools/lmi/sisap23_matched/recovery_stages.py
+index 13664949c..00c937858 100644
+--- a/tools/lmi/sisap23_matched/recovery_stages.py
++++ b/tools/lmi/sisap23_matched/recovery_stages.py
+@@ -2,6 +2,7 @@
+ import argparse
+ import hashlib
+ import json
++import math
+ import os
+ from pathlib import Path
+ import shutil
+@@ -43,7 +44,19 @@ def verify_checkout(commit):
+     actual = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip()
+     branch = subprocess.check_output(["git", "branch", "--show-current"], cwd=REPO, text=True).strip()
+     dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=REPO, text=True).strip()
+-    require(actual == commit and branch == BRANCH and not dirty, "source commit/branch/cleanliness mismatch")
++    require(actual == commit and branch == BRANCH, "source commit/branch mismatch")
++    reviewed_patch = os.environ.get("SISAP23_REVIEWED_PATCH_SHA256")
++    if reviewed_patch:
++        require(len(reviewed_patch) == 64
++                and all(ch in "0123456789abcdef" for ch in reviewed_patch),
++                "invalid reviewed patch SHA-256")
++        require(not any(line.startswith("??") for line in dirty.splitlines()),
++                "untracked files are forbidden in patched source checkout")
++        diff = subprocess.check_output(["git", "diff", "--binary", "HEAD"], cwd=REPO)
++        require(hashlib.sha256(diff).hexdigest() == reviewed_patch,
++                "source patch differs from reviewed patch SHA-256")
++    else:
++        require(not dirty, "source worktree must be clean")
+ 
+ def original_manifest(root):
+     manifest = read(root / "manifest.json")
+@@ -73,6 +86,8 @@ def checked_generation(path, commit, kind=None, variant=None):
+     return meta
+ 
+ def check_generation_metadata(meta, commit, kind=None, variant=None):
++    require(meta.get("recovery_mode") in (None, "reuse-built-index"),
++            "unknown generation recovery mode")
+     require((meta.get("kind"), meta.get("variant")) in
+             (("data", "data"), ("index", "lmi"), ("index", "hnsw-a"), ("index", "hnsw-b")),
+             "unknown generation kind/variant")
+@@ -131,9 +146,42 @@ def check_generation_metadata(meta, commit, kind=None, variant=None):
+                 and len(ids) == 10 and len(set(ids)) == 10
+                 and all(1 <= i <= N for i in ids),
+                 "ordinary learned search did not route every active LMI segment")
++        if meta.get("recovery_mode") == "reuse-built-index":
++            proof = meta["persistent_report"]
++            require(proof.get("query_proof_storage") == "isolated_pbs_scratch"
++                    and proof.get("query_proof_collection") == meta.get("query_proof_collection")
++                    and meta.get("query_proof_inventory_sha256")
++                    and meta.get("source_build_job_id")
++                    and meta.get("source_build_report_sha256"),
++                    "isolated query proof or retained build provenance missing")
+     else:
+         require(meta["report"].get("hnsw_params") == {"hnsw-a":[16,100], "hnsw-b":[32,200]}.get(meta["variant"]),
+                 "fixed HNSW configuration changed")
++        index = meta["report"].get("index") or {}
++        segments = index.get("segments") or []
++        mapping = index.get("mapping") or {}
++        relatives = [segment.get("segment_relative_path") for segment in segments]
++        require(index.get("complete") is True
++                and index.get("segment_count") == len(segments) > 0
++                and len(set(relatives)) == len(relatives)
++                and all(isinstance(path, str) and path for path in relatives)
++                and all(segment.get("index_kind") == "hnsw"
++                        and segment.get("points", 0) > 0
++                        and segment.get("mapping_iterated") == segment.get("points")
++                        for segment in segments)
++                and sum(segment.get("points", 0) for segment in segments) == N
++                and mapping.get("iterated_mappings") == N
++                and mapping.get("missing_external_ids") == 0
++                and mapping.get("duplicate_ids") == 0
++                and mapping.get("invalid_ids") == 0
++                and mapping.get("mappings_outside_physical_slots") == 0,
++                "per-segment HNSW persistence or point accounting is incomplete")
++        persistent_index = meta["persistent_report"].get("index") or {}
++        require(persistent_index.get("complete") is True
++                and persistent_index.get("segment_count") == len(segments)
++                and persistent_index.get("segments") == segments
++                and persistent_index.get("mapping") == mapping,
++                "scratch and persistent HNSW topology differs")
+     if kind:
+         require(meta["kind"] == kind, "wrong generation kind")
+     if variant:
+@@ -165,6 +213,8 @@ def timed(label, function, *args, **kwargs):
+     fields = {}
+     if function is inventory:
+         fields = {"files":len(value), "bytes":sum(v["bytes"] for v in value.values())}
++    elif function is release_scratch_cache:
++        fields = {"bytes_advised":value}
+     event(label, status="complete", elapsed_s=time.monotonic()-started, **fields)
+     return value
+ 
+@@ -369,8 +419,24 @@ def validate_variant(root, variant):
+             elif variant == "lmi":
+                 require(all(isinstance(r["candidate_count"], int) and 10 <= r["candidate_count"] <= N
+                             for r in rows), "invalid learned candidate count")
++                for row in rows:
++                    validate_query_path_record(row, variant)
+             else:
+-                require(all(r["hnsw_ef"] == int(setting.rsplit("-",1)[1]) for r in rows), "HNSW ef differs")
++                require(all(r["hnsw_ef"] == int(setting.rsplit("-",1)[1])
++                            and r.get("segment_count", 0) >= 1
++                            for r in rows), "HNSW ef or segment evidence differs")
++                for row in rows:
++                    validate_query_path_record(row, variant)
++            if variant != "plain":
++                warmup = read_jsonl(path / "warmup-rows.jsonl")
++                require([r.get("query_row") for r in warmup] == list(range(20))
++                        and all(r.get("parameter") == setting
++                                and math.isfinite(r.get("native_search_ms", 0))
++                                and r.get("native_search_ms", 0) > 0
++                                and r.get("segment_count", 0) >= 1 for r in warmup),
++                        "official warmup results missing or invalid")
++                for row in warmup:
++                    validate_query_path_record(row, variant)
+             check_ids(rows, path, gold, plain)
+             chunks = sorted((path / "chunks").glob("rows-*.jsonl"))
+             require(len(chunks) == marker["chunks"] == math.ceil(len(ids) / 100),
+@@ -431,6 +497,57 @@ def evaluate(args):
+         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+         return evaluate_locked(args)
+ 
++def evaluation_segment_paths(index):
++    segments = index.get("segments") or []
++    relatives = index.get("segment_relative_paths") or [
++        segment.get("segment_relative_path") for segment in segments
++    ]
++    require(index.get("complete") is True and index.get("segment_count") == len(segments) > 0
++            and len(relatives) == len(segments) and len(set(relatives)) == len(relatives),
++            "accepted index report does not list a unique complete segment set")
++    for relative in relatives:
++        checked_relative(relative)
++    require(all(segment.get("points", 0) > 0 for segment in segments)
++            and sum(segment["points"] for segment in segments) == N,
++            "accepted segment point counts are incomplete")
++    return relatives
++
++def validate_recovered_segment_marker(index, marker, variant):
++    relatives = evaluation_segment_paths(index)
++    expected_kind = "lmi" if variant == "lmi" else "hnsw"
++    require(marker.get("segment_count") == len(relatives)
++            and marker.get("segment_relative_paths") == relatives
++            and marker.get("index_kind") == expected_kind
++            and marker.get("evaluation_storage") == "isolated_pbs_scratch_local_ssd"
++            and marker.get("cache_advice") == "POSIX_FADV_DONTNEED_before_each_parameter"
++            and marker.get("warmup_protocol") == "official_queries_0_through_19_logged_per_parameter",
++            "evaluation marker segment topology differs from accepted generation")
++
++def validate_query_path_record(record, variant):
++    """Validate direct segment-index calls without inventing fallback counters."""
++    require(record.get("search_interface") == "direct_segment_indices_sequential_merge"
++            and record.get("fallback_observation") == "not_applicable_direct_segment_index"
++            and "plain_fallback_segments" not in record,
++            "query path or fallback observability declaration differs")
++    segment_count = record.get("segment_count")
++    require(isinstance(segment_count, int) and segment_count > 0,
++            "query record has no active segment count")
++    if variant == "lmi":
++        require(record.get("learned_route_segments") == segment_count
++                and isinstance(record.get("candidate_count"), int)
++                and 10 <= record["candidate_count"] <= N
++                and isinstance(record.get("routing_ms"), (int, float))
++                and math.isfinite(record["routing_ms"]) and record["routing_ms"] > 0
++                and isinstance(record.get("candidate_scoring_ms"), (int, float))
++                and math.isfinite(record["candidate_scoring_ms"])
++                and record["candidate_scoring_ms"] > 0,
++                "LMI route/candidate evidence incomplete")
++    else:
++        require(record.get("learned_route_segments") == 0
++                and record.get("routing_ms") is None
++                and record.get("candidate_scoring_ms") is None,
++                "non-LMI query has learned-route evidence")
++
+ def evaluate_locked(args):
+     manifest = read(args.campaign / "manifest.json")
+     require(manifest.get("protocol") == "independent-recovery-v2" and manifest["source_commit"] == args.commit,
+@@ -450,15 +567,24 @@ def evaluate_locked(args):
+         run.mkdir()
+         shutil.copytree(generation_storage(args.index_generation) / "collection", run / "collection")
+         require(inventory(run / "collection") == meta["collection_files"], "evaluation copy differs")
+-        segment = run / "collection" / checked_relative(meta["report"]["index"]["segment_relative_path"])
+-        require((segment / "segment.json").is_file(), "verified nonempty segment missing")
++        index = meta["report"].get("index") or {}
++        segments = index.get("segments") or []
++        relative_paths = evaluation_segment_paths(index)
++        for relative in relative_paths:
++            segment = run / "collection" / checked_relative(relative)
++            require((segment / "segment.json").is_file(), f"verified segment missing: {relative}")
+         m, ef = {"lmi":(None,None), "hnsw-a":(16,100), "hnsw-b":(32,200)}[args.variant]
+         marker = {"format":"sisap23-evaluation-generation-v2","variant":args.variant,"origin":"index-generation",
+             "source_commit":args.commit,"producer_commit":meta["producer_commit"],
+-            "point_count":N,"segment_count":1,"index_kind":"lmi" if args.variant == "lmi" else "hnsw",
++            "point_count":N,"segment_count":len(relative_paths),"index_kind":"lmi" if args.variant == "lmi" else "hnsw",
++            "segment_relative_paths":relative_paths,
++            "segment_path":str(run / "collection" / checked_relative(relative_paths[0])) if len(relative_paths) == 1 else None,
+             "hnsw_m":m,"ef_construct":ef,"lmi":LMI if args.variant == "lmi" else None,
++            "evaluation_storage":"isolated_pbs_scratch_local_ssd",
++            "cache_advice":"POSIX_FADV_DONTNEED_before_each_parameter",
++            "warmup_protocol":"official_queries_0_through_19_logged_per_parameter",
+             "hardware_fingerprint":HARDWARE,"generation_path":str(args.index_generation),
+-            "generation_sha256":generation_sha,"segment_path":str(segment)}
++            "generation_sha256":generation_sha}
+         write_new(run / "evaluation.generation.json", marker)
+     require(inventory(run / "collection") == meta["collection_files"], "evaluation collection changed")
+     complete = run / "evaluation.complete.json"
+@@ -471,10 +597,43 @@ def evaluate_locked(args):
+                 "accepted query results changed")
+         print("evaluation already accepted")
+         return
++    scratch = Path(os.environ["SCRATCHDIR"]).resolve()
++    query_collection = scratch / f"sisap23-evaluation-{os.environ['PBS_JOBID']}-{uuid.uuid4().hex[:10]}"
++    require(not query_collection.exists(), "unique PBS scratch query copy required")
+     attempt = run / f"attempt-{os.environ['PBS_JOBID']}-{uuid.uuid4().hex[:8]}"
+     attempt.mkdir()
+-    rust("sisap23_matched_evaluate", {"SISAP23_BENCH_ROOT":str(args.campaign),
+-        "SISAP23_VARIANT":args.variant,"SISAP23_REVIEWED_COMMIT":args.commit}, attempt, "evaluate")
++    write_new(attempt / "attempt.json", {
++        "format":"sisap23-evaluation-attempt-v1", "pbs_job_id":os.environ["PBS_JOBID"],
++        "source_commit":args.commit, "variant":args.variant,
++        "generation_sha256":generation_sha, "host":socket.getfqdn(),
++        "scratch_root":str(scratch), "query_collection":str(query_collection),
++        "evaluation_storage":"isolated_pbs_scratch_local_ssd",
++        "cache_advice":"POSIX_FADV_DONTNEED_before_each_parameter",
++        "warmup_protocol":"official_queries_0_through_19_logged_per_parameter",
++        "started_unix":time.time()
++    })
++    timed("evaluation_scratch_copy", shutil.copytree, run / "collection", query_collection)
++    require(timed("evaluation_scratch_copy_inventory", inventory, query_collection) == meta["collection_files"],
++            "local SSD evaluation copy differs from the accepted generation")
++    settings = (f"nprobe-{p}" for p in (1,4,8,16,30,40,64,100,160,256)) if args.variant == "lmi" else (
++        f"hnsw-ef-{p}" for p in (16,32,64,128,256,512,1024))
++    for setting in settings:
++        setting_attempt = attempt / setting
++        setting_attempt.mkdir()
++        advised = timed(f"evaluation_cache_advice_{setting}", release_scratch_cache,
++                        query_collection, scratch)
++        write_new(setting_attempt / "cache-advice.json", {
++            "setting":setting, "bytes_advised":advised,
++            "advisory":"POSIX_FADV_DONTNEED", "scope":"this PBS job scratch copy only"
++        })
++        rust("sisap23_matched_evaluate", {"SISAP23_BENCH_ROOT":str(args.campaign),
++            "SISAP23_VARIANT":args.variant,"SISAP23_REVIEWED_COMMIT":args.commit,
++            "SISAP23_EVAL_COLLECTION":str(query_collection),
++            "SISAP23_ONLY_SETTING":setting}, setting_attempt, "evaluate")
++    require(timed("evaluation_scratch_copy_after_search", inventory, query_collection) == meta["collection_files"],
++            "local SSD query copy changed during evaluation")
++    require(timed("evaluation_persistent_copy_after_search", inventory, run / "collection") == meta["collection_files"],
++            "persistent evaluation generation changed during search")
+     require(inventory(run / "collection") == meta["collection_files"], "query evaluation changed collection")
+     require(fingerprint(args.campaign) == HARDWARE, "hardware changed")
+     validate_variant(args.campaign, args.variant)
+diff --git a/tools/lmi/sisap23_matched/test_generation_publication.py b/tools/lmi/sisap23_matched/test_generation_publication.py
+index dab8fa760..01661590f 100644
+--- a/tools/lmi/sisap23_matched/test_generation_publication.py
++++ b/tools/lmi/sisap23_matched/test_generation_publication.py
+@@ -78,6 +78,45 @@ class PublicationTests(unittest.TestCase):
+         self.assertEqual(before, inventory(self.stage))
+         self.assertFalse(self.final.exists())
+ 
++    def test_reused_lmi_requires_byte_identical_isolated_query_proof(self):
++        old = self.root / ".staging/old-build"
++        (old / "collection").mkdir(parents=True)
++        segment = {"segment_uuid":"one", "segment_relative_path":"0/segments/one",
++                   "points":stages.N, "index_kind":"lmi", "mapping_iterated":stages.N}
++        mapping = {"iterated_mappings":stages.N, "missing_external_ids":0,
++                   "duplicate_ids":0, "invalid_ids":0, "mappings_outside_physical_slots":0}
++        index = {"complete":True, "segment_count":1, "segments":[segment], "mapping":mapping}
++        scratch = {"format":"sisap23-index-only-v2", "accepted":True, "variant":"lmi",
++                   "data":self.meta["persistent_report"]["data"], "index":index,
++                   "lmi":stages.LMI, "ingested_points":0}
++        query = {"live_segment_count":1,
++                 "active_segments":[{"segment":"one", "live_points":stages.N,
++                                     "learned_delta":1, "plain_fallback_delta":0}],
++                 "learned_delta":1, "plain_fallback_delta":0,
++                 "returned_ids_1_based":list(range(1,11))}
++        persistent = dict(self.meta["persistent_report"], index=index,
++                          ordinary_lmi_query_path=query,
++                          query_proof_storage="isolated_pbs_scratch",
++                          query_proof_collection="/scratch/job/collection")
++        save(old / "scratch.json", scratch)
++        save(self.stage / "scratch.json", scratch)
++        save(self.stage / "persistent.json", persistent)
++        files = inventory(self.stage / "collection")
++        save(self.stage / "query-proof-inventory.json", files)
++        self.meta.update(kind="index", variant="lmi", report=scratch,
++                         persistent_report=persistent, source_path=str(old / "collection"),
++                         source_build_stage=str(old), source_build_job_id="old.pbs",
++                         source_build_report_sha256=digest(old / "scratch.json"),
++                         recovery_mode="reuse-built-index",
++                         query_proof_scratchdir="/scratch/job",
++                         query_proof_collection="/scratch/job/collection",
++                         query_proof_inventory_sha256=digest(self.stage / "query-proof-inventory.json"))
++        self.persist()
++        self.review()
++        save(self.stage / "query-proof-inventory.json", {"changed":True})
++        with self.assertRaisesRegex(ValueError, "byte-identical"):
++            self.review()
++
+     def test_cli_inspect_is_read_only(self):
+         args = ["publication", "inspect", "--staging", str(self.stage),
+                 "--expected-producer", PRODUCER, "--expected-job", JOB]
+diff --git a/tools/lmi/sisap23_matched/test_recovery_stages.py b/tools/lmi/sisap23_matched/test_recovery_stages.py
+index 14bbc98b0..f6fcd8079 100644
+--- a/tools/lmi/sisap23_matched/test_recovery_stages.py
++++ b/tools/lmi/sisap23_matched/test_recovery_stages.py
+@@ -37,6 +37,47 @@ class RecoveryTests(unittest.TestCase):
+     def test_complete_generation_accepted(self):
+         self.assertEqual(stages.checked_generation(self.gen, COMMIT, "data"), self.meta)
+ 
++    def test_evaluator_accepts_all_verified_active_segment_paths(self):
++        half = stages.N // 2
++        index = {"complete":True,"segment_count":2,
++            "segments":[
++                {"points":half,"segment_relative_path":"0/segments/a"},
++                {"points":stages.N-half,"segment_relative_path":"0/segments/b"}],
++            "segment_relative_paths":["0/segments/a","0/segments/b"]}
++        self.assertEqual(stages.evaluation_segment_paths(index), index["segment_relative_paths"])
++        index["segment_relative_paths"] = ["0/segments/a", "0/segments/a"]
++        with self.assertRaisesRegex(ValueError, "unique complete segment"):
++            stages.evaluation_segment_paths(index)
++
++    def test_evaluator_rejects_incomplete_segment_point_accounting(self):
++        index = {"complete":True,"segment_count":1,
++            "segments":[{"points":stages.N-1,"segment_relative_path":"0/segments/a"}]}
++        with self.assertRaisesRegex(ValueError, "point counts are incomplete"):
++            stages.evaluation_segment_paths(index)
++
++    def test_lmi_query_record_requires_observed_routing_per_segment(self):
++        record = {"search_interface":"direct_segment_indices_sequential_merge",
++            "fallback_observation":"not_applicable_direct_segment_index",
++            "segment_count":2,"learned_route_segments":2,"candidate_count":32,
++            "routing_ms":1.2,"candidate_scoring_ms":4.5}
++        stages.validate_query_path_record(record, "lmi")
++        record.pop("search_interface")
++        with self.assertRaisesRegex(ValueError, "query path or fallback observability"):
++            stages.validate_query_path_record(record, "lmi")
++        record["search_interface"] = "direct_segment_indices_sequential_merge"
++        record["learned_route_segments"] = 1
++        with self.assertRaisesRegex(ValueError, "LMI route/candidate evidence"):
++            stages.validate_query_path_record(record, "lmi")
++
++    def test_direct_segment_search_does_not_claim_collection_fallback_counter(self):
++        record = {"search_interface":"direct_segment_indices_sequential_merge",
++            "fallback_observation":"not_applicable_direct_segment_index",
++            "segment_count":2,"learned_route_segments":2,"candidate_count":32,
++            "routing_ms":1.2,"candidate_scoring_ms":4.5,
++            "plain_fallback_segments":0}
++        with self.assertRaisesRegex(ValueError, "fallback observability"):
++            stages.validate_query_path_record(record, "lmi")
++
+     def test_changed_vectors_rejected(self):
+         (self.gen / "collection/vectors").write_bytes(b"changed")
+         with self.assertRaises(ValueError):
+@@ -93,6 +134,15 @@ class RecoveryTests(unittest.TestCase):
+     def test_hnsw_is_independent_of_lmi(self):
+         self.meta.update(kind="index", variant="hnsw-b")
+         self.meta["report"].update(data=self.data, hnsw_params=[32,200])
++        mapping = {"iterated_mappings":stages.N, "missing_external_ids":0,
++            "duplicate_ids":0, "invalid_ids":0, "mappings_outside_physical_slots":0}
++        index = {"complete":True, "segment_count":1,
++            "segments":[{"segment_uuid":"segment-a",
++                "segment_relative_path":"0/segments/segment-a", "points":stages.N,
++                "index_kind":"hnsw", "mapping_iterated":stages.N}],
++            "segment_relative_paths":["0/segments/segment-a"], "mapping":mapping}
++        self.meta["report"]["index"] = index
++        self.meta["persistent_report"]["index"] = index
+         save(self.gen / "generation.json", self.meta)
+         # No LMI path or marker is present.
+         stages.checked_generation(self.gen, COMMIT, "index", "hnsw-b")
+@@ -101,15 +151,58 @@ class RecoveryTests(unittest.TestCase):
+ 
+     def test_lmi_requires_ordinary_search_path_proof(self):
+         self.meta.update(kind="index", variant="lmi")
+-        self.meta["report"].update(data=self.data, lmi=stages.LMI)
++        half = stages.N // 2
++        segments = [
++            {"segment_uuid": "segment-a", "segment_relative_path": "0/segments/segment-a",
++             "points": half, "index_kind": "lmi", "mapping_iterated": half},
++            {"segment_uuid": "segment-b", "segment_relative_path": "0/segments/segment-b",
++             "points": stages.N - half, "index_kind": "lmi",
++             "mapping_iterated": stages.N - half},
++        ]
++        mapping = {"iterated_mappings": stages.N, "missing_external_ids": 0,
++                   "duplicate_ids": 0, "invalid_ids": 0,
++                   "mappings_outside_physical_slots": 0}
++        index = {"complete": True, "segment_count": len(segments),
++                 "segments": segments, "mapping": mapping}
++        self.meta["report"].update(data=self.data, lmi=stages.LMI, index=index)
++        self.meta["persistent_report"]["index"] = {
++            "complete": True, "segment_count": len(segments),
++            "segments": segments, "mapping": mapping,
++        }
+         save(self.gen / "generation.json", self.meta)
+-        with self.assertRaisesRegex(ValueError, "ordinary learned search proof"):
++        with self.assertRaisesRegex(ValueError, "ordinary learned search did not route"):
+             stages.checked_generation(self.gen, COMMIT, "index", "lmi")
+         self.meta["persistent_report"]["ordinary_lmi_query_path"] = {
+-            "learned_delta":1, "plain_fallback_delta":0,
+-            "returned_ids_1_based":list(range(1, 11))}
++            "live_segment_count": 2,
++            "active_segments": [
++                {"segment": "segment-a", "live_points": half,
++                 "learned_delta": 1, "plain_fallback_delta": 0},
++                {"segment": "segment-b", "live_points": stages.N - half,
++                 "learned_delta": 1, "plain_fallback_delta": 0},
++            ],
++            "learned_delta": 2,
++            "plain_fallback_delta": 0,
++            "returned_ids_1_based": list(range(1, 11)),
++        }
++        save(self.gen / "generation.json", self.meta)
++        stages.checked_generation(self.gen, COMMIT, "index", "lmi")
++        self.meta["recovery_mode"] = "reuse-built-index"
++        save(self.gen / "generation.json", self.meta)
++        with self.assertRaisesRegex(ValueError, "isolated query proof"):
++            stages.checked_generation(self.gen, COMMIT, "index", "lmi")
++        self.meta["persistent_report"].update(
++            query_proof_storage="isolated_pbs_scratch",
++            query_proof_collection="/scratch/job/collection")
++        self.meta.update(query_proof_collection="/scratch/job/collection",
++                         query_proof_inventory_sha256="b" * 64,
++                         source_build_job_id="old.pbs",
++                         source_build_report_sha256="c" * 64)
+         save(self.gen / "generation.json", self.meta)
+         stages.checked_generation(self.gen, COMMIT, "index", "lmi")
++        self.meta["persistent_report"]["query_proof_storage"] = "persistent_nfs"
++        save(self.gen / "generation.json", self.meta)
++        with self.assertRaisesRegex(ValueError, "isolated query proof"):
++            stages.checked_generation(self.gen, COMMIT, "index", "lmi")
+ 
+     def test_evaluation_rejects_wrong_hardware_before_search(self):
+         campaign = self.root / "campaign"
+@@ -161,5 +254,19 @@ class RecoveryTests(unittest.TestCase):
+                           side_effect=[COMMIT, stages.BRANCH, ""]):
+             stages.verify_checkout(COMMIT)
+ 
++    def test_checkout_accepts_only_the_exact_reviewed_patch_overlay(self):
++        import hashlib
++        import os
++        diff = b"reviewed binary diff"
++        patch_sha = hashlib.sha256(diff).hexdigest()
++        with patch.dict(os.environ, {"SISAP23_REVIEWED_PATCH_SHA256":patch_sha}):
++            with patch.object(stages.subprocess, "check_output",
++                              side_effect=[COMMIT, stages.BRANCH, " M source", diff]):
++                stages.verify_checkout(COMMIT)
++            with patch.object(stages.subprocess, "check_output",
++                              side_effect=[COMMIT, stages.BRANCH, " M source", b"different diff"]):
++                with self.assertRaisesRegex(ValueError, "reviewed patch SHA-256"):
++                    stages.verify_checkout(COMMIT)
++
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/tools/lmi/sisap23_matched/test_validate.py b/tools/lmi/sisap23_matched/test_validate.py
+index 81e20daf4..364f09b28 100644
+--- a/tools/lmi/sisap23_matched/test_validate.py
++++ b/tools/lmi/sisap23_matched/test_validate.py
+@@ -5,6 +5,7 @@ from pathlib import Path
+ 
+ sys.path.insert(0, str(Path(__file__).resolve().parent))
+ from validate import check_ids
++from recovery_stages import N, validate_recovered_segment_marker
+ 
+ 
+ class QueryRowAlignmentTests(unittest.TestCase):
+@@ -23,6 +24,34 @@ class QueryRowAlignmentTests(unittest.TestCase):
+         self.assertEqual(official, [1.0, 1.0])
+         self.assertEqual(reference, [1.0, 0.0])
+ 
++    def test_recovered_two_segment_index_marker_matches_complete_topology(self):
++        half = N // 2
++        index = {"complete":True,"segment_count":2,
++            "segments":[
++                {"points":half,"segment_relative_path":"0/segments/a"},
++                {"points":N-half,"segment_relative_path":"0/segments/b"}],
++            "segment_relative_paths":["0/segments/a","0/segments/b"]}
++        marker = {"segment_count":2,"segment_relative_paths":[
++            "0/segments/a","0/segments/b"],"index_kind":"lmi",
++            "evaluation_storage":"isolated_pbs_scratch_local_ssd",
++            "cache_advice":"POSIX_FADV_DONTNEED_before_each_parameter",
++            "warmup_protocol":"official_queries_0_through_19_logged_per_parameter"}
++        validate_recovered_segment_marker(index, marker, "lmi")
++        marker["segment_count"] = 1
++        with self.assertRaisesRegex(ValueError, "topology differs"):
++            validate_recovered_segment_marker(index, marker, "lmi")
++
++    def test_recovered_segment_marker_rejects_wrong_index_kind(self):
++        index = {"complete":True,"segment_count":1,
++            "segments":[{"points":N,"segment_relative_path":"0/segments/a"}],
++            "segment_relative_paths":["0/segments/a"]}
++        marker = {"segment_count":1,"segment_relative_paths":["0/segments/a"],
++            "index_kind":"plain","evaluation_storage":"isolated_pbs_scratch_local_ssd",
++            "cache_advice":"POSIX_FADV_DONTNEED_before_each_parameter",
++            "warmup_protocol":"official_queries_0_through_19_logged_per_parameter"}
++        with self.assertRaisesRegex(ValueError, "topology differs"):
++            validate_recovered_segment_marker(index, marker, "hnsw-a")
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/tools/lmi/sisap23_matched/validate.py b/tools/lmi/sisap23_matched/validate.py
+index 9f8e935f2..350dd0874 100644
+--- a/tools/lmi/sisap23_matched/validate.py
++++ b/tools/lmi/sisap23_matched/validate.py
+@@ -43,7 +43,8 @@ def check_ids(data, path, gold, plain):
+ 
+ def check_recovery_provenance(root, manifest, variant):
+     from preserve_generation import inventory
+-    from recovery_stages import HARDWARE, BASE, checked_generation
++    from recovery_stages import (HARDWARE, BASE, checked_generation,
++                                 validate_recovered_segment_marker)
+     run = root / "runs" / variant
+     marker = json.loads((run / "evaluation.generation.json").read_text())
+     complete = json.loads((run / "evaluation.complete.json").read_text())
+@@ -75,6 +76,7 @@ def check_recovery_provenance(root, manifest, variant):
+         meta = checked_generation(generation, expected_source, "index", variant)
+         if inventory(run / "collection") != meta["collection_files"]:
+             raise ValueError("evaluated index differs from accepted generation")
++        validate_recovered_segment_marker(meta["report"]["index"], marker, variant)
+     return marker
+ 
+ def main():
+@@ -105,7 +107,9 @@ def main():
+         marker = (check_recovery_provenance(root, manifest, variant) if recovered else
+                   json.loads((run / ("imported.generation.json" if imported else "build.complete.json")).read_text()))
+         kind, m, ef = expected[variant]
+-        if marker["index_kind"] != kind or marker["point_count"] != 10120191 or marker.get("segment_count") != 1:
++        if (marker["index_kind"] != kind or marker["point_count"] != 10120191
++                or not isinstance(marker.get("segment_count"), int)
++                or marker["segment_count"] < 1):
+             raise SystemExit(f"wrong build marker: {variant}")
+         if recovered:
+             pass  # Per-variant source and immutable generation checked above.
