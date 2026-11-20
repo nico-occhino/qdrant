@@ -388,6 +388,19 @@ impl LmiRoutingState {
         nprobe: usize,
         stopped: &AtomicBool,
     ) -> OperationResult<Option<Vec<PointOffsetType>>> {
+        Ok(self
+            .candidates_with_raw_count(query, nprobe, stopped)?
+            .map(|(candidates, _)| candidates))
+    }
+
+    /// [`Self::candidates_for_query_with_nprobe`] together with the number of
+    /// raw posting offsets visited before de-duplication.
+    pub fn candidates_with_raw_count(
+        &self,
+        query: &QueryVector,
+        nprobe: usize,
+        stopped: &AtomicBool,
+    ) -> OperationResult<Option<(Vec<PointOffsetType>, usize)>> {
         check_process_stopped(stopped)?;
         let QueryVector::Nearest(VectorInternal::Dense(vector)) = query else {
             return Ok(None);
@@ -413,12 +426,13 @@ impl LmiRoutingState {
             }
         }
 
+        let raw_offsets = candidates.len();
         // Native top-k can keep a different equal-score boundary point when
         // arrival order differs. Ascending offsets match Plain full-scan order.
         candidates.sort_unstable();
         candidates.dedup();
         check_process_stopped(stopped)?;
-        Ok(Some(candidates))
+        Ok(Some((candidates, raw_offsets)))
     }
 
     #[cfg(feature = "lmi-research")]
