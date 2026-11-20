@@ -265,6 +265,31 @@ At 0.95 they saved 4.3–4.5% and all met it. This was a real but small local re
   reached 0.907, but with more candidates.
 - **This is the idea that returned on 19 November as "supervised routing" (§XI)**, seven weeks and many experiments later.
 
+### Two failed first attempts (kept as evidence)
+- **F.3 attempt 1: a boundary tie (29 Sep).** The native run stopped before any timing. Its assertion "membership
+  recall must agree with native scorer" failed with 9 against 10, because two valid top-10 results differed by one
+  ID at an *equal-score* boundary. Eleven queries had equal scores in their last two positions. The fix was in the
+  harness, not in search:
+  - both exact and candidate paths request $k+1$ and expand while the rank-10 score equals the last retrieved score;
+  - results are sorted by score, then by offset;
+  - full-probe results must match exact IDs *and* scores.
+
+  The same split, frozen models and selection rule were kept, with no tuning after the failure.
+  Evidence: `~/work/lmi-phase-f3-attempt1-tie-failure/` (now archived), and `docs/lmi-phase-f3.md` §"Boundary-tie
+  correction".
+  This was the first appearance of the **tie problem**, which returned in Phase S.3B2a and in the SISAP23 Plain
+  validation (§VI).
+- **F.4 attempt 1: "selection bug" (30 Sep).** The first attempt trained the three retrieval-target MLPs and wrote
+  its ground truth and router observations. It never wrote its operating-point selection
+  (`selection.json`, `selected_operating_points.*`). Its protocol is byte-for-byte the same as the final run's. Its only
+  saved log is an unrelated Rust compile error (an iterator pattern mismatch) that was fixed before the run. *No
+  surviving document states the bug itself.* What the folder shows is a failure at the validation-based
+  operating-point selection step, followed by a rerun with an unchanged protocol. Evidence:
+  `~/work/lmi-phase-f4-attempt1-selection-bug/` (now archived).
+
+**Lesson.** Preserving failed attempts under explicit names was the right habit: it lets a reviewer check that no
+tuning happened between attempts. Missing in F.4 was a written cause, which the later campaign reports always included.
+
 **Pros and cons of the Phase F protocol.** It established controls (centroid/affine), held-out queries and paired
 intervals early. Its weakness was scale: 100K vectors, 64 buckets and 100–1,000 queries are far from the 10M regime,
 where bucket counts in the thousands change the picture (§IX).
@@ -739,7 +764,11 @@ that existed only as uncommitted files, and about 200 GB of build directories.
 6. **Writing style.** Most reports were written by coding agents in a dense, hedged style with heavy inline
    provenance. They are reliable but hard to read. This journal is the human-readable entry point; the reports remain
    the evidence.
-7. **Meeting decisions are not in the repository.** Supervisor guidance lives in `Records/` transcripts (Italian and
+7. **The cause of the F.4 attempt-1 failure was never written down** (§III); only its artifacts survive.
+8. **The earliest work (2 Sep) was never committed.** The GitLab clone `integration-of-learned-indexes-into-vector-dbs`
+   had seven staged files: Qdrant index-lifecycle notes and two Python experiments. They are preserved in the
+   external-disk archive (§17).
+9. **Meeting decisions are not in the repository.** Supervisor guidance lives in `Records/` transcripts (Italian and
    English), and only the 24 September alignment was turned into a document.
 
 ---
@@ -755,6 +784,29 @@ that existed only as uncommitted files, and about 200 GB of build directories.
 | Static ablation | `main` (`exp/2026-11-19-static-tier3b`) | `research/lmi/` | `research-admin/experiments/2026-11-18-static-lmi-ivf/` |
 | Filtering | `main` (`exp/2026-11-19-filter-probing-300k`) | `research/lmi/filtering/` | `research-admin/experiments/2026-11-19-lmi-adaptive-filtering/` |
 | Supervised routing | `main` (`exp/2026-11-20-supervised-routing`) | `research/lmi/supervised_routing/` | `research-admin/experiments/2026-11-19-static-supervised-routing/` |
+
+### External-disk backup (20 November)
+
+All bulk research data (vector stores, Qdrant segment storage, `.f32`/`.f16` samples, build trees and vendored
+dependencies) was moved off the WSL disk. One verified `tar --sparse | zstd -3` archive per unit is on the external
+disk at `D:\Research-Backups\qdrant-lmi-consolidation-2026-11-20\`. `MANIFEST.tsv` lists every archive with source
+path, byte and entry counts, and the sha256 taken at write time and on read-back. A local copy of the manifest and the
+full file listing of each archive (`<archive>.list`) are in `~/research-admin/archive/backup-index-20261120/`, so
+you can see what an archive holds without connecting the disk.
+
+- **What stays local:** every document-type file (`.md .json .jsonl .csv .tsv .log .py .sh .pbs .yaml .toml .rs
+  .png .svg .pdf .html .tex`, < 50 MB) and every other non-bulk file < 1 MB. Each trimmed folder has a
+  `BULK_ON_EXTERNAL.txt` naming its archive, sha256 and restore command. The legacy `~/work/*` checkouts and data
+  folders (including the 78 GB `lmi-sisap2023-storage`) were removed entirely after verification; only `~/work/qdrant`
+  and `muni-integration-repo` remain.
+- **Read-only HPC result trees** (`hpc-tier2`, `hpc-tier3a`, `hpc-tier3b`, `hpc-native-profile*`, `hpc-pilot`,
+  `hpc-results-*`) were deliberately left untouched (0.6 GiB), so the frozen campaigns stay bit-identical locally.
+- **Problem encountered:** the 48 GB stream for `continuation-25` failed on the 9p `/mnt/d` mount (`ENOMEM`,
+  truncated file), and the write-vs-read-back sha256 check caught it. That unit was re-archived as one archive per
+  subdirectory, each written in 4 GiB parts (`*.tar.zst.part000…`; restore with `cat parts | zstd -dc | tar -xf -`).
+  **Lesson:** never trust a large single-stream write to a WSL drvfs mount without a read-back checksum.
+- **Scripts:** `~/research-admin/archive/backup-to-external-20261120.sh`, `backup-retry-c25-20261120.sh`,
+  `cleanup-bulk-20261120.py` (logs next to them).
 
 **Next priorities** (agreed 19–20 November): Tier 3B synthesis into the thesis; thesis writing; DLI replication
 against Sommerová's reported results; CLI; and finally external API tests across Plain, HNSW, LMI, DLI and CLI with
