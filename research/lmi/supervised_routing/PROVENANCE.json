@@ -1,0 +1,320 @@
+{
+ "campaign": "static-supervised-routing-20261119",
+ "branch": "research/static-supervised-neighbor-routing-20261119",
+ "base_commit": "912b9c6e3 (research/static-lmi-ivf-router-fix; produced Tier 3A/3B)",
+ "preregistration_commit": "88d809fa5 (+ Amendment 1 in 953fe15e8, Amendment 2 in d76aea7b2, both before the pilot)",
+ "pilot_job": {
+  "id": "25759596.pbs-m1.metacentrum.cz",
+  "commit": "d76aea7b245b24a5f10f7f63c1b43c3291127466",
+  "binary_sha256": "38b6eb2cfb48998a6046972c44c45c7fad1b6623058f812cec54582c96245e65",
+  "host": "elmu1-22 (AMD, 16 CPUs, 96 GB)",
+  "features": "cargo test --profile perf -p segment --features testing,lmi-training",
+  "walltime": "04:34:42"
+ },
+ "analysis": {
+  "script": "analyze.py (gate) at 463650a6c; figure colours changed afterwards without affecting analysis.json (byte-identical)",
+  "posthoc": "posthoc_offline_g.py (diagnostic only, not part of the gate)"
+ },
+ "inputs": {
+  "corpus": "results/sisap23-matched-final-20261028-01/corpus.f16le",
+  "corpus_sha256": "f5868d6e002a6e73aea47491ee040a70a151406fe9e4552292428e2bfe0616e5",
+  "official_queries_sha256": "03ef80fafa40bf09f69562e6304b90a3c1329588a79c5130abb64f691b435bb6",
+  "official_gt_sha256": "e0c33df230dc122f5150d61e169fcd8c558d043bccec32f68f38e1116d6823d5",
+  "val_queries_sha256": "60f1ac05e34e939ae8de6cd6a73bb0bdb7b6e734f8c1efb8182dde9772b613c5 (bitwise equal to the accepted Tier 1-3 file)",
+  "input_dir": "static-supervised-routing-20261119/native-d76aea7b245b (inputs.sha256)"
+ },
+ "partition_1M": {
+  "points": 1000000,
+  "buckets": 8192,
+  "fingerprint_sha256": "7c61bcbf0a8e9f9ce6eba1371845baa349b89c3f874795b8dc6cbc417173f463",
+  "occupancy_min": 0,
+  "occupancy_max": 1560,
+  "empty_buckets": 10,
+  "verification_vs_profile_25718749": {
+   "checked": 6000,
+   "candidate_mismatches": 1,
+   "id_mismatches": 0,
+   "settings": [
+    8,
+    32,
+    128
+   ],
+   "max_mismatch_rate": 0.01
+  }
+ },
+ "query_splits": {
+  "T": {
+   "ranges": [
+    [
+     0,
+     1000
+    ],
+    [
+     3000,
+     4000
+    ],
+    [
+     6000,
+     9000
+    ],
+    [
+     9256,
+     10000
+    ]
+   ],
+   "count": 5744,
+   "sha256": "56e2e97ed5f368e77308d7b6892d4b339202daeecabc6e962814a70c5818f6db"
+  },
+  "V": {
+   "ranges": [
+    [
+     1000,
+     3000
+    ]
+   ],
+   "count": 2000,
+   "sha256": "60f1ac05e34e939ae8de6cd6a73bb0bdb7b6e734f8c1efb8182dde9772b613c5"
+  },
+  "G": {
+   "ranges": [
+    [
+     4000,
+     5000
+    ]
+   ],
+   "count": 1000,
+   "sha256": "6b7c3c720169cf6b234e3013c70c1afb0029afc1deb629eb857b69aed84953bc"
+  },
+  "C": {
+   "ranges": [
+    [
+     5000,
+     6000
+    ]
+   ],
+   "count": 1000,
+   "sha256": "1608d083a4b9d2b7dc852bffe6714f2ac5d6ac323cde4318b6d0aa2b88093dde"
+  }
+ },
+ "pseudo_queries": {
+  "requested": 100000,
+  "kept": 100000,
+  "excluded_near_duplicate": 310,
+  "max_cosine_to_heldout_p99": 0.9070009768009183,
+  "gold_seconds": 218.95627784729004,
+  "self_in_top11": 99893,
+  "gold": "exact top-10 over the stored corpus representation, self excluded",
+  "P.f32.sha256": "feeedfc51a09860496284967ff06c055a9f789d406727445153a88d42b87f04f",
+  "P.ids.u64.sha256": "b699a984cf40b88d989590f581ded9e39404ab72e29e7bac095046098a5bf4f7",
+  "P.gold.u64.sha256": "d057fd6256ee77424e02d0124b5ed84834299ee032c55d6e14862c99c66ab048"
+ },
+ "gold_1M": {
+  "T": {
+   "queries": 5744,
+   "k": 30,
+   "threads": 16,
+   "seconds": 41.669365679,
+   "ids_sha256": "d11b9df68a88e42e12365379e295fb04daf1ac4afb34b0e40154718142546ba2",
+   "source": "native exact (Plain exact path) over the built Float16 segment"
+  },
+  "V": {
+   "queries": 2000,
+   "k": 30,
+   "threads": 16,
+   "seconds": 14.963874682,
+   "ids_sha256": "cbf24a9dadeb526339f8080dc253fe318e47616c92f85d6e22e4673dc7c28c45",
+   "source": "native exact (Plain exact path) over the built Float16 segment"
+  },
+  "G": {
+   "queries": 1000,
+   "k": 30,
+   "threads": 16,
+   "seconds": 7.784480708,
+   "ids_sha256": "e02e7cbd507b4440134481b24d4df59b871c11fec3f9a2b88a49d23326647124",
+   "source": "native exact (Plain exact path) over the built Float16 segment"
+  }
+ },
+ "routers": {
+  "A0": {
+   "layers": [
+    {
+     "kind": "linear",
+     "in": 768,
+     "out": 8192,
+     "weights_sha256": "17233bdc91ac655d297ffb7a9da00cf3290607ddf91ecac50cbde653addd6b83",
+     "bias_sha256": "c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479"
+    }
+   ],
+   "selected_config": null,
+   "val_c95": 4501.367,
+   "params": 0
+  },
+  "A0occ": {
+   "layers": [
+    {
+     "kind": "linear",
+     "in": 768,
+     "out": 8192,
+     "weights_sha256": "54aaeb2197121a400b4bc06c2186c17dcac94bfcbfe9d420c3386d67c317ffff",
+     "bias_sha256": "36f580311c3a88d19cd4d794e97b5e8be2795514864e0eafdd8b495687c016d4"
+    }
+   ],
+   "selected_config": null,
+   "val_c95": 4982.7075,
+   "params": 0
+  },
+  "A1": {
+   "layers": [
+    {
+     "kind": "linear",
+     "in": 768,
+     "out": 8192,
+     "weights_sha256": "1fe79a152f443acdbf7ea4e52c275e72ce6ce70ef1259f0a105d771c6675f2d3",
+     "bias_sha256": "f9b061b9c31546bfeb0a55a443d7078f46858a43bcbe5bde40342b0d6edffab6"
+    }
+   ],
+   "selected_config": null,
+   "val_c95": 5502.0255,
+   "params": 0
+  },
+  "A1occ": {
+   "layers": [
+    {
+     "kind": "linear",
+     "in": 768,
+     "out": 8192,
+     "weights_sha256": "fb75c8c29e9c5c7a9fa31363177a220e938840791db67df608a7591cadae94d0",
+     "bias_sha256": "e6116dbd5c737b5a49373c18fb3d179ed8f225f519a5852528726e0dc7f59499"
+    }
+   ],
+   "selected_config": null,
+   "val_c95": 5500.566,
+   "params": 0
+  },
+  "A2": {
+   "layers": [
+    {
+     "kind": "linear",
+     "in": 768,
+     "out": 8192,
+     "weights_sha256": "54aaeb2197121a400b4bc06c2186c17dcac94bfcbfe9d420c3386d67c317ffff",
+     "bias_sha256": "536f413041aebadeaf28cf514fce377a3409fb79f2af6aa75b1d384ed10aefd0"
+    }
+   ],
+   "selected_config": "armA2_tau0.02_lam0.0_dataTP",
+   "val_c95": 4369.3615,
+   "params": 8192
+  },
+  "A2occ": {
+   "layers": [
+    {
+     "kind": "linear",
+     "in": 768,
+     "out": 8192,
+     "weights_sha256": "54aaeb2197121a400b4bc06c2186c17dcac94bfcbfe9d420c3386d67c317ffff",
+     "bias_sha256": "0628a35f2b658819b30bf88d656e4c567a9d1d26a13b803f7286841b5e4660af"
+    }
+   ],
+   "selected_config": "armA2_tau0.02_lam0.0_dataTP",
+   "val_c95": 4093.657,
+   "params": 8192
+  },
+  "A3": {
+   "layers": [
+    {
+     "kind": "linear",
+     "in": 768,
+     "out": 8192,
+     "weights_sha256": "02664ce129be0727bbd3dca82f6b12e9f9262a7950f650abae8cfe3b46502a73",
+     "bias_sha256": "50e5cf3c410c3cc6f20d4c90f519fe2231acb860238e2b4ab0e410bde3bba96d"
+    }
+   ],
+   "selected_config": "armA3_rank32_tau0.02_lam0.1_dataTP",
+   "val_c95": 4323.4015,
+   "params": 294912
+  },
+  "A3occ": {
+   "layers": [
+    {
+     "kind": "linear",
+     "in": 768,
+     "out": 8192,
+     "weights_sha256": "02664ce129be0727bbd3dca82f6b12e9f9262a7950f650abae8cfe3b46502a73",
+     "bias_sha256": "ee50c34a190498cc4b43439dbab0f3979c51e5ddf8f0e892bf41fd614c5e6fb4"
+    }
+   ],
+   "selected_config": "armA3_rank32_tau0.02_lam0.1_dataTP",
+   "val_c95": 4151.784,
+   "params": 294912
+  },
+  "A4": {
+   "layers": [
+    {
+     "kind": "linear",
+     "in": 768,
+     "out": 8192,
+     "weights_sha256": "a7ef473478518adb0ba73ffe61d10a64e77b7be396cfd658be2a16f989eee7ef",
+     "bias_sha256": "3113cd5cc1f899b689b553c4dd597e5e8628b8c15aba930b26b6a61e4da77ff2"
+    }
+   ],
+   "selected_config": "armA4_tau0.02_lam1.0_dataTP",
+   "val_c95": 4129.663,
+   "params": 6299648
+  },
+  "A4occ": {
+   "layers": [
+    {
+     "kind": "linear",
+     "in": 768,
+     "out": 8192,
+     "weights_sha256": "d988effd623cfc3aafb2512f338abdc177b73ef0ba46f1ccf66e32cbc12cdc01",
+     "bias_sha256": "43dc91d9447f9720479c0c62acc4e00ae0758abc1683c5687d13f5b32769dd57"
+    }
+   ],
+   "selected_config": "armA4_tau0.05_lam0.01_dataTP",
+   "val_c95": 3863.2015,
+   "params": 6299648
+  },
+  "A5": {
+   "layers": [
+    {
+     "kind": "linear",
+     "in": 768,
+     "out": 512,
+     "weights_sha256": "6d2b00fcb220baf80542e9d5f101955e0c2a7355d9d4ad641b7f56d55dacf031",
+     "bias_sha256": "a13936df69c8400f5163ca8208e7b01e37f1d3c0cb4bfdeed8e88d02479406b3"
+    },
+    {
+     "kind": "relu"
+    },
+    {
+     "kind": "linear",
+     "in": 512,
+     "out": 8192,
+     "weights_sha256": "198331abb74feffe923c0b2983fe2631f7563788f505f9fcdd1df1a08e4ea5df",
+     "bias_sha256": "b4898792e34b0129b82ff5defd256e94c5d98ea3e4c91f037947536d45286290"
+    }
+   ],
+   "selected_config": "armA5_tau1.0_lam0.0_dataTP",
+   "val_c95": 6439.592,
+   "params": 4596224
+  }
+ },
+ "training": {
+  "total_seconds": 10256.254213094711,
+  "occupancy": {
+   "min": 0,
+   "max": 1560,
+   "mean": 122.0703125,
+   "cv": 0.6387796990933279,
+   "empty": 10
+  },
+  "promotion_candidate": "A4occ"
+ },
+ "evidence_local": "/home/nicoo/research-admin/experiments/2026-11-19-static-supervised-routing",
+ "evidence_remote": "/storage/budejovice1/home/nico/lmi-metacentrum/static-supervised-routing-20261119/results/pilot-25759596.pbs-m1.metacentrum.cz",
+ "query_level_V_outside_git": {
+  "path": "/home/nicoo/research-admin/experiments/2026-11-19-static-supervised-routing/analysis-pilot/V_1M_query_level.csv.gz",
+  "sha256": "d9d87524ab92a2f9cb4319ef7fef48c75c0c626d39578064b3c914558b979119"
+ }
+}

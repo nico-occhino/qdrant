@@ -1,0 +1,83 @@
+{
+ "campaign": "static-supervised-routing-20261119",
+ "remote_root": "/storage/budejovice1/home/nico/lmi-metacentrum/static-supervised-routing-20261119",
+ "jobs": [
+  {
+   "name": "sr-preflight",
+   "stage": "0 preflight",
+   "id": "25756828.pbs-m1.metacentrum.cz",
+   "commit": "953fe15e8243",
+   "input_dir": "native-953fe15e8243",
+   "resources": "select=1:ncpus=16:mem=96gb:scratch_ssd=200gb:cpu_vendor=amd, walltime=2:00:00",
+   "depends_on": null,
+   "submitted_utc": "2026-11-19T16:26:42+00:00",
+   "output": "results/preflight-25756828.pbs-m1.metacentrum.cz",
+   "exit": 1,
+   "validation": "failed in phase train (coverage simulation assumed >= 512 buckets); fixed in aad6b152d",
+   "walltime_used": "00:25:58",
+   "host": "elmu1-23"
+  },
+  {
+   "name": "sr-preflight",
+   "stage": "0 preflight (retry)",
+   "id": "25758335.pbs-m1.metacentrum.cz",
+   "commit": "aad6b152d928",
+   "input_dir": "native-aad6b152d928",
+   "resources": "select=1:ncpus=16:mem=96gb:scratch_ssd=200gb:cpu_vendor=amd, walltime=2:00:00",
+   "depends_on": null,
+   "submitted_utc": "2026-11-19T16:56:27+00:00",
+   "output": "results/preflight-25758335.pbs-m1.metacentrum.cz",
+   "exit": 101,
+   "validation": "compile, Rust tests, source, build, export, inputs, gold, training and consistency OK; evaluate aborted on 47 short results at nprobe 1 (no underfill widening); handled by Amendment 2 in d76aea7b2",
+   "walltime_used": "00:29:56",
+   "host": "turin3"
+  },
+  {
+   "name": "sr-preflight",
+   "stage": "0 preflight (retry 2)",
+   "id": "25759595.pbs-m1.metacentrum.cz",
+   "commit": "d76aea7b245b",
+   "input_dir": "native-d76aea7b245b",
+   "resources": "select=1:ncpus=16:mem=96gb:scratch_ssd=200gb:cpu_vendor=amd, walltime=2:00:00",
+   "depends_on": null,
+   "submitted_utc": "2026-11-19T17:33:26+00:00",
+   "output": "results/preflight-25759595.pbs-m1.metacentrum.cz",
+   "exit": 0,
+   "validation": "accepted: COMPLETE.json, checksums verify except job.log (appended-line pattern, prefix hash matches), Rust suites pass, full pipeline incl. evaluate on 20K/64 smoke partition, analyze.py end-to-end (consistency 0.9998)",
+   "walltime_used": "00:27:27",
+   "host": "elmu1-22"
+  },
+  {
+   "name": "sr-pilot",
+   "stage": "1 native 1M pilot",
+   "id": "25759596.pbs-m1.metacentrum.cz",
+   "commit": "d76aea7b245b",
+   "input_dir": "native-d76aea7b245b",
+   "resources": "select=1:ncpus=16:mem=96gb:scratch_ssd=200gb:cpu_vendor=amd, walltime=12:00:00",
+   "depends_on": "afterok:25759595.pbs-m1.metacentrum.cz",
+   "submitted_utc": "2026-11-19T17:33:26+00:00",
+   "output": "results/pilot-25759596.pbs-m1.metacentrum.cz",
+   "exit": 0,
+   "validation": "accepted: COMPLETE.json; 1 of N checksums differs (job.log appended-line pattern, prefix hash matches); partition verified vs 25718749 (1/6000 candidate mismatches, 0 id mismatches); 0 unexplained short results; native/offline ranking agreement 0.99929; postings fingerprint identical before/after evaluation",
+   "started": "2026-11-19 19:04 CET on elmu1-22",
+   "partition": {
+    "fingerprint_sha256": "7c61bcbf0a8e9f9ce6eba1371845baa349b89c3f874795b8dc6cbc417173f463",
+    "empty_buckets": 10,
+    "occupancy_max": 1560,
+    "build_seconds": 517.0,
+    "verify_vs_profile_25718749": {
+     "checked": 6000,
+     "candidate_mismatches": 1,
+     "id_mismatches": 0,
+     "tolerance": 0.01,
+     "accepted": true
+    }
+   },
+   "walltime_used": "04:34:42",
+   "host": "elmu1-22",
+   "finished_utc": "2026-11-19T22:39:44Z",
+   "gate": "FAILED (criterion 1: candidate reduction 1.1% < 10%); campaign stopped per preregistration; 10M stage not submitted"
+  }
+ ],
+ "stage_3_10M": "not executed: Stage 2 promotion gate failed"
+}
