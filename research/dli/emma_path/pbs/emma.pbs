@@ -1,0 +1,174 @@
+#!/bin/bash
+#PBS -N dli-emma
+#PBS -l select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd
+#PBS -j oe
+#
+# Emma-path DLI study (research/dli/emma_path/PREREGISTRATION.md).
+# Submit with: qsub -l walltime=HH:MM:SS -v MODE=preflight|pilot|10m,IN=<input dir> emma.pbs
+#   preflight: 100K points, arms G0,E1, 8 queries per set, 3 budgets (pipeline check only)
+#   pilot:     300K points, arms G0,E1,E1R, preregistered 300K budgets
+#   10m:       10,120,191 points, arms G0,E1, preregistered 10M budgets
+# Phases: verify -> build -> gold (prefix only) -> per arm: ingest, frontier, copy -> analysis.
+set -euo pipefail
+: "${PBS_JOBID:?must run under PBS}" "${SCRATCHDIR:?scratch_ssd required}" "${MODE:?}" "${IN:?}"
+CAMPAIGN=/storage/budejovice1/home/nico/lmi-metacentrum/dli-emma-path-20261120
+CORPUS=/storage/budejovice1/home/nico/lmi-metacentrum/results/sisap23-matched-final-20261028-01/corpus.f16le
+CORPUS_SHA=f5868d6e002a6e73aea47491ee040a70a151406fe9e4552292428e2bfe0616e5
+EXPECTED_COMMIT=$(cat "$IN/native.commit")
+POLICIES=slot,density,tdensity2,mdn,mdn_code,proportional,static_flat
+case "$MODE" in
+  preflight) N=100000;   ARMS="G0 E1";     BUDGETS=1000,4000,16000; QCAP=8 ;;
+  pilot)     N=300000;   ARMS="G0 E1 E1R"; BUDGETS=1000,2000,4000,6000,8000,12000,16000,24000,32000,48000,64000; QCAP= ;;
+  10m)       N=10120191; ARMS="G0 E1";     BUDGETS=10000,20000,40000,57000,80000,113000,160000,226000,320000,640000; QCAP= ;;
+  *) echo "unknown MODE $MODE"; exit 2 ;;
+esac
+OUT="$CAMPAIGN/results/$MODE-$PBS_JOBID"
+mkdir -p "$CAMPAIGN/results"; mkdir "$OUT"              # never reuse a result directory
+exec > >(tee "$OUT/job.log") 2>&1
+W="$SCRATCHDIR/work"
+phase=start
+finish() {
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    printf '{"job":"%s","mode":"%s","phase":"%s","exit":%d,"utc":"%s"}\n' "$PBS_JOBID" "$MODE" "$phase" "$rc" "$(date -u +%FT%TZ)" > "$OUT/FAILED.json"
+    for f in "$W"/run/*/*.log "$W"/run/*/summary.json "$W"/run/*/*.jsonl; do
+      [[ -f "$f" ]] && cp -n "$f" "$OUT/partial-$(basename "$(dirname "$f")")-$(basename "$f")" || true
+    done
+  fi
+  rm -rf "$W"
+  exit $rc
+}
+trap finish EXIT
+echo "START $(date -u +%FT%TZ) host=$(hostname) job=$PBS_JOBID mode=$MODE commit=$EXPECTED_COMMIT N=$N arms=$ARMS"
+{ lscpu; free -g; df -h "$SCRATCHDIR"; } > "$OUT/hardware.txt"
+
+phase=verify_inputs
+( cd "$IN" && sha256sum -c inputs.sha256 )
+phase=environment
+source /storage/budejovice1/home/nico/lmi-metacentrum/development-search-timeout-24900597-20261026/sisap23-build-environment-v1.sh
+sisap23_export_build_environment
+sisap23_load_build_modules
+sisap23_check_build_environment | tee "$OUT/toolchain.txt"
+PY="$SISAP23_PYTHON_ENV/bin/python"
+"$PY" -c "import numpy; print('numpy', numpy.__version__)" | tee -a "$OUT/toolchain.txt"
+
+phase=stage
+git() { command git -c filter.lfs.smudge= -c filter.lfs.clean= -c filter.lfs.process= -c filter.lfs.required=false "$@"; }
+export GIT_LFS_SKIP_SMUDGE=1
+mkdir -p "$W/data" "$W/run"
+git clone --quiet --no-checkout "$IN/source.bundle" "$W/qdrant"
+git -C "$W/qdrant" checkout --quiet --detach "$EXPECTED_COMMIT"
+test "$(git -C "$W/qdrant" rev-parse HEAD)" = "$EXPECTED_COMMIT"
+test -z "$(git -C "$W/qdrant" status --porcelain)"
+tar -C "$W" -xf "$IN/vendor.tar"
+mkdir -p "$W/qdrant/.cargo"
+sed "s|__VENDOR_DIR__|$W/vendor|" "$IN/cargo-config.toml" > "$W/qdrant/.cargo/config.toml"
+/usr/bin/time -v cp "$CORPUS" "$W/data/vectors.f16" 2> "$OUT/stage-corpus.time"
+echo "$CORPUS_SHA  $W/data/vectors.f16" | sha256sum -c -
+cp "$IN"/queries.f32 "$W/data/"
+SRC="$W/qdrant/research/dli/emma_path"
+
+phase=build
+cd "$W/qdrant"
+export CARGO_TARGET_DIR="$W/target" CARGO_BUILD_JOBS=$NCPUS
+/usr/bin/time -v cargo test --locked --offline --profile perf -p collection --lib \
+    --features 'testing,lmi-training,dli-research' --no-run > "$OUT/build.stdout" 2> "$OUT/build.stderr"
+BIN=$(ls -t "$W/target/perf/deps"/collection-* | grep -v '\.d$' | head -1)
+sha256sum "$BIN" | tee "$OUT/binary.sha256"
+phase=unit_tests
+"$BIN" --exact tests::lmi_lifecycle::dli_sisap_scaling_benchmark::emma_level_rule_and_router_reuse_in_configured_collection \
+    collection_manager::dli_schedule::tests::level_model_policy_sizes_buckets_and_samples_per_level \
+    collection_manager::dli_bucket_plan::tests::model_normalized_scales_by_member_bucket_count_and_code_variant_divides_by_arity \
+    > "$OUT/unit-tests.log" 2>&1
+grep -q "test result: ok. 3 passed" "$OUT/unit-tests.log"
+
+phase=gold
+GOLD="$W/data/gold"
+if [[ $N -lt 10120191 ]]; then
+  if [[ $MODE == preflight ]]; then
+    # Real-data check of the gold tool: recompute the full-corpus top-30 and compare
+    # with the official SISAP23 gold (float32 originals vs our Float16 rows, so
+    # near-identity, not bit identity, is expected). Gate: mean overlap >= 0.99.
+    "$PY" -I "$SRC/prefix_gold.py" --corpus "$W/data/vectors.f16" --rows 10120191 \
+        --queries "$W/data/queries.f32" --collection-queries 1 --out "$W/data/gold-full-check" > "$OUT/gold-check.log"
+    "$PY" -I -c "
+import numpy as n,sys,json
+r={}
+for s in ('val','test'):
+    a=n.fromfile(f'{sys.argv[1]}/{s}.gold.u64','<u8').reshape(-1,30); b=n.fromfile(f'{sys.argv[2]}/{s}.gold.u64','<u8').reshape(-1,30)
+    assert a.shape==b.shape
+    r[s]={'rows':len(a),'identical_rows':int((a==b).all(1).sum()),'mean_overlap':float(n.mean([len(set(x)&set(y))/30 for x,y in zip(a,b)]))}
+print(json.dumps(r)); assert min(v['mean_overlap'] for v in r.values())>=0.99, 'gold tool disagrees with official gold'
+" "$W/data/gold-full-check" "$IN" | tee -a "$OUT/gold-check.log"
+    rm -rf "$W/data/gold-full-check"
+  fi
+  "$PY" -I "$SRC/prefix_gold.py" --corpus "$W/data/vectors.f16" --rows "$N" \
+      --queries "$W/data/queries.f32" --out "$GOLD" > "$OUT/gold.log"
+  cp "$GOLD/manifest.json" "$OUT/gold-manifest.json"
+else
+  mkdir "$GOLD"
+  cp "$IN"/ground_truth.i32 "$IN"/{val,test}.{queries.f32,gold.u64} "$GOLD/"
+  ( cd "$GOLD" && sha256sum * ) > "$OUT/gold-official.sha256"
+fi
+ln -s "$W/data/vectors.f16" "$GOLD/vectors.f16"
+cp "$W/data/queries.f32" "$GOLD/queries.f32"
+
+export QDRANT_LMI_SAMPLE_BUDGET_BYTES=2000000000
+for ARM in $ARMS; do
+  phase=ingest-$ARM
+  R="$W/run/$ARM"; A="$OUT/$ARM"; mkdir -p "$R" "$A"
+  (
+    export DLI_ARM=$ARM DLI_SISAP_INPUTS="$GOLD" DLI_SISAP_OUTPUT="$R/ingest"
+    export DLI_BENCH_POINTS=$N DLI_ORACLE_POPULATION=$N
+    export DLI_SINGLE_SYSTEM=geometric DLI_BENCH_POLICY=geometric DLI_BENCH_HEAD="$EXPECTED_COMMIT"
+    export QDRANT_MEASURE_SCORING=1
+    export QDRANT_OPTIMIZATION_EVENTS="$R/native-events.jsonl"
+    export QDRANT_LMI_BUILD_EVENTS="$R/build-events.jsonl"
+    export DLI_QUERY_EVENTS="$R/query-events.jsonl"
+    /usr/bin/time -v "$BIN" --ignored --exact \
+      tests::lmi_lifecycle::dli_sisap_scaling_benchmark::sisap23_scaling_static_lmi_vs_temporal_dli \
+      --nocapture > "$R/ingest.log" 2>&1
+  )
+  cp "$R/ingest.log" "$R/ingest/summary.json" "$R"/*.jsonl "$A/"
+  STORE="$R/ingest/collection/storage/0"
+  cp "$STORE/dli_hierarchy.json" "$A/"
+
+  phase=frontier-$ARM
+  (
+    export DLI_FRONTIER_SEGMENTS="$STORE" DLI_FRONTIER_OUTPUT="$R/frontier" DLI_FRONTIER_STATIC=1
+    export DLI_FRONTIER_POLICIES=$POLICIES DLI_FRONTIER_BUDGETS=$BUDGETS
+    export DLI_FRONTIER_SETS="val:$GOLD/val.queries.f32:$GOLD/val.gold.u64;test:$GOLD/test.queries.f32:$GOLD/test.gold.u64"
+    [[ -n "$QCAP" ]] && export DLI_FRONTIER_MAX_QUERIES=$QCAP
+    if [[ $ARM != G0 ]]; then
+      # Static reference with the bucket total of this topology (thesis section 4.1.3).
+      export DLI_FRONTIER_STATIC_MODEL=$("$PY" -I -c "
+import json,sys
+d=json.load(open(sys.argv[1])); n=int(sys.argv[2]); a=d['arity']
+b=sum(a**l for _,l in d['members'] if l>0)
+print(json.dumps({'n_buckets':b,'sample_size':max(b,min(n,max(100000,40*b),1000000)),'hidden_dim':128,'epochs':10,
+ 'batch_size':256,'routing_batch_size':256,'kmeans_iterations':25,'nprobe':1,'seed':42}))" "$STORE/dli_hierarchy.json" "$N")
+      echo "STATIC_MODEL $ARM $DLI_FRONTIER_STATIC_MODEL"
+    fi
+    /usr/bin/time -v "$BIN" --ignored --exact \
+      tests::lmi_lifecycle::dli_selection_frontier::dli_65k_selection_frontier \
+      --nocapture > "$R/frontier.log" 2>&1
+  )
+  mkdir "$A/frontier"
+  cp "$R/frontier.log" "$A/"
+  cp "$R/frontier"/{rows.jsonl,reference_costs.jsonl,topology.json} "$A/frontier/"
+  du -sh "$R/ingest/collection" > "$A/collection-size.txt"
+  rm -rf "$R"                                        # free scratch before the next arm
+done
+
+phase=analysis
+ANALYSIS=confirm; [[ $MODE != 10m ]] && ANALYSIS=pilot
+"$PY" -I "$SRC/analyze.py" $ANALYSIS $(for a in $ARMS; do echo "$OUT/$a"; done) \
+    --resamples $([[ $MODE == preflight ]] && echo 200 || echo 10000) --out "$OUT/analysis.json" > "$OUT/analysis.txt"
+
+phase=persist
+( cd "$OUT" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS )
+( cd "$OUT" && sha256sum -c --quiet SHA256SUMS )
+printf '{"job":"%s","mode":"%s","commit":"%s","binary_sha256":"%s","utc":"%s","status":"complete"}\n' \
+  "$PBS_JOBID" "$MODE" "$EXPECTED_COMMIT" "$(cut -d' ' -f1 "$OUT/binary.sha256")" "$(date -u +%FT%TZ)" > "$OUT/COMPLETE.json"
+phase=done
+echo "COMPLETE $(date -u +%FT%TZ)"

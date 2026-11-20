@@ -102,3 +102,24 @@ not changed after results exist.
 
 Phase 3 (her distribution-shift and delete scenarios) is out of scope here and needs its
 own preregistration after the 10M report.
+
+## Amendment 1 — 2026-11-20, before any job or result
+
+Corrections and additions made while writing the tooling. No data had been produced.
+1. **Interpolation.** §5 said "log-linear in work … as H-10M"; H-10M (`analyze_10m.py`)
+   interpolates the mean Recall@30 curve **linearly** in realized work between the two
+   measured budgets that bracket the target, never extrapolating. Linear is used, as in
+   H-10M. A curve that starts above or never reaches the target is reported, not filled.
+2. **Preflight stage.** Before the pilot, one preflight job runs the whole pipeline at
+   100K points (G0, E1; 8 queries per set; budgets 1K/4K/16K). Its numbers are pipeline
+   checks only and are not interpreted.
+3. **Gold-tool check.** The preflight recomputes the full-corpus top-30 for the val and
+   test rows with `prefix_gold.py` and compares it with the official SISAP23 gold. It
+   must reach mean set overlap ≥ 0.99 on both sets: official gold comes from float32
+   originals, ours from the stored Float16 rows, so bit identity is not expected.
+4. **Collection pass gold.** For the 300K pilot the collection search pass (queries 0–99)
+   uses prefix gold (exact top-1000 on the prefix) in the official file layout.
+5. **Static reference sample size** for E arms: max(B, min(n, max(100K, 40·B), 1M)), with
+   B the topology's learned bucket total and the E1 model otherwise.
+6. **Analysis.** All estimands are computed by `analyze.py` (committed before any job).
+   Comparisons use the same resampled query multiset for every arm and policy.
