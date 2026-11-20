@@ -34,6 +34,11 @@ pub struct LmiConfig {
     #[validate(range(min = 1))]
     pub nprobe: usize,
     pub seed: u64,
+    /// Research DLI: build postings with an already-trained router taken from one of the
+    /// build's source indexes (matched by [`super::MlpRouter::fingerprint`]) instead of
+    /// training. No teacher or MLP training runs. `None` keeps ordinary training.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reuse_router: Option<u64>,
 }
 
 impl Default for LmiConfig {
@@ -48,6 +53,7 @@ impl Default for LmiConfig {
             kmeans_iterations: 20,
             nprobe: 2,
             seed: 42,
+            reuse_router: None,
         }
     }
 }

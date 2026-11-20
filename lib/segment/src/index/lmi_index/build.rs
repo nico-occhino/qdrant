@@ -140,6 +140,38 @@ fn validate_coverage(
     Ok(())
 }
 
+/// The one source router named by `fingerprint`, checked against this build's shape.
+fn reusable_router(
+    old_indices: &[std::sync::Arc<atomic_refcell::AtomicRefCell<crate::index::VectorIndexEnum>>],
+    fingerprint: u64,
+    dim: usize,
+    config: &LmiConfig,
+) -> OperationResult<super::MlpRouter> {
+    let mut found = None;
+    for index in old_indices {
+        let index = index.borrow();
+        if let crate::index::VectorIndexEnum::Lmi(lmi) = &*index
+            && let Some(state) = lmi.routing_state()
+            && state.router().fingerprint() == fingerprint
+        {
+            found = Some(state.router().clone());
+            break;
+        }
+    }
+    let router = found.ok_or_else(|| {
+        OperationError::service_error(format!(
+            "LMI router {fingerprint:016x} requested for reuse is not among the build sources"
+        ))
+    })?;
+    let (input, output) = router.validate()?;
+    if input != dim || output != config.n_buckets {
+        return Err(OperationError::service_error(
+            "reused LMI router shape differs from the build configuration",
+        ));
+    }
+    Ok(router)
+}
+
 impl LmiIndex {
     pub(crate) fn build_trained<R: Rng + ?Sized>(
         open: VectorIndexOpenArgs,
@@ -184,14 +216,26 @@ impl LmiIndex {
         log::info!("LMI physical-slot build plan: {plan:?}");
         let sample_started = Instant::now();
         let progress = args.progress.track_progress(Some(physical_count as u64));
+        // Research DLI reuse: take the named router from a source index; no training.
+        let reused = match config.reuse_router {
+            None => None,
+            Some(fingerprint) => Some(reusable_router(args.old_indices, fingerprint, dim, &config)?),
+        };
+        let sample_limit = if reused.is_some() {
+            0
+        } else {
+            config.sample_size.min(physical_count)
+        };
         let (sample, eligible_count) = reservoir_sample_offsets(
             eligible_offsets(&*tracker, &*storage, end),
-            config.sample_size.min(physical_count),
+            sample_limit,
             config.seed,
             args.stopped,
             |id| progress.store(id as u64 + 1, Ordering::Relaxed),
         )?;
-        if let Some(path) = std::env::var_os("LMI_TEACHER_DIAGNOSTIC") {
+        if reused.is_none()
+            && let Some(path) = std::env::var_os("LMI_TEACHER_DIAGNOSTIC")
+        {
             let mut path = std::path::PathBuf::from(path);
             path.set_extension("offsets.json");
             let file = std::fs::OpenOptions::new()
@@ -216,35 +260,41 @@ impl LmiIndex {
         let live_plan = super::build_plan::BuildPlan::estimate(eligible_count, dim, &config)?;
         live_plan.check_budget()?;
         log::info!("LMI eligible-live build plan: {live_plan:?}");
-        let mut data = Vec::new();
-        data.try_reserve_exact(
-            sample
-                .len()
-                .checked_mul(dim)
-                .ok_or_else(|| OperationError::service_error("LMI sample matrix size overflow"))?,
-        )
-        .map_err(|e| OperationError::service_error(format!("LMI sample allocation: {e}")))?;
-        for &id in &sample {
-            check_process_stopped(args.stopped)?;
-            data.extend_from_slice(&read_dense(&*storage, id, dim)?);
-        }
-        let sample_read_seconds = sample_started.elapsed().as_secs_f64();
-        let training_started = Instant::now();
-        let trained = super::training::train_with_tch(
-            &data,
-            dim,
-            &config,
-            vector_config.distance,
-            args.permit.num_cpus as usize,
-            args.stopped,
-        )?;
-        log::info!(
-            "LMI teacher_and_mlp seconds={:.6}",
-            training_started.elapsed().as_secs_f64()
-        );
-        let teacher_mlp_seconds = training_started.elapsed().as_secs_f64();
+        let sample_read_seconds;
+        let teacher_mlp_seconds;
+        let trained = if let Some(router) = reused {
+            sample_read_seconds = sample_started.elapsed().as_secs_f64();
+            teacher_mlp_seconds = 0.0;
+            log::info!("LMI reusing source router fingerprint={:016x}", router.fingerprint());
+            super::training::TrainedRouter::from_native(router)?
+        } else {
+            let mut data = Vec::new();
+            data.try_reserve_exact(sample.len().checked_mul(dim).ok_or_else(|| {
+                OperationError::service_error("LMI sample matrix size overflow")
+            })?)
+            .map_err(|e| OperationError::service_error(format!("LMI sample allocation: {e}")))?;
+            for &id in &sample {
+                check_process_stopped(args.stopped)?;
+                data.extend_from_slice(&read_dense(&*storage, id, dim)?);
+            }
+            sample_read_seconds = sample_started.elapsed().as_secs_f64();
+            let training_started = Instant::now();
+            let trained = super::training::train_with_tch(
+                &data,
+                dim,
+                &config,
+                vector_config.distance,
+                args.permit.num_cpus as usize,
+                args.stopped,
+            )?;
+            log::info!(
+                "LMI teacher_and_mlp seconds={:.6}",
+                training_started.elapsed().as_secs_f64()
+            );
+            teacher_mlp_seconds = training_started.elapsed().as_secs_f64();
+            trained
+        };
         let router = &trained.native;
-        drop(data);
         let mut native = super::routing::BuildRouter::new(router, args.stopped)?;
         let batch_size = config.routing_batch_size;
         let mut tie_fallbacks = 0usize;
@@ -341,6 +391,9 @@ impl LmiIndex {
             serde_json::json!({"stage":"build_completed", "path":open.path,
             "physical_count":physical_count,"eligible_count":eligible_count,"sample_count":sample.len(),
             "sample_read_seconds":sample_read_seconds,"teacher_mlp_seconds":teacher_mlp_seconds,
+            "n_buckets":config.n_buckets,"hidden_dim":config.hidden_dim,"epochs":config.epochs,
+            "reused_router":config.reuse_router.map(|f| format!("{f:016x}")),
+            "router_fingerprint":format!("{:016x}", routing.router().fingerprint()),
             "routing_postings_seconds":routing_postings_seconds,"posting_pass_seconds":times,
             "coverage_seconds":coverage_seconds,"serialization_seconds":persistence_started.elapsed().as_secs_f64()}),
         );

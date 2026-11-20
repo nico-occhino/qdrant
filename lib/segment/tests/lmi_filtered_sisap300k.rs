@@ -74,6 +74,7 @@ fn model(nprobe: usize) -> LmiConfig {
         kmeans_iterations: 5,
         nprobe,
         seed: 42,
+        reuse_router: None,
     }
 }
 

@@ -35,6 +35,33 @@ pub struct MlpRouter {
 }
 
 impl MlpRouter {
+    /// Stable content identity (FNV-1a over layer kinds, shapes and exact f32 bits).
+    /// Used only to name a source router for reuse; never a security property.
+    pub fn fingerprint(&self) -> u64 {
+        const PRIME: u64 = 0x0000_0100_0000_01b3;
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let mut feed = |bytes: &[u8]| {
+            for &byte in bytes {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(PRIME);
+            }
+        };
+        for layer in &self.layers {
+            match layer {
+                RouterLayer::ReLU => feed(&[0]),
+                RouterLayer::Linear(linear) => {
+                    feed(&[1]);
+                    feed(&(linear.in_features as u64).to_le_bytes());
+                    feed(&(linear.out_features as u64).to_le_bytes());
+                    for value in linear.weights.iter().chain(&linear.bias) {
+                        feed(&value.to_bits().to_le_bytes());
+                    }
+                }
+            }
+        }
+        hash
+    }
+
     /// Validate ordered layers before any indexing/allocation based on shapes.
     /// The public draft representation stays easy to construct in tiny tests.
     pub fn validate(&self) -> OperationResult<(usize, usize)> {

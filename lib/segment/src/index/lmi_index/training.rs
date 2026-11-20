@@ -35,8 +35,10 @@ impl TrainedRouter {
         })
     }
 
-    #[cfg(test)]
-    pub(super) fn from_native_for_test(native: MlpRouter) -> OperationResult<Self> {
+    /// Torch mirror of an already-trained two-layer native router, so a reused router
+    /// assigns postings through exactly the same tie-safe path as a freshly trained one.
+    pub(super) fn from_native(native: MlpRouter) -> OperationResult<Self> {
+        torch_thread_policy();
         let [
             RouterLayer::Linear(a),
             RouterLayer::ReLU,
@@ -44,7 +46,7 @@ impl TrainedRouter {
         ] = native.layers.as_slice()
         else {
             return Err(OperationError::service_error(
-                "Expected two-layer LMI test model",
+                "Expected a two-layer LMI router",
             ));
         };
         let (input_dim, bucket_count) = native.validate()?;
@@ -718,6 +720,7 @@ mod tests {
             kmeans_iterations: 5,
             nprobe: 1,
             seed: 42,
+            reuse_router: None,
         };
         let data = [
             1.0,
@@ -771,7 +774,7 @@ mod tests {
                 }),
             ],
         };
-        let trained = TrainedRouter::from_native_for_test(native.clone()).unwrap();
+        let trained = TrainedRouter::from_native(native.clone()).unwrap();
         let stopped = AtomicBool::new(false);
         let mut verifier = super::super::routing::BuildRouter::new(&native, &stopped).unwrap();
         let mut rng = StdRng::seed_from_u64(311);

@@ -25,6 +25,7 @@ fn config() -> LmiConfig {
         kmeans_iterations: 5,
         nprobe: 1,
         seed: 42,
+        reuse_router: None,
     }
 }
 

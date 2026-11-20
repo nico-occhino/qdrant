@@ -47,6 +47,7 @@ fn lmi(root: &std::path::Path, rows: &[(u64, [f32; 2])], seed: u64) -> Segment {
         kmeans_iterations: 2,
         nprobe: 2,
         seed,
+        reuse_router: None,
     });
     let mut builder = SegmentBuilder::new(
         staging.path(),
@@ -237,4 +238,112 @@ fn two_trained_lmi_levels_and_plain_buffer_match_exact_oracle_and_reopen() {
         let loaded = load_segment(&path, uuid, None, &AtomicBool::new(false), true).unwrap();
         assert_eq!(search(&loaded, &q), before);
     }
+}
+
+fn learned_assignment(s: &Segment) -> (u64, std::collections::BTreeMap<u64, usize>) {
+    let idx = s.vector_data[DEFAULT_VECTOR_NAME].vector_index.borrow();
+    let VectorIndexEnum::Lmi(index) = &*idx else {
+        panic!("not LMI")
+    };
+    let state = index.routing_state().expect("trained LMI");
+    let tracker = s.id_tracker.borrow();
+    let mut buckets = std::collections::BTreeMap::new();
+    for (bucket, posting) in state.postings().iter().enumerate() {
+        for &offset in posting {
+            let segment::types::PointIdType::NumId(id) = tracker.external_id(offset).unwrap()
+            else {
+                panic!("unexpected UUID");
+            };
+            assert!(buckets.insert(id, bucket).is_none(), "point in two buckets");
+        }
+    }
+    (state.router().fingerprint(), buckets)
+}
+
+fn reuse_build(
+    root: &std::path::Path,
+    sources: &[&Segment],
+    template: &Segment,
+    fingerprint: u64,
+) -> segment::common::operation_error::OperationResult<Segment> {
+    let staging = tempfile::tempdir().unwrap();
+    let mut cfg = template.config().clone();
+    let vector = cfg.vector_data.get_mut(DEFAULT_VECTOR_NAME).unwrap();
+    let Indexes::LmiTrained(mut model) = vector.index else {
+        panic!("template is not a trained LMI")
+    };
+    model.reuse_router = Some(fingerprint);
+    vector.index = Indexes::LmiTrained(model);
+    let mut builder = SegmentBuilder::new(
+        staging.path(),
+        &cfg,
+        &HnswGlobalConfig::default(),
+        FeatureFlags::default(),
+    )
+    .unwrap();
+    builder.update(sources, &AtomicBool::new(false)).unwrap();
+    builder.build(
+        root,
+        uuid::Uuid::new_v4(),
+        None,
+        true,
+        common::budget::ResourcePermit::dummy(1),
+        &AtomicBool::new(false),
+        &mut rand::rng(),
+        common::progress_tracker::ProgressTracker::new_for_test(),
+    )
+}
+
+/// Sommerová's insertion into a non-empty level: the destination keeps the target's
+/// router byte-for-byte, existing points keep their buckets and new points are routed
+/// by that router; an unknown router identity is rejected rather than retrained.
+#[test]
+fn reused_router_keeps_target_assignments_and_routes_new_points() {
+    let _scope =
+        common::ambient::unmeasured_guard(common::reason::reason("DLI native topology research"));
+    let root = tempfile::tempdir().unwrap();
+    let target = lmi(root.path(), &DATA[..6], 17);
+    let mut buffer = build_simple_segment(root.path(), 2, Distance::Cosine).unwrap();
+    for (id, vector) in &DATA[6..] {
+        buffer
+            .upsert_point(*id, (*id).into(), only_default_vector(vector))
+            .unwrap();
+    }
+    let (fingerprint, before) = learned_assignment(&target);
+    let merged = reuse_build(root.path(), &[&target, &buffer], &target, fingerprint).unwrap();
+    let (merged_fingerprint, after) = learned_assignment(&merged);
+    assert_eq!(merged_fingerprint, fingerprint, "router must be reused unchanged");
+    assert_eq!(after.len(), DATA.len(), "every live point is posted exactly once");
+    for (id, bucket) in &before {
+        assert_eq!(after[id], *bucket, "existing point {id} changed bucket");
+    }
+    let idx = merged.vector_data[DEFAULT_VECTOR_NAME].vector_index.borrow();
+    let VectorIndexEnum::Lmi(index) = &*idx else {
+        unreachable!()
+    };
+    // Route each new vector with the reused native router: same bucket as posted.
+    for (id, vector) in &DATA[6..] {
+        let norm = (vector[0] * vector[0] + vector[1] * vector[1]).sqrt();
+        let top = index
+            .routing_state()
+            .unwrap()
+            .router()
+            .top_buckets(&[vector[0] / norm, vector[1] / norm], 1)
+            .unwrap();
+        assert_eq!(after[id], top[0], "new point {id} not routed by the reused router");
+    }
+    drop(idx);
+    let reopened = load_segment(
+        merged.data_path().as_path(),
+        merged.uuid,
+        None,
+        &AtomicBool::new(false),
+        true,
+    )
+    .unwrap();
+    assert_eq!(learned_assignment(&reopened), (fingerprint, after));
+    let error = reuse_build(root.path(), &[&target, &buffer], &target, fingerprint ^ 1)
+        .err()
+        .expect("unknown router identity must fail");
+    assert!(error.to_string().contains("requested for reuse"), "{error}");
 }

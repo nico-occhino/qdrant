@@ -311,6 +311,7 @@ mod tests {
             batch_size: 256,
             routing_batch_size: 256,
             nprobe: 4,
+            reuse_router: None,
         };
         let plan = BuildPlan::estimate(10_120_191, 768, &config).unwrap();
         let required = plan.estimated_bytes + EXPERIMENT_HEADROOM_BYTES;

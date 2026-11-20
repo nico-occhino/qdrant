@@ -141,6 +141,7 @@ fn model() -> LmiConfig {
         kmeans_iterations: 5,
         nprobe: 16,
         seed: 42,
+        reuse_router: None,
     }
 }
 
