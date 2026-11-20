@@ -43,7 +43,8 @@ def check_ids(data, path, gold, plain):
 
 def check_recovery_provenance(root, manifest, variant):
     from preserve_generation import inventory
-    from recovery_stages import HARDWARE, BASE, checked_generation
+    from recovery_stages import (HARDWARE, BASE, checked_generation,
+                                 validate_recovered_segment_marker)
     run = root / "runs" / variant
     marker = json.loads((run / "evaluation.generation.json").read_text())
     complete = json.loads((run / "evaluation.complete.json").read_text())
@@ -75,6 +76,7 @@ def check_recovery_provenance(root, manifest, variant):
         meta = checked_generation(generation, expected_source, "index", variant)
         if inventory(run / "collection") != meta["collection_files"]:
             raise ValueError("evaluated index differs from accepted generation")
+        validate_recovered_segment_marker(meta["report"]["index"], marker, variant)
     return marker
 
 def main():
@@ -105,7 +107,9 @@ def main():
         marker = (check_recovery_provenance(root, manifest, variant) if recovered else
                   json.loads((run / ("imported.generation.json" if imported else "build.complete.json")).read_text()))
         kind, m, ef = expected[variant]
-        if marker["index_kind"] != kind or marker["point_count"] != 10120191 or marker.get("segment_count") != 1:
+        if (marker["index_kind"] != kind or marker["point_count"] != 10120191
+                or not isinstance(marker.get("segment_count"), int)
+                or marker["segment_count"] < 1):
             raise SystemExit(f"wrong build marker: {variant}")
         if recovered:
             pass  # Per-variant source and immutable generation checked above.

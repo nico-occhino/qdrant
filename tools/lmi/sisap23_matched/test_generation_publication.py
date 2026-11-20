@@ -78,6 +78,45 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(before, inventory(self.stage))
         self.assertFalse(self.final.exists())
 
+    def test_reused_lmi_requires_byte_identical_isolated_query_proof(self):
+        old = self.root / ".staging/old-build"
+        (old / "collection").mkdir(parents=True)
+        segment = {"segment_uuid":"one", "segment_relative_path":"0/segments/one",
+                   "points":stages.N, "index_kind":"lmi", "mapping_iterated":stages.N}
+        mapping = {"iterated_mappings":stages.N, "missing_external_ids":0,
+                   "duplicate_ids":0, "invalid_ids":0, "mappings_outside_physical_slots":0}
+        index = {"complete":True, "segment_count":1, "segments":[segment], "mapping":mapping}
+        scratch = {"format":"sisap23-index-only-v2", "accepted":True, "variant":"lmi",
+                   "data":self.meta["persistent_report"]["data"], "index":index,
+                   "lmi":stages.LMI, "ingested_points":0}
+        query = {"live_segment_count":1,
+                 "active_segments":[{"segment":"one", "live_points":stages.N,
+                                     "learned_delta":1, "plain_fallback_delta":0}],
+                 "learned_delta":1, "plain_fallback_delta":0,
+                 "returned_ids_1_based":list(range(1,11))}
+        persistent = dict(self.meta["persistent_report"], index=index,
+                          ordinary_lmi_query_path=query,
+                          query_proof_storage="isolated_pbs_scratch",
+                          query_proof_collection="/scratch/job/collection")
+        save(old / "scratch.json", scratch)
+        save(self.stage / "scratch.json", scratch)
+        save(self.stage / "persistent.json", persistent)
+        files = inventory(self.stage / "collection")
+        save(self.stage / "query-proof-inventory.json", files)
+        self.meta.update(kind="index", variant="lmi", report=scratch,
+                         persistent_report=persistent, source_path=str(old / "collection"),
+                         source_build_stage=str(old), source_build_job_id="old.pbs",
+                         source_build_report_sha256=digest(old / "scratch.json"),
+                         recovery_mode="reuse-built-index",
+                         query_proof_scratchdir="/scratch/job",
+                         query_proof_collection="/scratch/job/collection",
+                         query_proof_inventory_sha256=digest(self.stage / "query-proof-inventory.json"))
+        self.persist()
+        self.review()
+        save(self.stage / "query-proof-inventory.json", {"changed":True})
+        with self.assertRaisesRegex(ValueError, "byte-identical"):
+            self.review()
+
     def test_cli_inspect_is_read_only(self):
         args = ["publication", "inspect", "--staging", str(self.stage),
                 "--expected-producer", PRODUCER, "--expected-job", JOB]

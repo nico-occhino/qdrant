@@ -30,14 +30,6 @@ pub fn check_build_memory(
 pub const fn training_available() -> bool {
     cfg!(feature = "lmi-training")
 }
-pub use postings::CompactPostings;
-pub use routing::{LinearLayer, LmiRoutingState, MlpRouter, RouterLayer};
-#[cfg(feature = "testing")]
-pub use state::save_fixture_state;
-pub use state::{
-    LMI_POSTINGS_FILE, LMI_ROUTER_FILE, LMI_STATE_FILE, LmiStateMetadata, RouterPreprocessing,
-};
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -48,12 +40,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use atomic_refcell::AtomicRefCell;
 use common::counter::hardware_counter::HardwareCounterCell;
 use common::types::{PointOffsetType, ScoredPointOffset, TelemetryDetail};
+pub use postings::CompactPostings;
+pub use routing::{LinearLayer, LmiRoutingState, MlpRouter, RouterLayer};
 use sparse::common::types::DimId;
+#[cfg(feature = "testing")]
+pub use state::save_fixture_state;
+pub use state::{
+    LMI_POSTINGS_FILE, LMI_ROUTER_FILE, LMI_STATE_FILE, LmiStateMetadata, RouterPreprocessing,
+};
 
 use crate::common::operation_error::{OperationError, OperationResult};
 use crate::data_types::query_context::VectorQueryContext;
-use crate::data_types::vectors::VectorInternal;
-use crate::data_types::vectors::{QueryVector, VectorRef};
+use crate::data_types::vectors::{QueryVector, VectorInternal, VectorRef};
 use crate::id_tracker::IdTrackerEnum;
 use crate::index::candidate_scoring::score_candidates;
 use crate::index::plain_vector_index::PlainVectorIndex;
@@ -77,6 +75,16 @@ pub struct LmiIndex {
     learned_searches: AtomicU64,
     #[cfg(feature = "testing")]
     plain_fallbacks: AtomicU64,
+    #[cfg(feature = "testing")]
+    routed_queries: AtomicU64,
+    #[cfg(feature = "testing")]
+    candidate_offsets: AtomicU64,
+    #[cfg(feature = "testing")]
+    routing_elapsed_ns: AtomicU64,
+    #[cfg(feature = "testing")]
+    scored_queries: AtomicU64,
+    #[cfg(feature = "testing")]
+    scoring_elapsed_ns: AtomicU64,
     routing_state: Option<LmiRoutingState>,
     routing_distance: Option<Distance>,
     state_files: Vec<PathBuf>,
@@ -106,6 +114,16 @@ impl LmiIndex {
             learned_searches: AtomicU64::new(0),
             #[cfg(feature = "testing")]
             plain_fallbacks: AtomicU64::new(0),
+            #[cfg(feature = "testing")]
+            routed_queries: AtomicU64::new(0),
+            #[cfg(feature = "testing")]
+            candidate_offsets: AtomicU64::new(0),
+            #[cfg(feature = "testing")]
+            routing_elapsed_ns: AtomicU64::new(0),
+            #[cfg(feature = "testing")]
+            scored_queries: AtomicU64::new(0),
+            #[cfg(feature = "testing")]
+            scoring_elapsed_ns: AtomicU64::new(0),
             routing_state: None,
             routing_distance: None,
             state_files: Vec::new(),
@@ -166,6 +184,17 @@ impl LmiIndex {
         )
     }
 
+    #[cfg(feature = "testing")]
+    pub fn search_stage_counts_for_test(&self) -> (u64, u64, u64, u64, u64) {
+        (
+            self.routed_queries.load(Ordering::Relaxed),
+            self.candidate_offsets.load(Ordering::Relaxed),
+            self.routing_elapsed_ns.load(Ordering::Relaxed),
+            self.scored_queries.load(Ordering::Relaxed),
+            self.scoring_elapsed_ns.load(Ordering::Relaxed),
+        )
+    }
+
     fn supports_candidates(
         &self,
         vectors: &[&QueryVector],
@@ -209,21 +238,47 @@ impl VectorIndexRead for LmiIndex {
                             )),
                             _ => (*query).clone(),
                         };
-                        let candidates = state
-                            .candidates_for_query(&routed_query, &query_context.is_stopped())?
-                            .ok_or_else(|| {
-                                OperationError::service_error(
-                                    "LMI candidate routing received unsupported query",
-                                )
-                            })?;
-                        score_candidates(
+                        #[cfg(feature = "testing")]
+                        let routing_started = std::time::Instant::now();
+                        let candidates_result =
+                            state.candidates_for_query(&routed_query, &query_context.is_stopped());
+                        #[cfg(feature = "testing")]
+                        self.routing_elapsed_ns.fetch_add(
+                            routing_started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+                            Ordering::Relaxed,
+                        );
+                        let candidates = candidates_result?.ok_or_else(|| {
+                            OperationError::service_error(
+                                "LMI candidate routing received unsupported query",
+                            )
+                        })?;
+                        #[cfg(feature = "testing")]
+                        {
+                            self.routed_queries.fetch_add(1, Ordering::Relaxed);
+                            self.candidate_offsets
+                                .fetch_add(candidates.len() as u64, Ordering::Relaxed);
+                        }
+                        #[cfg(feature = "testing")]
+                        let scoring_started = std::time::Instant::now();
+                        let scored = score_candidates(
                             query,
                             &candidates,
                             top,
                             &*tracker,
                             &*storage,
                             query_context,
-                        )
+                        );
+                        #[cfg(feature = "testing")]
+                        {
+                            self.scoring_elapsed_ns.fetch_add(
+                                scoring_started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+                                Ordering::Relaxed,
+                            );
+                            if scored.is_ok() {
+                                self.scored_queries.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        scored
                     })
                     .collect();
             }

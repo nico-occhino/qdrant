@@ -19,10 +19,9 @@ use segment::data_types::query_context::VectorQueryContext;
 use segment::data_types::vectors::{DEFAULT_VECTOR_NAME, QueryVector};
 use segment::entry::ReadSegmentEntry;
 use segment::id_tracker::IdTrackerRead;
-use segment::index::VectorIndexRead;
 use segment::index::candidate_scoring::score_candidates;
 use segment::index::lmi_index::{LmiConfig, LmiStateMetadata};
-use segment::index::{VectorIndex, VectorIndexEnum};
+use segment::index::{VectorIndex, VectorIndexEnum, VectorIndexRead};
 use segment::segment::SegmentVersion;
 use segment::segment_constructor::load_segment;
 use segment::types::{
@@ -346,11 +345,9 @@ fn verify_persisted_generation_with_lmi_config(
     expected: usize,
     expected_lmi_config: &LmiConfig,
 ) -> serde_json::Value {
-    let segment_paths = if variant == Variant::Lmi {
-        live_segment_paths(collection_path)
-    } else {
-        vec![locate_segment(collection_path)]
-    };
+    // Every index variant is persisted independently per active segment.
+    // Never collapse a collection topology to an arbitrary single directory.
+    let segment_paths = live_segment_paths(collection_path);
     assert!(!segment_paths.is_empty(), "no live persisted segment");
     let expected_kind = match variant {
         Variant::Plain => "plain",
@@ -704,9 +701,10 @@ fn sisap23_optimizer_error_fails_even_with_a_complete_count() {
 
 #[test]
 fn sisap23_one_live_segment_and_empty_segment_is_accepted_after_reload() {
-    use crate::collection_manager::fixtures::random_segment;
     use segment::entry::StorageSegmentEntry;
     use segment::segment_constructor::simple_segment_constructor::build_simple_segment;
+
+    use crate::collection_manager::fixtures::random_segment;
 
     let temp = tempfile::tempdir().unwrap();
     let segment_dir = temp.path().join("0/segments");
@@ -725,8 +723,9 @@ fn sisap23_one_live_segment_and_empty_segment_is_accepted_after_reload() {
 
 #[test]
 fn sisap23_live_segment_discovery_accepts_two_after_reload() {
-    use crate::collection_manager::fixtures::random_segment;
     use segment::entry::StorageSegmentEntry;
+
+    use crate::collection_manager::fixtures::random_segment;
 
     let temp = tempfile::tempdir().unwrap();
     let segment_dir = temp.path().join("0/segments");
@@ -1234,14 +1233,14 @@ fn verify_existing_plain() -> serde_json::Value {
     drop(storage);
     drop(index);
     let warm = read_f32(&root.join("queries_warmup.f32le"), 20);
-    let (hits, scanned) = search_one(&segment, Variant::Plain, 0, &warm[0]);
+    let (hits, scanned, _) = search_one(&segment, Variant::Plain, 0, &warm[0]);
     assert_eq!(
         hits.len(),
         10,
         "reopened Plain exact search did not return top ten"
     );
     assert_eq!(scanned, Some(N));
-    assert!(hits.iter().all(|id| (1..=N as u64).contains(id)));
+    assert!(hits.iter().all(|(id, _)| (1..=N as u64).contains(id)));
     drop(segment);
     let recovery_commit = std::env::var("SISAP23_RECOVERY_COMMIT")
         .expect("SISAP23_RECOVERY_COMMIT must identify the repair executable");
@@ -1615,7 +1614,8 @@ fn sisap23_matched_diagnose_plain() {
         ) == "plain"
     {
         let warm = read_f32(&root().join("queries_warmup.f32le"), 20);
-        let (ids, _) = search_one(&segment, Variant::Plain, 0, &warm[0]);
+        let (hits, _, _) = search_one(&segment, Variant::Plain, 0, &warm[0]);
+        let ids: Vec<_> = hits.into_iter().map(|(id, _)| id).collect();
         let all_ids_valid = ids
             .iter()
             .all(|id| (1..=N as u64).contains(id) && mappings.seen[(*id - 1) as usize]);
@@ -1661,7 +1661,7 @@ fn sisap23_matched_diagnose_plain() {
 }
 
 fn selected_settings(v: Variant) -> Vec<(String, usize)> {
-    match v {
+    let settings = match v {
         Variant::Plain => vec![("full".to_string(), 0)],
         Variant::Lmi => LMI_PROBES
             .iter()
@@ -1671,6 +1671,21 @@ fn selected_settings(v: Variant) -> Vec<(String, usize)> {
             .iter()
             .map(|e| (format!("hnsw-ef-{e}"), *e))
             .collect(),
+    };
+    if let Ok(selected) = std::env::var("SISAP23_ONLY_SETTING") {
+        let filtered: Vec<_> = settings
+            .into_iter()
+            .filter(|(label, _)| label == &selected)
+            .collect();
+        assert_eq!(
+            filtered.len(),
+            1,
+            "unsupported SISAP23_ONLY_SETTING={selected} for {}",
+            v.name()
+        );
+        filtered
+    } else {
+        settings
     }
 }
 fn search_one(
@@ -1678,7 +1693,7 @@ fn search_one(
     v: Variant,
     setting: usize,
     values: &[f32],
-) -> (Vec<u64>, Option<usize>) {
+) -> (Vec<(u64, f32)>, Option<usize>, SearchTelemetry) {
     let idx = segment.vector_data[DEFAULT_VECTOR_NAME]
         .vector_index
         .borrow();
@@ -1695,6 +1710,7 @@ fn search_one(
             };
             let state = lmi.routing_state().expect("LMI routing state missing");
             let normalized = Distance::Cosine.preprocess_vector::<f32>(values.to_vec());
+            let routing_started = Instant::now();
             let buckets = state.router().top_buckets(&normalized, setting).unwrap();
             let mut offsets = Vec::new();
             for b in buckets {
@@ -1703,16 +1719,30 @@ fn search_one(
             offsets.sort_unstable();
             offsets.dedup();
             let count = offsets.len();
+            let routing_ms = routing_started.elapsed().as_secs_f64() * 1000.0;
+            let scoring_started = Instant::now();
             let scored =
                 score_candidates(&query, &offsets, 10, &*tracker, &*storage, &ctx).unwrap();
-            let ids = scored
+            let scoring_ms = scoring_started.elapsed().as_secs_f64() * 1000.0;
+            let hits = scored
                 .iter()
-                .map(|h| match tracker.external_id(h.idx).unwrap() {
-                    PointIdType::NumId(id) => id,
-                    _ => panic!("expected numeric SISAP ids"),
+                .map(|h| {
+                    let id = match tracker.external_id(h.idx).unwrap() {
+                        PointIdType::NumId(id) => id,
+                        _ => panic!("expected numeric SISAP ids"),
+                    };
+                    (id, h.score)
                 })
                 .collect();
-            return (ids, Some(count));
+            return (
+                hits,
+                Some(count),
+                SearchTelemetry {
+                    learned_route_calls: 1,
+                    routing_ms: Some(routing_ms),
+                    scoring_ms: Some(scoring_ms),
+                },
+            );
         }
         Variant::HnswA | Variant::HnswB => {
             let VectorIndexEnum::Hnsw(hnsw) = &*idx else {
@@ -1738,12 +1768,145 @@ fn search_one(
     };
     let ids = hits
         .iter()
-        .map(|h| match tracker.external_id(h.idx).unwrap() {
-            PointIdType::NumId(id) => id,
-            _ => panic!("expected numeric SISAP ids"),
+        .map(|h| {
+            let id = match tracker.external_id(h.idx).unwrap() {
+                PointIdType::NumId(id) => id,
+                _ => panic!("expected numeric SISAP ids"),
+            };
+            (id, h.score)
         })
         .collect();
-    (ids, if v == Variant::Plain { Some(N) } else { None })
+    (
+        ids,
+        if v == Variant::Plain {
+            Some(segment.available_point_count())
+        } else {
+            None
+        },
+        SearchTelemetry::default(),
+    )
+}
+
+#[derive(Default)]
+struct SearchTelemetry {
+    learned_route_calls: usize,
+    routing_ms: Option<f64>,
+    scoring_ms: Option<f64>,
+}
+
+struct CollectionSearchResult {
+    ids: Vec<u64>,
+    candidate_count: Option<usize>,
+    segment_count: usize,
+    learned_route_segments: usize,
+    routing_ms: Option<f64>,
+    scoring_ms: Option<f64>,
+}
+
+fn checked_segment_paths(collection: &Path, relatives: &[String]) -> Vec<PathBuf> {
+    assert!(!relatives.is_empty(), "empty persisted segment list");
+    let mut paths = Vec::with_capacity(relatives.len());
+    for relative in relatives {
+        let relative = Path::new(relative);
+        assert!(
+            !relative.is_absolute(),
+            "absolute segment path in generation"
+        );
+        assert!(
+            relative
+                .components()
+                .all(|c| !matches!(c, std::path::Component::ParentDir)),
+            "parent traversal in segment path"
+        );
+        paths.push(collection.join(relative));
+    }
+    paths.sort();
+    assert!(
+        paths.windows(2).all(|w| w[0] != w[1]),
+        "duplicate segment path in generation"
+    );
+    paths
+}
+
+fn merge_segment_hits(
+    per_segment: impl IntoIterator<Item = Vec<(u64, f32)>>,
+    limit: usize,
+) -> Vec<(u64, f32)> {
+    let mut hits: Vec<_> = per_segment.into_iter().flatten().collect();
+    assert!(
+        hits.iter().all(|(_, score)| score.is_finite()),
+        "non-finite search score"
+    );
+    hits.sort_by(|(id_a, score_a), (id_b, score_b)| {
+        score_b.total_cmp(score_a).then_with(|| id_a.cmp(id_b))
+    });
+    let mut seen = HashSet::with_capacity(hits.len());
+    assert!(
+        hits.iter().all(|(id, _)| seen.insert(*id)),
+        "duplicate point ID across active segments"
+    );
+    hits.truncate(limit);
+    hits
+}
+
+fn search_segments(
+    segments: &[segment::segment::Segment],
+    v: Variant,
+    setting: usize,
+    values: &[f32],
+) -> CollectionSearchResult {
+    assert!(
+        !segments.is_empty(),
+        "collection has no indexed search segments"
+    );
+    let mut per_segment = Vec::with_capacity(segments.len());
+    let mut candidate_sum = 0usize;
+    let mut candidates_known = true;
+    let mut learned_route_segments = 0usize;
+    let mut routing_ms = 0.0;
+    let mut scoring_ms = 0.0;
+    let mut lmi_timings_known = v == Variant::Lmi;
+    for segment in segments {
+        let (hits, candidates, telemetry) = search_one(segment, v, setting, values);
+        per_segment.push(hits);
+        learned_route_segments += telemetry.learned_route_calls;
+        if let Some(elapsed) = telemetry.routing_ms {
+            routing_ms += elapsed;
+        } else {
+            lmi_timings_known = false;
+        }
+        if let Some(elapsed) = telemetry.scoring_ms {
+            scoring_ms += elapsed;
+        } else {
+            lmi_timings_known = false;
+        }
+        if let Some(count) = candidates {
+            candidate_sum += count;
+        } else {
+            candidates_known = false;
+        }
+    }
+    let merged = merge_segment_hits(per_segment, 10);
+    CollectionSearchResult {
+        ids: merged.into_iter().map(|(id, _)| id).collect(),
+        candidate_count: candidates_known.then_some(candidate_sum),
+        segment_count: segments.len(),
+        learned_route_segments,
+        routing_ms: lmi_timings_known.then_some(routing_ms),
+        scoring_ms: lmi_timings_known.then_some(scoring_ms),
+    }
+}
+
+#[test]
+fn sisap23_collection_top_k_merges_two_segment_scores() {
+    let merged = merge_segment_hits([vec![(1, 0.8), (2, 0.3)], vec![(33, 0.9), (34, 0.4)]], 2);
+    assert_eq!(merged, vec![(33, 0.9), (1, 0.8)]);
+}
+
+#[test]
+#[should_panic(expected = "duplicate point ID across active segments")]
+fn sisap23_collection_top_k_rejects_duplicate_segment_ids() {
+    merge_segment_hits([vec![(1, 0.8)], vec![(1, 0.7)]], 10);
 }
 fn write_chunk(path: &Path, rows: &[serde_json::Value]) {
     let tmp = path.with_extension("jsonl.tmp");
@@ -1772,7 +1935,7 @@ fn recall(ids: &[u64], gold: &[i32]) -> f64 {
         / 10.0
 }
 fn run_setting(
-    segment: &segment::segment::Segment,
+    segments: &[segment::segment::Segment],
     v: Variant,
     label: &str,
     effort: usize,
@@ -1800,8 +1963,25 @@ fn run_setting(
     }
     fs::create_dir_all(dest).unwrap();
     let warm = read_f32(&root().join("queries_warmup.f32le"), 20);
-    for q in &warm {
-        let _ = search_one(segment, v, effort, q);
+    let warmup_path = dest.join("warmup-rows.jsonl");
+    if !warmup_path.exists() {
+        let mut warmup_records = Vec::with_capacity(warm.len());
+        for (warmup_order, query) in warm.iter().enumerate() {
+            let started = Instant::now();
+            let result = search_segments(segments, v, effort, query);
+            warmup_records.push(serde_json::json!({
+                "warmup_order":warmup_order,"query_row":warmup_order,"parameter":label,
+                "native_search_ms":started.elapsed().as_secs_f64()*1000.0,
+                "hnsw_ef":if v==Variant::HnswA||v==Variant::HnswB{Some(effort)}else{None},
+                "candidate_count":result.candidate_count,"segment_count":result.segment_count,
+                "learned_route_segments":result.learned_route_segments,
+                "routing_ms":result.routing_ms,"candidate_scoring_ms":result.scoring_ms,
+                "fallback_observation":"not_applicable_direct_segment_index",
+                "search_interface":"direct_segment_indices_sequential_merge",
+                "returned_ids_1_based":result.ids
+            }));
+        }
+        write_chunk(&warmup_path, &warmup_records);
     }
     let chunks = dest.join("chunks");
     fs::create_dir_all(&chunks).unwrap();
@@ -1823,10 +2003,18 @@ fn run_setting(
         let mut records = Vec::with_capacity(part.len());
         for (row, values) in part {
             let started = Instant::now();
-            let (ids, candidates) = search_one(segment, v, effort, values);
+            let result = search_segments(segments, v, effort, values);
             let ms = started.elapsed().as_secs_f64() * 1000.0;
             let g = &gold[row - 20];
-            records.push(serde_json::json!({"query_row":row,"parameter":label,"recall_at_10":recall(&ids,g),"candidate_count":candidates,"hnsw_ef":if v==Variant::HnswA||v==Variant::HnswB{Some(effort)}else{None},"native_search_ms":ms,"returned_ids_1_based":ids}));
+            records.push(serde_json::json!({"query_row":row,"parameter":label,
+                "recall_at_10":recall(&result.ids,g),"candidate_count":result.candidate_count,
+                "hnsw_ef":if v==Variant::HnswA||v==Variant::HnswB{Some(effort)}else{None},
+                "segment_count":result.segment_count,
+                "learned_route_segments":result.learned_route_segments,
+                "routing_ms":result.routing_ms,"candidate_scoring_ms":result.scoring_ms,
+                "fallback_observation":"not_applicable_direct_segment_index",
+                "search_interface":"direct_segment_indices_sequential_merge",
+                "native_search_ms":ms,"returned_ids_1_based":result.ids}));
         }
         write_chunk(&path, &records);
     }
@@ -1927,11 +2115,15 @@ fn sisap23_matched_evaluate() {
         assert_eq!(generation["kind"], "index");
         assert_eq!(generation["variant"], v.name());
         assert_eq!(generation["producer_commit"], manifest["source_commit"]);
+        let report_paths: Vec<String> = generation["report"]["index"]["segment_relative_paths"]
+            .as_array()
+            .expect("accepted index report must list all active segments")
+            .iter()
+            .map(|p| p.as_str().expect("segment path must be text").to_string())
+            .collect();
         assert_eq!(
-            build["segment_path"],
-            locate_segment(&run.join("collection"))
-                .to_string_lossy()
-                .as_ref()
+            build["segment_relative_paths"],
+            serde_json::json!(report_paths)
         );
     } else if imported {
         assert_eq!(build["format"], "sisap23-imported-plain-v1");
@@ -1964,11 +2156,19 @@ fn sisap23_matched_evaluate() {
         manifest["source_commit"].as_str(),
         std::env::var("SISAP23_REVIEWED_COMMIT").ok().as_deref()
     );
-    let segment_path = PathBuf::from(build["segment_path"].as_str().unwrap());
-    let segment = load_index(&segment_path);
-    let idx = segment.vector_data[DEFAULT_VECTOR_NAME]
-        .vector_index
-        .borrow();
+    let source_collection = run.join("collection").canonicalize().unwrap();
+    let scratch_root = PathBuf::from(std::env::var("SCRATCHDIR").expect("PBS scratch required"))
+        .canonicalize()
+        .unwrap();
+    let evaluation_collection = PathBuf::from(
+        std::env::var("SISAP23_EVAL_COLLECTION").expect("isolated SSD evaluation copy required"),
+    )
+    .canonicalize()
+    .unwrap();
+    assert!(
+        evaluation_collection.starts_with(&scratch_root) && evaluation_collection != scratch_root,
+        "searches must use the isolated PBS scratch copy"
+    );
     let expected = if v == Variant::Plain {
         "plain"
     } else if v == Variant::Lmi {
@@ -1976,14 +2176,62 @@ fn sisap23_matched_evaluate() {
     } else {
         "hnsw"
     };
-    assert_eq!(
-        index_kind(&idx),
-        expected,
-        "index generation does not match requested algorithm"
+    let segment_paths: Vec<PathBuf> = if recovered {
+        let relatives: Vec<String> = build["segment_relative_paths"]
+            .as_array()
+            .expect("accepted evaluator marker must list every indexed segment")
+            .iter()
+            .map(|relative| {
+                relative
+                    .as_str()
+                    .expect("segment path must be text")
+                    .to_string()
+            })
+            .collect();
+        checked_segment_paths(&evaluation_collection, &relatives)
+    } else {
+        let persisted = PathBuf::from(build["segment_path"].as_str().unwrap())
+            .canonicalize()
+            .unwrap();
+        let relative = persisted
+            .strip_prefix(&source_collection)
+            .expect("generation segment path outside copied collection");
+        checked_segment_paths(
+            &evaluation_collection,
+            &[relative.to_string_lossy().to_string()],
+        )
+    };
+    assert!(
+        !segment_paths.is_empty(),
+        "no indexed segment paths in generation"
     );
+    let mut physical_live_paths = live_segment_paths(&evaluation_collection);
+    physical_live_paths.sort();
+    assert_eq!(
+        physical_live_paths, segment_paths,
+        "persisted active topology differs from accepted generation"
+    );
+    let segments: Vec<_> = segment_paths.iter().map(|path| load_index(path)).collect();
+    let indexed_points: usize = segments
+        .iter()
+        .map(|segment| segment.available_point_count())
+        .sum();
+    assert_eq!(
+        indexed_points, N,
+        "indexed segments do not cover the collection"
+    );
+    for segment in &segments {
+        let idx = segment.vector_data[DEFAULT_VECTOR_NAME]
+            .vector_index
+            .borrow();
+        assert_eq!(
+            index_kind(&idx),
+            expected,
+            "segment index kind differs from requested algorithm"
+        );
+    }
     assert_eq!(manifest["format"], "sisap23-matched-v1");
     let queries = read_f32(&root().join("queries_20_9999.f32le"), 9980);
-    let warm = read_f32(&root().join("queries_warmup.f32le"), 20);
     let gold_bytes = fs::read(root().join("gold_20_9999_top10.i32le")).unwrap();
     assert_eq!(gold_bytes.len(), 9980 * 10 * 4);
     let gold: Vec<Vec<i32>> = gold_bytes
@@ -1994,9 +2242,6 @@ fn sisap23_matched_evaluate() {
                 .collect()
         })
         .collect();
-    for q in &warm {
-        let _ = search_one(&segment, v, selected_settings(v)[0].1, q);
-    }
     let measured: Vec<(usize, Vec<f32>)> = queries
         .into_iter()
         .enumerate()
@@ -2006,7 +2251,7 @@ fn sisap23_matched_evaluate() {
     fs::create_dir_all(&full).unwrap();
     for (label, effort) in selected_settings(v) {
         run_setting(
-            &segment,
+            &segments,
             v,
             &label,
             effort,
@@ -2042,10 +2287,156 @@ fn sisap23_matched_evaluate() {
                 .join("panel")
                 .join(format!("rep-{}", rep + 1))
                 .join(&label);
-            run_setting(&segment, v, &label, effort, &panel, &gold, &dest);
+            run_setting(&segments, v, &label, effort, &panel, &gold, &dest);
         }
     }
     println!("sisap23_native_evaluation_complete variant={}", v.name());
+}
+
+#[test]
+#[ignore = "exact Plain local-SSD paired-panel benchmark; requires accepted 10M data generation"]
+fn sisap23_plain_local_ssd_panel() {
+    let collection = PathBuf::from(
+        std::env::var("SISAP23_EVAL_COLLECTION").expect("isolated SSD Plain collection required"),
+    )
+    .canonicalize()
+    .unwrap();
+    let scratch = PathBuf::from(std::env::var("SCRATCHDIR").expect("PBS scratch required"))
+        .canonicalize()
+        .unwrap();
+    assert!(
+        collection.starts_with(&scratch),
+        "Plain queries must use PBS scratch SSD"
+    );
+    let relative_paths = live_segment_paths(&collection)
+        .iter()
+        .map(|path| {
+            path.strip_prefix(&collection)
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !relative_paths.is_empty(),
+        "Plain collection has no live segments"
+    );
+    let segment_paths = checked_segment_paths(&collection, &relative_paths);
+    let segments = segment_paths
+        .iter()
+        .map(|path| load_index(path))
+        .collect::<Vec<_>>();
+    assert!(segments.iter().all(|segment| {
+        index_kind(
+            &segment.vector_data[DEFAULT_VECTOR_NAME]
+                .vector_index
+                .borrow(),
+        ) == "plain"
+    }));
+    assert_eq!(
+        segments
+            .iter()
+            .map(|segment| segment.available_point_count())
+            .sum::<usize>(),
+        N,
+        "Plain segments do not account for the expected vector population"
+    );
+
+    let panel_bytes = fs::read(root().join("panel_rows.u32le")).unwrap();
+    assert_eq!(panel_bytes.len(), 1000 * 4);
+    let panel_ids = panel_bytes
+        .chunks_exact(4)
+        .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()) as usize)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        panel_ids.iter().copied().collect::<HashSet<_>>().len(),
+        1000
+    );
+    assert!(panel_ids.iter().all(|row| (20..10000).contains(row)));
+    let gold_bytes = fs::read(root().join("gold_20_9999_top10.i32le")).unwrap();
+    assert_eq!(gold_bytes.len(), 9980 * 10 * 4);
+    let gold = gold_bytes
+        .chunks_exact(40)
+        .map(|row| {
+            row.chunks_exact(4)
+                .map(|bytes| i32::from_le_bytes(bytes.try_into().unwrap()))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    let output = PathBuf::from(
+        std::env::var("SISAP23_PLAIN_PANEL_OUTPUT").expect("Plain panel output path required"),
+    );
+    assert!(output.is_absolute() && output.is_dir());
+    assert!(
+        !output.join("plain-ssd-panel.json").exists(),
+        "Plain panel output already exists"
+    );
+    let warmup = read_f32(&root().join("queries_warmup.f32le"), 20);
+    let mut warmup_records = Vec::with_capacity(warmup.len());
+    for (warmup_order, query) in warmup.iter().enumerate() {
+        let started = Instant::now();
+        let result = search_segments(&segments, Variant::Plain, 0, query);
+        let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(result.segment_count, relative_paths.len());
+        assert_eq!(result.candidate_count, Some(N));
+        warmup_records.push(serde_json::json!({
+            "warmup_order":warmup_order,"query_row":warmup_order,"parameter":"plain-exact",
+            "native_search_ms":elapsed,"candidate_count":result.candidate_count,
+            "segment_count":result.segment_count,"search_interface":"direct_segment_indices_sequential_merge",
+            "fallback_observation":"not_applicable_direct_segment_index",
+            "returned_ids_1_based":result.ids
+        }));
+    }
+    write_chunk(&output.join("warmup-rows.jsonl"), &warmup_records);
+
+    for repetition in 1..=3 {
+        let mut records = Vec::with_capacity(panel_ids.len());
+        for row in &panel_ids {
+            let query = read_query_at(&root().join("queries_20_9999.f32le"), row - 20);
+            let started = Instant::now();
+            let result = search_segments(&segments, Variant::Plain, 0, &query);
+            let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+            assert_eq!(result.segment_count, relative_paths.len());
+            assert_eq!(result.candidate_count, Some(N));
+            let query_recall = recall(&result.ids, &gold[row - 20]);
+            assert_eq!(
+                query_recall, 1.0,
+                "exact Plain result disagrees with ground truth at row {row}"
+            );
+            records.push(serde_json::json!({
+                "repetition":repetition,"query_row":row,"parameter":"plain-exact",
+                "native_search_ms":elapsed,"recall_at_10":query_recall,
+                "candidate_count":result.candidate_count,"segment_count":result.segment_count,
+                "search_interface":"direct_segment_indices_sequential_merge",
+                "fallback_observation":"not_applicable_direct_segment_index",
+                "returned_ids_1_based":result.ids
+            }));
+        }
+        write_chunk(
+            &output.join(format!("panel-rep-{repetition}.jsonl")),
+            &records,
+        );
+    }
+
+    let source_generation = std::env::var("SISAP23_DATA_GENERATION")
+        .expect("accepted Plain source-generation path required");
+    let source_generation_sha = std::env::var("SISAP23_DATA_GENERATION_SHA256")
+        .expect("accepted Plain generation SHA-256 required");
+    write_json_new(
+        &output.join("plain-ssd-panel.json"),
+        &serde_json::json!({
+            "format":"sisap23-plain-ssd-panel-v1","test_executed":true,
+            "source_commit":std::env::var("SISAP23_REVIEWED_COMMIT").unwrap(),
+            "source_generation":source_generation,"source_generation_sha256":source_generation_sha,
+            "point_count":N,"segment_count":relative_paths.len(),
+            "segment_relative_paths":relative_paths,"query_rows":panel_ids,
+            "repetitions":3,"warmup_rows":20,"warmup_protocol":"official queries 0 through 19",
+            "evaluation_storage":"isolated_pbs_scratch_local_ssd",
+            "cache_advice":"POSIX_FADV_DONTNEED before official warmup; advisory only",
+            "hardware_host":std::env::var("HOSTNAME").unwrap_or_default()
+        }),
+    );
 }
 fn read_query_at(path: &Path, row: usize) -> Vec<f32> {
     let mut f = File::open(path).unwrap();

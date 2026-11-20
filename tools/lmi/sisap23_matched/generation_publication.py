@@ -62,6 +62,30 @@ def review_staging(staging, producer, job):
         hashes[name] = hashlib.sha256(raw).hexdigest()
         values[name] = json.loads(raw)
     meta = values["generation.json"]
+    if meta.get("recovery_mode") == "reuse-built-index":
+        path = staging / "query-proof-inventory.json"
+        require(path.is_file() and not path.is_symlink(), "missing isolated query-copy inventory")
+        raw = path.read_bytes()
+        hashes[path.name] = hashlib.sha256(raw).hexdigest()
+        values[path.name] = json.loads(raw)
+        original = canonical(meta["source_build_stage"])
+        require(original != staging and original.is_dir()
+                and original / "collection" == Path(meta["source_path"]),
+                "retained construction source differs")
+        require(meta["source_build_report_sha256"] == digest(original / "scratch.json")
+                and values["scratch.json"] == read(original / "scratch.json")
+                and values["scratch.exit.json"].get("exit_code") == 0,
+                "retained construction report differs")
+        require(values[path.name] == values["copied-inventory.json"]
+                and meta["query_proof_inventory_sha256"] == hashes[path.name],
+                "isolated query proof was not byte-identical to persistent collection")
+        proof = values["persistent.json"]
+        scratch_root = Path(meta["query_proof_scratchdir"])
+        query_copy = Path(meta["query_proof_collection"])
+        require(proof.get("query_proof_storage") == "isolated_pbs_scratch"
+                and Path(proof.get("query_proof_collection", "")) == query_copy
+                and query_copy.is_relative_to(scratch_root) and query_copy != scratch_root,
+                "query proof storage or scratch path differs")
     check_generation_metadata(meta, producer)
     require(meta["job_id"] == job, "producer job mismatch")
     require(meta.get("data_origin_commit") == BASE and

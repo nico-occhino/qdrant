@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -43,7 +44,19 @@ def verify_checkout(commit):
     actual = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip()
     branch = subprocess.check_output(["git", "branch", "--show-current"], cwd=REPO, text=True).strip()
     dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=REPO, text=True).strip()
-    require(actual == commit and branch == BRANCH and not dirty, "source commit/branch/cleanliness mismatch")
+    require(actual == commit and branch == BRANCH, "source commit/branch mismatch")
+    reviewed_patch = os.environ.get("SISAP23_REVIEWED_PATCH_SHA256")
+    if reviewed_patch:
+        require(len(reviewed_patch) == 64
+                and all(ch in "0123456789abcdef" for ch in reviewed_patch),
+                "invalid reviewed patch SHA-256")
+        require(not any(line.startswith("??") for line in dirty.splitlines()),
+                "untracked files are forbidden in patched source checkout")
+        diff = subprocess.check_output(["git", "diff", "--binary", "HEAD"], cwd=REPO)
+        require(hashlib.sha256(diff).hexdigest() == reviewed_patch,
+                "source patch differs from reviewed patch SHA-256")
+    else:
+        require(not dirty, "source worktree must be clean")
 
 def original_manifest(root):
     manifest = read(root / "manifest.json")
@@ -73,6 +86,8 @@ def checked_generation(path, commit, kind=None, variant=None):
     return meta
 
 def check_generation_metadata(meta, commit, kind=None, variant=None):
+    require(meta.get("recovery_mode") in (None, "reuse-built-index"),
+            "unknown generation recovery mode")
     require((meta.get("kind"), meta.get("variant")) in
             (("data", "data"), ("index", "lmi"), ("index", "hnsw-a"), ("index", "hnsw-b")),
             "unknown generation kind/variant")
@@ -131,9 +146,42 @@ def check_generation_metadata(meta, commit, kind=None, variant=None):
                 and len(ids) == 10 and len(set(ids)) == 10
                 and all(1 <= i <= N for i in ids),
                 "ordinary learned search did not route every active LMI segment")
+        if meta.get("recovery_mode") == "reuse-built-index":
+            proof = meta["persistent_report"]
+            require(proof.get("query_proof_storage") == "isolated_pbs_scratch"
+                    and proof.get("query_proof_collection") == meta.get("query_proof_collection")
+                    and meta.get("query_proof_inventory_sha256")
+                    and meta.get("source_build_job_id")
+                    and meta.get("source_build_report_sha256"),
+                    "isolated query proof or retained build provenance missing")
     else:
         require(meta["report"].get("hnsw_params") == {"hnsw-a":[16,100], "hnsw-b":[32,200]}.get(meta["variant"]),
                 "fixed HNSW configuration changed")
+        index = meta["report"].get("index") or {}
+        segments = index.get("segments") or []
+        mapping = index.get("mapping") or {}
+        relatives = [segment.get("segment_relative_path") for segment in segments]
+        require(index.get("complete") is True
+                and index.get("segment_count") == len(segments) > 0
+                and len(set(relatives)) == len(relatives)
+                and all(isinstance(path, str) and path for path in relatives)
+                and all(segment.get("index_kind") == "hnsw"
+                        and segment.get("points", 0) > 0
+                        and segment.get("mapping_iterated") == segment.get("points")
+                        for segment in segments)
+                and sum(segment.get("points", 0) for segment in segments) == N
+                and mapping.get("iterated_mappings") == N
+                and mapping.get("missing_external_ids") == 0
+                and mapping.get("duplicate_ids") == 0
+                and mapping.get("invalid_ids") == 0
+                and mapping.get("mappings_outside_physical_slots") == 0,
+                "per-segment HNSW persistence or point accounting is incomplete")
+        persistent_index = meta["persistent_report"].get("index") or {}
+        require(persistent_index.get("complete") is True
+                and persistent_index.get("segment_count") == len(segments)
+                and persistent_index.get("segments") == segments
+                and persistent_index.get("mapping") == mapping,
+                "scratch and persistent HNSW topology differs")
     if kind:
         require(meta["kind"] == kind, "wrong generation kind")
     if variant:
@@ -165,6 +213,8 @@ def timed(label, function, *args, **kwargs):
     fields = {}
     if function is inventory:
         fields = {"files":len(value), "bytes":sum(v["bytes"] for v in value.values())}
+    elif function is release_scratch_cache:
+        fields = {"bytes_advised":value}
     event(label, status="complete", elapsed_s=time.monotonic()-started, **fields)
     return value
 
@@ -369,8 +419,24 @@ def validate_variant(root, variant):
             elif variant == "lmi":
                 require(all(isinstance(r["candidate_count"], int) and 10 <= r["candidate_count"] <= N
                             for r in rows), "invalid learned candidate count")
+                for row in rows:
+                    validate_query_path_record(row, variant)
             else:
-                require(all(r["hnsw_ef"] == int(setting.rsplit("-",1)[1]) for r in rows), "HNSW ef differs")
+                require(all(r["hnsw_ef"] == int(setting.rsplit("-",1)[1])
+                            and r.get("segment_count", 0) >= 1
+                            for r in rows), "HNSW ef or segment evidence differs")
+                for row in rows:
+                    validate_query_path_record(row, variant)
+            if variant != "plain":
+                warmup = read_jsonl(path / "warmup-rows.jsonl")
+                require([r.get("query_row") for r in warmup] == list(range(20))
+                        and all(r.get("parameter") == setting
+                                and math.isfinite(r.get("native_search_ms", 0))
+                                and r.get("native_search_ms", 0) > 0
+                                and r.get("segment_count", 0) >= 1 for r in warmup),
+                        "official warmup results missing or invalid")
+                for row in warmup:
+                    validate_query_path_record(row, variant)
             check_ids(rows, path, gold, plain)
             chunks = sorted((path / "chunks").glob("rows-*.jsonl"))
             require(len(chunks) == marker["chunks"] == math.ceil(len(ids) / 100),
@@ -431,6 +497,57 @@ def evaluate(args):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return evaluate_locked(args)
 
+def evaluation_segment_paths(index):
+    segments = index.get("segments") or []
+    relatives = index.get("segment_relative_paths") or [
+        segment.get("segment_relative_path") for segment in segments
+    ]
+    require(index.get("complete") is True and index.get("segment_count") == len(segments) > 0
+            and len(relatives) == len(segments) and len(set(relatives)) == len(relatives),
+            "accepted index report does not list a unique complete segment set")
+    for relative in relatives:
+        checked_relative(relative)
+    require(all(segment.get("points", 0) > 0 for segment in segments)
+            and sum(segment["points"] for segment in segments) == N,
+            "accepted segment point counts are incomplete")
+    return relatives
+
+def validate_recovered_segment_marker(index, marker, variant):
+    relatives = evaluation_segment_paths(index)
+    expected_kind = "lmi" if variant == "lmi" else "hnsw"
+    require(marker.get("segment_count") == len(relatives)
+            and marker.get("segment_relative_paths") == relatives
+            and marker.get("index_kind") == expected_kind
+            and marker.get("evaluation_storage") == "isolated_pbs_scratch_local_ssd"
+            and marker.get("cache_advice") == "POSIX_FADV_DONTNEED_before_each_parameter"
+            and marker.get("warmup_protocol") == "official_queries_0_through_19_logged_per_parameter",
+            "evaluation marker segment topology differs from accepted generation")
+
+def validate_query_path_record(record, variant):
+    """Validate direct segment-index calls without inventing fallback counters."""
+    require(record.get("search_interface") == "direct_segment_indices_sequential_merge"
+            and record.get("fallback_observation") == "not_applicable_direct_segment_index"
+            and "plain_fallback_segments" not in record,
+            "query path or fallback observability declaration differs")
+    segment_count = record.get("segment_count")
+    require(isinstance(segment_count, int) and segment_count > 0,
+            "query record has no active segment count")
+    if variant == "lmi":
+        require(record.get("learned_route_segments") == segment_count
+                and isinstance(record.get("candidate_count"), int)
+                and 10 <= record["candidate_count"] <= N
+                and isinstance(record.get("routing_ms"), (int, float))
+                and math.isfinite(record["routing_ms"]) and record["routing_ms"] > 0
+                and isinstance(record.get("candidate_scoring_ms"), (int, float))
+                and math.isfinite(record["candidate_scoring_ms"])
+                and record["candidate_scoring_ms"] > 0,
+                "LMI route/candidate evidence incomplete")
+    else:
+        require(record.get("learned_route_segments") == 0
+                and record.get("routing_ms") is None
+                and record.get("candidate_scoring_ms") is None,
+                "non-LMI query has learned-route evidence")
+
 def evaluate_locked(args):
     manifest = read(args.campaign / "manifest.json")
     require(manifest.get("protocol") == "independent-recovery-v2" and manifest["source_commit"] == args.commit,
@@ -450,15 +567,24 @@ def evaluate_locked(args):
         run.mkdir()
         shutil.copytree(generation_storage(args.index_generation) / "collection", run / "collection")
         require(inventory(run / "collection") == meta["collection_files"], "evaluation copy differs")
-        segment = run / "collection" / checked_relative(meta["report"]["index"]["segment_relative_path"])
-        require((segment / "segment.json").is_file(), "verified nonempty segment missing")
+        index = meta["report"].get("index") or {}
+        segments = index.get("segments") or []
+        relative_paths = evaluation_segment_paths(index)
+        for relative in relative_paths:
+            segment = run / "collection" / checked_relative(relative)
+            require((segment / "segment.json").is_file(), f"verified segment missing: {relative}")
         m, ef = {"lmi":(None,None), "hnsw-a":(16,100), "hnsw-b":(32,200)}[args.variant]
         marker = {"format":"sisap23-evaluation-generation-v2","variant":args.variant,"origin":"index-generation",
             "source_commit":args.commit,"producer_commit":meta["producer_commit"],
-            "point_count":N,"segment_count":1,"index_kind":"lmi" if args.variant == "lmi" else "hnsw",
+            "point_count":N,"segment_count":len(relative_paths),"index_kind":"lmi" if args.variant == "lmi" else "hnsw",
+            "segment_relative_paths":relative_paths,
+            "segment_path":str(run / "collection" / checked_relative(relative_paths[0])) if len(relative_paths) == 1 else None,
             "hnsw_m":m,"ef_construct":ef,"lmi":LMI if args.variant == "lmi" else None,
+            "evaluation_storage":"isolated_pbs_scratch_local_ssd",
+            "cache_advice":"POSIX_FADV_DONTNEED_before_each_parameter",
+            "warmup_protocol":"official_queries_0_through_19_logged_per_parameter",
             "hardware_fingerprint":HARDWARE,"generation_path":str(args.index_generation),
-            "generation_sha256":generation_sha,"segment_path":str(segment)}
+            "generation_sha256":generation_sha}
         write_new(run / "evaluation.generation.json", marker)
     require(inventory(run / "collection") == meta["collection_files"], "evaluation collection changed")
     complete = run / "evaluation.complete.json"
@@ -471,10 +597,43 @@ def evaluate_locked(args):
                 "accepted query results changed")
         print("evaluation already accepted")
         return
+    scratch = Path(os.environ["SCRATCHDIR"]).resolve()
+    query_collection = scratch / f"sisap23-evaluation-{os.environ['PBS_JOBID']}-{uuid.uuid4().hex[:10]}"
+    require(not query_collection.exists(), "unique PBS scratch query copy required")
     attempt = run / f"attempt-{os.environ['PBS_JOBID']}-{uuid.uuid4().hex[:8]}"
     attempt.mkdir()
-    rust("sisap23_matched_evaluate", {"SISAP23_BENCH_ROOT":str(args.campaign),
-        "SISAP23_VARIANT":args.variant,"SISAP23_REVIEWED_COMMIT":args.commit}, attempt, "evaluate")
+    write_new(attempt / "attempt.json", {
+        "format":"sisap23-evaluation-attempt-v1", "pbs_job_id":os.environ["PBS_JOBID"],
+        "source_commit":args.commit, "variant":args.variant,
+        "generation_sha256":generation_sha, "host":socket.getfqdn(),
+        "scratch_root":str(scratch), "query_collection":str(query_collection),
+        "evaluation_storage":"isolated_pbs_scratch_local_ssd",
+        "cache_advice":"POSIX_FADV_DONTNEED_before_each_parameter",
+        "warmup_protocol":"official_queries_0_through_19_logged_per_parameter",
+        "started_unix":time.time()
+    })
+    timed("evaluation_scratch_copy", shutil.copytree, run / "collection", query_collection)
+    require(timed("evaluation_scratch_copy_inventory", inventory, query_collection) == meta["collection_files"],
+            "local SSD evaluation copy differs from the accepted generation")
+    settings = (f"nprobe-{p}" for p in (1,4,8,16,30,40,64,100,160,256)) if args.variant == "lmi" else (
+        f"hnsw-ef-{p}" for p in (16,32,64,128,256,512,1024))
+    for setting in settings:
+        setting_attempt = attempt / setting
+        setting_attempt.mkdir()
+        advised = timed(f"evaluation_cache_advice_{setting}", release_scratch_cache,
+                        query_collection, scratch)
+        write_new(setting_attempt / "cache-advice.json", {
+            "setting":setting, "bytes_advised":advised,
+            "advisory":"POSIX_FADV_DONTNEED", "scope":"this PBS job scratch copy only"
+        })
+        rust("sisap23_matched_evaluate", {"SISAP23_BENCH_ROOT":str(args.campaign),
+            "SISAP23_VARIANT":args.variant,"SISAP23_REVIEWED_COMMIT":args.commit,
+            "SISAP23_EVAL_COLLECTION":str(query_collection),
+            "SISAP23_ONLY_SETTING":setting}, setting_attempt, "evaluate")
+    require(timed("evaluation_scratch_copy_after_search", inventory, query_collection) == meta["collection_files"],
+            "local SSD query copy changed during evaluation")
+    require(timed("evaluation_persistent_copy_after_search", inventory, run / "collection") == meta["collection_files"],
+            "persistent evaluation generation changed during search")
     require(inventory(run / "collection") == meta["collection_files"], "query evaluation changed collection")
     require(fingerprint(args.campaign) == HARDWARE, "hardware changed")
     validate_variant(args.campaign, args.variant)

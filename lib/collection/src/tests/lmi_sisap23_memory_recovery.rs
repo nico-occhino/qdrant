@@ -1,8 +1,9 @@
 //! Opt-in, process-separated recovery of vector data and index-only construction.
-use super::*;
 use segment::data_types::vectors::VectorInternal;
 use segment::entry::ReadSegmentEntry;
 use segment::utils::mem::Mem;
+
+use super::*;
 
 /// Full audit across all active segments after normal Collection startup has
 /// reconciled temporary/deleted optimizer output. No synthetic inserts occur.
@@ -384,8 +385,30 @@ async fn sisap23_recovery_verify() {
     } else {
         None
     };
+    let query_proof_copy = std::env::var("SISAP23_QUERY_PROOF_COLLECTION")
+        .ok()
+        .map(|raw| {
+            let proof = PathBuf::from(raw).canonicalize().unwrap();
+            let scratch = PathBuf::from(std::env::var("SCRATCHDIR").expect("PBS scratch required"))
+                .canonicalize()
+                .unwrap();
+            assert_ne!(proof, path, "query proof must use an isolated copy");
+            assert!(
+                proof.starts_with(&scratch),
+                "query proof copy must be inside PBS scratch"
+            );
+            config_is_compatible(&proof);
+            proof
+        });
     let ordinary_lmi_query_path = if variant == "lmi" {
-        Some(verify_normal_lmi_query(&path, &snapshots).await)
+        let proof_path = query_proof_copy.as_deref().unwrap_or(&path);
+        let proof_snapshots = if query_proof_copy.is_some() {
+            proof_path.parent().unwrap().join("snapshots-query-proof")
+        } else {
+            snapshots.clone()
+        };
+        fs::create_dir_all(&proof_snapshots).unwrap();
+        Some(verify_normal_lmi_query(proof_path, &proof_snapshots).await)
     } else {
         None
     };
@@ -399,7 +422,9 @@ async fn sisap23_recovery_verify() {
     report(
         serde_json::json!({"format":"sisap23-persistent-verified-v2","accepted":true,
         "data":after,"normal_restarts":2,"index_files_unchanged":true,"ingested_points":0,
-        "index":index_audit,"ordinary_lmi_query_path":ordinary_lmi_query_path}),
+        "index":index_audit,"ordinary_lmi_query_path":ordinary_lmi_query_path,
+        "query_proof_storage":if query_proof_copy.is_some() {"isolated_pbs_scratch"} else {"persistent_nfs"},
+        "query_proof_collection":query_proof_copy.as_deref().unwrap_or(&path)}),
     );
 }
 
@@ -529,6 +554,541 @@ async fn verify_normal_lmi_query(path: &Path, snapshots: &Path) -> serde_json::V
     println!("SISAP23_NORMAL_QUERY_PATH segments={segment_deltas:?}");
     serde_json::json!({"live_segment_count":after.len(),"active_segments":segment_deltas,
         "learned_delta":after.len(),"plain_fallback_delta":0,"returned_ids_1_based":ids})
+}
+
+/// Run only the persistent learned-query proof and retain per-segment stage
+/// diagnostics even when Qdrant's ordinary search deadline expires.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "bounded search-path diagnosis on an isolated verified collection copy"]
+async fn sisap23_recovery_query_diagnostic() {
+    use segment::data_types::vectors::NamedQuery;
+    use shard::query::query_enum::QueryEnum;
+
+    use crate::operations::types::CoreSearchRequest;
+
+    let path = checked_collection();
+    config_is_compatible(&path);
+    let snapshots = path.parent().unwrap().join("snapshots-query-diagnostic");
+    let load_started = std::time::Instant::now();
+    let collection = open_paused(&path, &snapshots).await;
+    let load_elapsed = load_started.elapsed().as_secs_f64();
+    let shard = collection
+        .shards_holder()
+        .read()
+        .await
+        .get_shard(0)
+        .unwrap()
+        .clone();
+
+    let (query, query_source) = if let Ok(query_path) = std::env::var("SISAP23_QUERY_VECTOR_PATH") {
+        let bytes = fs::read(&query_path).unwrap();
+        assert_eq!(
+            bytes.len(),
+            DIM * std::mem::size_of::<f32>(),
+            "query vector file must contain exactly one little-endian dense vector"
+        );
+        let query = bytes
+            .chunks_exact(std::mem::size_of::<f32>())
+            .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+            .collect();
+        (
+            query,
+            serde_json::json!({"kind":"prepared_query","path":query_path}),
+        )
+    } else {
+        let mut query = vec![0.0f32; DIM];
+        query[0] = 1.0;
+        (query, serde_json::json!({"kind":"one_hot"}))
+    };
+    let normalized = Distance::Cosine.preprocess_vector::<f32>(query.clone());
+    let holder = shard.local_segments_for_test().await.unwrap();
+    let active: Vec<_> = holder
+        .read()
+        .iter_original()
+        .filter_map(|(_, locked)| {
+            let segment = locked.read();
+            let points = segment.available_point_count();
+            if points == 0 {
+                return None;
+            }
+            let index = segment.vector_data[DEFAULT_VECTOR_NAME]
+                .vector_index
+                .borrow();
+            let VectorIndexEnum::Lmi(lmi) = &*index else {
+                panic!("active nonempty segment is not LMI");
+            };
+            let state = lmi.routing_state().expect("trained LMI state missing");
+            let buckets = state
+                .router()
+                .top_buckets(&normalized, state.nprobe())
+                .unwrap();
+            let bucket_sizes: Vec<_> = buckets
+                .iter()
+                .map(|bucket| state.postings().get(*bucket).unwrap().len())
+                .collect();
+            let (learned, fallbacks) = lmi.search_path_counts_for_test();
+            let (routed, candidates, route_ns, scored, score_ns) =
+                lmi.search_stage_counts_for_test();
+            Some(serde_json::json!({
+                "segment":segment.uuid.to_string(),
+                "live_points":points,
+                "indexed_points":index.indexed_vector_count(),
+                "nprobe":state.nprobe(),
+                "selected_buckets":buckets,
+                "selected_bucket_sizes":bucket_sizes,
+                "counters_before":{
+                    "learned":learned,"plain_fallback":fallbacks,
+                    "routed":routed,"candidates":candidates,
+                    "routing_ns":route_ns,"scored":scored,"scoring_ns":score_ns
+                }
+            }))
+        })
+        .collect();
+    let active_points: usize = active
+        .iter()
+        .map(|segment| segment["live_points"].as_u64().unwrap() as usize)
+        .sum();
+    assert_eq!(
+        active_points, N,
+        "active LMI segments do not account for all points"
+    );
+    drop(holder);
+
+    let query_started = std::time::Instant::now();
+    let result = collection
+        .search(
+            CoreSearchRequest {
+                query: QueryEnum::Nearest(NamedQuery::default_dense(query)),
+                filter: None,
+                params: None,
+                limit: 10,
+                offset: 0,
+                with_payload: None,
+                with_vector: None,
+                score_threshold: None,
+            },
+            None,
+            None,
+            &ShardSelectorInternal::All,
+            None,
+            HwMeasurementAcc::new(),
+        )
+        .await;
+    let query_elapsed = query_started.elapsed().as_secs_f64();
+    let (returned_ids, error) = match result {
+        Ok(points) => (
+            points
+                .into_iter()
+                .map(|point| match point.id {
+                    segment::types::ExtendedPointId::NumId(id) => id,
+                    _ => panic!("unexpected point ID type"),
+                })
+                .collect::<Vec<_>>(),
+            None,
+        ),
+        Err(error) => (Vec::new(), Some(error.to_string())),
+    };
+
+    let holder = shard.local_segments_for_test().await.unwrap();
+    let after: Vec<_> = holder
+        .read()
+        .iter_original()
+        .filter_map(|(_, locked)| {
+            let segment = locked.read();
+            if segment.available_point_count() == 0 {
+                return None;
+            }
+            let index = segment.vector_data[DEFAULT_VECTOR_NAME]
+                .vector_index
+                .borrow();
+            let VectorIndexEnum::Lmi(lmi) = &*index else {
+                panic!("active nonempty segment changed index kind during search");
+            };
+            let (learned, fallbacks) = lmi.search_path_counts_for_test();
+            let (routed, candidates, route_ns, scored, score_ns) =
+                lmi.search_stage_counts_for_test();
+            Some(serde_json::json!({
+                "segment":segment.uuid.to_string(),
+                "counters_after":{
+                    "learned":learned,"plain_fallback":fallbacks,
+                    "routed":routed,"candidates":candidates,
+                    "routing_ns":route_ns,"scored":scored,"scoring_ns":score_ns
+                }
+            }))
+        })
+        .collect();
+    drop(holder);
+    drop(shard);
+    collection.stop_gracefully().await;
+
+    let diagnostic = serde_json::json!({
+        "format":"sisap23-query-diagnostic-v1",
+        "source_commit":std::env::var("SISAP23_REVIEWED_COMMIT").unwrap_or_default(),
+        "points":N,
+        "collection_path":path,
+        "query_source":query_source,
+        "load_seconds":load_elapsed,
+        "query_seconds":query_elapsed,
+        "query_error":error,
+        "returned_ids_1_based":returned_ids,
+        "active_segments_before":active,
+        "active_segments_after":after
+    });
+    println!("SISAP23_QUERY_DIAGNOSTIC {diagnostic}");
+    if let Ok(report_path) = std::env::var("SISAP23_DIAGNOSTIC_REPORT") {
+        write_json_new(Path::new(&report_path), &diagnostic);
+    }
+}
+
+/// Reproduce the matched evaluator's twenty direct-index warmup calls, then
+/// independently exercise an ordinary collection search on measured row 20.
+/// This is diagnostic evidence only and cannot publish a generation.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "bounded official-query warmup on an isolated verified collection copy"]
+async fn sisap23_recovery_official_warmup_diagnostic() {
+    use segment::data_types::vectors::NamedQuery;
+    use shard::query::query_enum::QueryEnum;
+
+    use crate::operations::types::CoreSearchRequest;
+
+    let collection_path = checked_collection();
+    config_is_compatible(&collection_path);
+    let root = PathBuf::from(std::env::var("SISAP23_OFFICIAL_QUERY_ROOT").unwrap());
+    let output = PathBuf::from(std::env::var("SISAP23_WARMUP_DIAGNOSTIC_JSONL").unwrap());
+    let warm = read_f32(&root.join("queries_warmup.f32le"), 20);
+    let measured_path = root.join("queries_20_9999.f32le");
+    let mut measured_file = File::open(&measured_path).unwrap();
+    let mut measured_bytes = vec![0u8; DIM * 4];
+    measured_file.read_exact(&mut measured_bytes).unwrap();
+    let measured: Vec<f32> = measured_bytes
+        .chunks_exact(4)
+        .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+        .collect();
+    let mut gold_file = File::open(root.join("gold_20_9999_top10.i32le")).unwrap();
+    let mut gold_bytes = [0u8; 40];
+    gold_file.read_exact(&mut gold_bytes).unwrap();
+    let gold: Vec<i32> = gold_bytes
+        .chunks_exact(4)
+        .map(|bytes| i32::from_le_bytes(bytes.try_into().unwrap()))
+        .collect();
+    let mut log = File::options()
+        .write(true)
+        .create_new(true)
+        .open(&output)
+        .unwrap();
+    let mut record = |value: serde_json::Value| {
+        serde_json::to_writer(&mut log, &value).unwrap();
+        log.write_all(b"\n").unwrap();
+        log.sync_data().unwrap();
+        println!("SISAP23_WARMUP_DIAGNOSTIC {value}");
+    };
+
+    let load_start = Instant::now();
+    let collection = open_paused(
+        &collection_path,
+        &collection_path
+            .parent()
+            .unwrap()
+            .join("snapshots-official-warmup"),
+    )
+    .await;
+    record(serde_json::json!({"phase":"reopen","seconds":load_start.elapsed().as_secs_f64()}));
+    let shard = collection
+        .shards_holder()
+        .read()
+        .await
+        .get_shard(0)
+        .unwrap()
+        .clone();
+    let holder = shard.local_segments_for_test().await.unwrap();
+    let active: Vec<_> = holder
+        .read()
+        .iter_original()
+        .filter_map(|(_, locked)| {
+            let segment = locked.read();
+            (segment.available_point_count() > 0).then(|| locked.clone())
+        })
+        .collect();
+    // The direct-index benchmark implementation accepts one Segment. Fail
+    // explicitly if this artifact has a topology it cannot evaluate.
+    assert_eq!(
+        active.len(),
+        1,
+        "direct-index warmup requires exactly one active nonempty segment"
+    );
+    let segment = active[0].read();
+    assert_eq!(segment.available_point_count(), N);
+    let index = segment.vector_data[DEFAULT_VECTOR_NAME]
+        .vector_index
+        .borrow();
+    let VectorIndexEnum::Lmi(lmi) = &*index else {
+        panic!("active segment is not LMI")
+    };
+    let nprobe = lmi
+        .routing_state()
+        .expect("trained LMI state missing")
+        .nprobe();
+    record(serde_json::json!({"phase":"topology","active_segments":1,
+        "segment":segment.uuid.to_string(),"live_points":N,"nprobe":nprobe,
+        "indexed_points":index.indexed_vector_count()}));
+    drop(index);
+
+    for (row, query) in warm.iter().enumerate() {
+        let normalized = Distance::Cosine.preprocess_vector::<f32>(query.clone());
+        let index = segment.vector_data[DEFAULT_VECTOR_NAME]
+            .vector_index
+            .borrow();
+        let VectorIndexEnum::Lmi(lmi) = &*index else {
+            unreachable!()
+        };
+        let buckets = lmi
+            .routing_state()
+            .unwrap()
+            .router()
+            .top_buckets(&normalized, nprobe)
+            .unwrap();
+        let (before_learned, before_fallback) = lmi.search_path_counts_for_test();
+        drop(index);
+        let began = Instant::now();
+        record(serde_json::json!({"phase":"direct_start","query_row":row,
+            "utc":chrono::Utc::now().to_rfc3339()}));
+        let (ids, candidates) = search_one(&segment, Variant::Lmi, nprobe, query);
+        let index = segment.vector_data[DEFAULT_VECTOR_NAME]
+            .vector_index
+            .borrow();
+        let VectorIndexEnum::Lmi(lmi) = &*index else {
+            unreachable!()
+        };
+        let (after_learned, after_fallback) = lmi.search_path_counts_for_test();
+        drop(index);
+        record(serde_json::json!({"phase":"warmup","query_row":row,
+            "method":"matched_evaluator_manual_lmi_routing_and_candidate_scoring",
+            "seconds":began.elapsed().as_secs_f64(),"selected_buckets":buckets,
+            "candidate_count":candidates,"returned_ids_1_based":ids,
+            "learned_delta":after_learned-before_learned,
+            "plain_fallback_delta":after_fallback-before_fallback}));
+    }
+    let began = Instant::now();
+    let normalized = Distance::Cosine.preprocess_vector::<f32>(measured.clone());
+    let index = segment.vector_data[DEFAULT_VECTOR_NAME]
+        .vector_index
+        .borrow();
+    let VectorIndexEnum::Lmi(lmi) = &*index else {
+        unreachable!()
+    };
+    let measured_buckets = lmi
+        .routing_state()
+        .unwrap()
+        .router()
+        .top_buckets(&normalized, nprobe)
+        .unwrap();
+    drop(index);
+    record(serde_json::json!({"phase":"direct_start","query_row":20,
+        "utc":chrono::Utc::now().to_rfc3339()}));
+    let (direct_ids, candidates) = search_one(&segment, Variant::Lmi, nprobe, &measured);
+    let direct_overlap_raw = direct_ids
+        .iter()
+        .filter(|id| gold.contains(&(**id as i32)))
+        .count();
+    let direct_overlap_zero_based = direct_ids
+        .iter()
+        .filter(|id| **id > 0 && gold.contains(&((**id - 1) as i32)))
+        .count();
+    record(serde_json::json!({"phase":"measured_direct","query_row":20,
+        "method":"matched_evaluator_manual_lmi_routing_and_candidate_scoring",
+        "seconds":began.elapsed().as_secs_f64(),"selected_buckets":measured_buckets,
+        "candidate_count":candidates,
+        "returned_ids_1_based":direct_ids,"overlap_gold_raw":direct_overlap_raw,
+        "overlap_gold_if_zero_based":direct_overlap_zero_based,"ground_truth_raw":gold}));
+    drop(segment);
+    drop(holder);
+
+    let shard_holder = shard.local_segments_for_test().await.unwrap();
+    let segment = active[0].read();
+    let index = segment.vector_data[DEFAULT_VECTOR_NAME]
+        .vector_index
+        .borrow();
+    let VectorIndexEnum::Lmi(lmi) = &*index else {
+        unreachable!()
+    };
+    let before = lmi.search_path_counts_for_test();
+    drop(index);
+    drop(segment);
+    drop(shard_holder);
+    let began = Instant::now();
+    record(
+        serde_json::json!({"phase":"collection_start","query_row":20,
+        "utc":chrono::Utc::now().to_rfc3339()}),
+    );
+    let result = collection
+        .search(
+            CoreSearchRequest {
+                query: QueryEnum::Nearest(NamedQuery::default_dense(measured)),
+                filter: None,
+                params: None,
+                limit: 10,
+                offset: 0,
+                with_payload: None,
+                with_vector: None,
+                score_threshold: None,
+            },
+            None,
+            None,
+            &ShardSelectorInternal::All,
+            None,
+            HwMeasurementAcc::new(),
+        )
+        .await;
+    let segment = active[0].read();
+    let index = segment.vector_data[DEFAULT_VECTOR_NAME]
+        .vector_index
+        .borrow();
+    let VectorIndexEnum::Lmi(lmi) = &*index else {
+        unreachable!()
+    };
+    let after = lmi.search_path_counts_for_test();
+    let ids: Vec<u64> = result
+        .as_ref()
+        .map(|points| {
+            points
+                .iter()
+                .map(|point| match point.id {
+                    segment::types::ExtendedPointId::NumId(id) => id,
+                    _ => panic!("unexpected point ID type"),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let overlap_raw = ids
+        .iter()
+        .filter(|id| gold.contains(&(**id as i32)))
+        .count();
+    let overlap_zero_based = ids
+        .iter()
+        .filter(|id| **id > 0 && gold.contains(&((**id - 1) as i32)))
+        .count();
+    record(
+        serde_json::json!({"phase":"measured_collection","query_row":20,
+        "seconds":began.elapsed().as_secs_f64(),"query_error":result.err().map(|e| e.to_string()),
+        "returned_ids_1_based":ids,"overlap_gold_raw":overlap_raw,
+        "overlap_gold_if_zero_based":overlap_zero_based,
+        "learned_delta":after.0-before.0,"plain_fallback_delta":after.1-before.1}),
+    );
+    drop(index);
+    drop(segment);
+    drop(active);
+    drop(shard);
+    collection.stop_gracefully().await;
+}
+
+/// Diagnose whether exact row-20 neighbors were routed into nprobe=4, and
+/// retain scored candidate rankings without changing the index or query.
+#[test]
+#[ignore = "bounded candidate-coverage diagnosis on an isolated full-scale copy"]
+fn sisap23_recovery_row20_candidate_coverage() {
+    use common::types::DeferredBehavior;
+
+    let path = checked_collection();
+    config_is_compatible(&path);
+    let root = PathBuf::from(std::env::var("SISAP23_OFFICIAL_QUERY_ROOT").unwrap());
+    let mut query_file = File::open(root.join("queries_20_9999.f32le")).unwrap();
+    let mut query_bytes = vec![0u8; DIM * 4];
+    query_file.read_exact(&mut query_bytes).unwrap();
+    let values: Vec<f32> = query_bytes
+        .chunks_exact(4)
+        .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+        .collect();
+    let mut gold_file = File::open(root.join("gold_20_9999_top10.i32le")).unwrap();
+    let mut gold_bytes = [0u8; 40];
+    gold_file.read_exact(&mut gold_bytes).unwrap();
+    let gold: Vec<u64> = gold_bytes
+        .chunks_exact(4)
+        .map(|bytes| i32::from_le_bytes(bytes.try_into().unwrap()) as u64)
+        .collect();
+
+    let segment_path = locate_segment(&path);
+    let segment = load_index(&segment_path);
+    assert_eq!(segment.available_point_count(), N);
+    let index = segment.vector_data[DEFAULT_VECTOR_NAME]
+        .vector_index
+        .borrow();
+    let VectorIndexEnum::Lmi(lmi) = &*index else {
+        panic!("active segment is not LMI")
+    };
+    let state = lmi.routing_state().expect("trained LMI state missing");
+    let normalized = Distance::Cosine.preprocess_vector::<f32>(values.clone());
+    let buckets = state
+        .router()
+        .top_buckets(&normalized, state.nprobe())
+        .unwrap();
+    let mut offsets: Vec<_> = buckets
+        .iter()
+        .flat_map(|bucket| state.postings().get(*bucket).unwrap().iter().copied())
+        .collect();
+    offsets.sort_unstable();
+    offsets.dedup();
+    assert_eq!(
+        state.nprobe(),
+        4,
+        "fixed full-scale LMI configuration changed"
+    );
+
+    let tracker = segment.id_tracker.borrow();
+    let gold_coverage: Vec<_> = gold
+        .iter()
+        .map(|&id| {
+            assert!((1..=N as u64).contains(&id));
+            let offset = tracker
+                .internal_id_with_behavior(PointIdType::NumId(id), DeferredBehavior::VisibleOnly)
+                .expect("ground-truth point is absent from the index segment");
+            serde_json::json!({"id_1_based":id,"segment_offset":offset,
+                "selected_candidate":offsets.binary_search(&offset).is_ok()})
+        })
+        .collect();
+    let storage = segment.vector_data[DEFAULT_VECTOR_NAME]
+        .vector_storage
+        .borrow();
+    let query: QueryVector = values.into();
+    let scored = score_candidates(
+        &query,
+        &offsets,
+        10,
+        &*tracker,
+        &*storage,
+        &VectorQueryContext::default(),
+    )
+    .unwrap();
+    let ranked: Vec<_> = scored
+        .iter()
+        .map(|hit| {
+            serde_json::json!({
+                "id_1_based":match tracker.external_id(hit.idx).unwrap() {
+                    PointIdType::NumId(id) => id,
+                    _ => panic!("unexpected point ID type"),
+                },
+                "segment_offset":hit.idx,"cosine_score":hit.score
+            })
+        })
+        .collect();
+    assert_eq!(ranked.len(), 10);
+    assert!(scored.windows(2).all(|pair| pair[0].score >= pair[1].score));
+    let covered = gold_coverage
+        .iter()
+        .filter(|item| item["selected_candidate"] == true)
+        .count();
+    let report_path = PathBuf::from(std::env::var("SISAP23_CANDIDATE_REPORT").unwrap());
+    let report = serde_json::json!({
+        "format":"sisap23-row20-candidate-coverage-v1",
+        "query_row":20,"segment":segment.uuid.to_string(),
+        "active_points":N,"nprobe":state.nprobe(),"selected_buckets":buckets,
+        "candidate_count":offsets.len(),"ground_truth_coverage":gold_coverage,
+        "ground_truth_candidates_selected":covered,
+        "ranked_candidate_top10":ranked,
+        "scored_in_descending_order":true,
+        "scientific_acceptance":false
+    });
+    write_json_new(&report_path, &report);
+    println!("SISAP23_ROW20_CANDIDATE_COVERAGE {report}");
 }
 
 #[test]
@@ -666,6 +1226,16 @@ async fn sisap23_reuse_vectors_without_reingestion() {
         wait_for_index(&collection, Variant::HnswA, count),
     )
     .await;
+    if matches!(result, Ok(Ok(_))) {
+        let shard = collection
+            .shards_holder()
+            .read()
+            .await
+            .get_shard(0)
+            .unwrap()
+            .clone();
+        shard.force_flush_local_for_test().await;
+    }
     collection.stop_gracefully().await;
     drop(collection);
     result.unwrap().unwrap();

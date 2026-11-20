@@ -37,6 +37,47 @@ class RecoveryTests(unittest.TestCase):
     def test_complete_generation_accepted(self):
         self.assertEqual(stages.checked_generation(self.gen, COMMIT, "data"), self.meta)
 
+    def test_evaluator_accepts_all_verified_active_segment_paths(self):
+        half = stages.N // 2
+        index = {"complete":True,"segment_count":2,
+            "segments":[
+                {"points":half,"segment_relative_path":"0/segments/a"},
+                {"points":stages.N-half,"segment_relative_path":"0/segments/b"}],
+            "segment_relative_paths":["0/segments/a","0/segments/b"]}
+        self.assertEqual(stages.evaluation_segment_paths(index), index["segment_relative_paths"])
+        index["segment_relative_paths"] = ["0/segments/a", "0/segments/a"]
+        with self.assertRaisesRegex(ValueError, "unique complete segment"):
+            stages.evaluation_segment_paths(index)
+
+    def test_evaluator_rejects_incomplete_segment_point_accounting(self):
+        index = {"complete":True,"segment_count":1,
+            "segments":[{"points":stages.N-1,"segment_relative_path":"0/segments/a"}]}
+        with self.assertRaisesRegex(ValueError, "point counts are incomplete"):
+            stages.evaluation_segment_paths(index)
+
+    def test_lmi_query_record_requires_observed_routing_per_segment(self):
+        record = {"search_interface":"direct_segment_indices_sequential_merge",
+            "fallback_observation":"not_applicable_direct_segment_index",
+            "segment_count":2,"learned_route_segments":2,"candidate_count":32,
+            "routing_ms":1.2,"candidate_scoring_ms":4.5}
+        stages.validate_query_path_record(record, "lmi")
+        record.pop("search_interface")
+        with self.assertRaisesRegex(ValueError, "query path or fallback observability"):
+            stages.validate_query_path_record(record, "lmi")
+        record["search_interface"] = "direct_segment_indices_sequential_merge"
+        record["learned_route_segments"] = 1
+        with self.assertRaisesRegex(ValueError, "LMI route/candidate evidence"):
+            stages.validate_query_path_record(record, "lmi")
+
+    def test_direct_segment_search_does_not_claim_collection_fallback_counter(self):
+        record = {"search_interface":"direct_segment_indices_sequential_merge",
+            "fallback_observation":"not_applicable_direct_segment_index",
+            "segment_count":2,"learned_route_segments":2,"candidate_count":32,
+            "routing_ms":1.2,"candidate_scoring_ms":4.5,
+            "plain_fallback_segments":0}
+        with self.assertRaisesRegex(ValueError, "fallback observability"):
+            stages.validate_query_path_record(record, "lmi")
+
     def test_changed_vectors_rejected(self):
         (self.gen / "collection/vectors").write_bytes(b"changed")
         with self.assertRaises(ValueError):
@@ -93,6 +134,15 @@ class RecoveryTests(unittest.TestCase):
     def test_hnsw_is_independent_of_lmi(self):
         self.meta.update(kind="index", variant="hnsw-b")
         self.meta["report"].update(data=self.data, hnsw_params=[32,200])
+        mapping = {"iterated_mappings":stages.N, "missing_external_ids":0,
+            "duplicate_ids":0, "invalid_ids":0, "mappings_outside_physical_slots":0}
+        index = {"complete":True, "segment_count":1,
+            "segments":[{"segment_uuid":"segment-a",
+                "segment_relative_path":"0/segments/segment-a", "points":stages.N,
+                "index_kind":"hnsw", "mapping_iterated":stages.N}],
+            "segment_relative_paths":["0/segments/segment-a"], "mapping":mapping}
+        self.meta["report"]["index"] = index
+        self.meta["persistent_report"]["index"] = index
         save(self.gen / "generation.json", self.meta)
         # No LMI path or marker is present.
         stages.checked_generation(self.gen, COMMIT, "index", "hnsw-b")
@@ -101,15 +151,58 @@ class RecoveryTests(unittest.TestCase):
 
     def test_lmi_requires_ordinary_search_path_proof(self):
         self.meta.update(kind="index", variant="lmi")
-        self.meta["report"].update(data=self.data, lmi=stages.LMI)
+        half = stages.N // 2
+        segments = [
+            {"segment_uuid": "segment-a", "segment_relative_path": "0/segments/segment-a",
+             "points": half, "index_kind": "lmi", "mapping_iterated": half},
+            {"segment_uuid": "segment-b", "segment_relative_path": "0/segments/segment-b",
+             "points": stages.N - half, "index_kind": "lmi",
+             "mapping_iterated": stages.N - half},
+        ]
+        mapping = {"iterated_mappings": stages.N, "missing_external_ids": 0,
+                   "duplicate_ids": 0, "invalid_ids": 0,
+                   "mappings_outside_physical_slots": 0}
+        index = {"complete": True, "segment_count": len(segments),
+                 "segments": segments, "mapping": mapping}
+        self.meta["report"].update(data=self.data, lmi=stages.LMI, index=index)
+        self.meta["persistent_report"]["index"] = {
+            "complete": True, "segment_count": len(segments),
+            "segments": segments, "mapping": mapping,
+        }
         save(self.gen / "generation.json", self.meta)
-        with self.assertRaisesRegex(ValueError, "ordinary learned search proof"):
+        with self.assertRaisesRegex(ValueError, "ordinary learned search did not route"):
             stages.checked_generation(self.gen, COMMIT, "index", "lmi")
         self.meta["persistent_report"]["ordinary_lmi_query_path"] = {
-            "learned_delta":1, "plain_fallback_delta":0,
-            "returned_ids_1_based":list(range(1, 11))}
+            "live_segment_count": 2,
+            "active_segments": [
+                {"segment": "segment-a", "live_points": half,
+                 "learned_delta": 1, "plain_fallback_delta": 0},
+                {"segment": "segment-b", "live_points": stages.N - half,
+                 "learned_delta": 1, "plain_fallback_delta": 0},
+            ],
+            "learned_delta": 2,
+            "plain_fallback_delta": 0,
+            "returned_ids_1_based": list(range(1, 11)),
+        }
         save(self.gen / "generation.json", self.meta)
         stages.checked_generation(self.gen, COMMIT, "index", "lmi")
+        self.meta["recovery_mode"] = "reuse-built-index"
+        save(self.gen / "generation.json", self.meta)
+        with self.assertRaisesRegex(ValueError, "isolated query proof"):
+            stages.checked_generation(self.gen, COMMIT, "index", "lmi")
+        self.meta["persistent_report"].update(
+            query_proof_storage="isolated_pbs_scratch",
+            query_proof_collection="/scratch/job/collection")
+        self.meta.update(query_proof_collection="/scratch/job/collection",
+                         query_proof_inventory_sha256="b" * 64,
+                         source_build_job_id="old.pbs",
+                         source_build_report_sha256="c" * 64)
+        save(self.gen / "generation.json", self.meta)
+        stages.checked_generation(self.gen, COMMIT, "index", "lmi")
+        self.meta["persistent_report"]["query_proof_storage"] = "persistent_nfs"
+        save(self.gen / "generation.json", self.meta)
+        with self.assertRaisesRegex(ValueError, "isolated query proof"):
+            stages.checked_generation(self.gen, COMMIT, "index", "lmi")
 
     def test_evaluation_rejects_wrong_hardware_before_search(self):
         campaign = self.root / "campaign"
@@ -160,6 +253,20 @@ class RecoveryTests(unittest.TestCase):
         with patch.object(stages.subprocess, "check_output",
                           side_effect=[COMMIT, stages.BRANCH, ""]):
             stages.verify_checkout(COMMIT)
+
+    def test_checkout_accepts_only_the_exact_reviewed_patch_overlay(self):
+        import hashlib
+        import os
+        diff = b"reviewed binary diff"
+        patch_sha = hashlib.sha256(diff).hexdigest()
+        with patch.dict(os.environ, {"SISAP23_REVIEWED_PATCH_SHA256":patch_sha}):
+            with patch.object(stages.subprocess, "check_output",
+                              side_effect=[COMMIT, stages.BRANCH, " M source", diff]):
+                stages.verify_checkout(COMMIT)
+            with patch.object(stages.subprocess, "check_output",
+                              side_effect=[COMMIT, stages.BRANCH, " M source", b"different diff"]):
+                with self.assertRaisesRegex(ValueError, "reviewed patch SHA-256"):
+                    stages.verify_checkout(COMMIT)
 
 if __name__ == "__main__":
     unittest.main()

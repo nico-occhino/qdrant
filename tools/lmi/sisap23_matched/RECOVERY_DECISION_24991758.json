@@ -1,0 +1,56 @@
+{
+  "format": "sisap23-lmi-recovery-decision-v1",
+  "decision_time_utc": "2026-10-26T14:06:00Z",
+  "generation_status": "unaccepted_recovery_candidate",
+  "rebuild_authorized_or_submitted": false,
+  "publication_performed": false,
+  "accepted_plain_modified": false,
+  "failed_lmi_stage_modified": false,
+  "source_commit": "9b12d583b1bf9df802b2cc420244bd3c24732d86",
+  "data_producer_commit": "69216d5ada898feef7066c72da0514aeae2ead89",
+  "accepted_plain_manifest_sha256": "5ab566ba0f641b177248d7fe42b83540a13b6f779da2c455ec815ea155d2ec96",
+  "failed_full_scale_job": "24900597.pbs-m1.metacentrum.cz",
+  "cold_warm_diagnostic_job": "24991758.pbs-m1.metacentrum.cz",
+  "diagnostic_pbs_exit_status": 0,
+  "user_reported_cold_query": {
+    "outcome": "collection_search_timeout",
+    "elapsed_seconds": 60.082,
+    "candidates": 18543,
+    "routing_milliseconds": 7.549,
+    "learned_route_calls": 1,
+    "plain_fallback_calls": 0,
+    "scoring_completed": false
+  },
+  "user_reported_warm_query": {
+    "outcome": "success",
+    "elapsed_milliseconds": 78.413,
+    "candidates": 18543,
+    "routing_milliseconds": 8.488,
+    "scoring_milliseconds": 68.312,
+    "learned_route_calls": 1,
+    "plain_fallback_calls": 0,
+    "returned_valid_ids": 10
+  },
+  "user_reported_copy_integrity": {
+    "files": 38,
+    "bytes": 15979223137,
+    "inventory_matches": true,
+    "index_hashes_unchanged": true,
+    "raw_numeric_hash_values_retrieved": false,
+    "raw_resource_usage_retrieved": false
+  },
+  "official_20_query_warmup_sufficiency": "unproven",
+  "current_acceptance_requires_persistent_collection_search": true,
+  "required_next_validation": "record all 20 prepared warmup calls, first measured row, ordinary collection query counters, structural reopen, and byte integrity on isolated copies",
+  "remote_access": {
+    "mux_failure": "read from master failed: Broken pipe",
+    "fresh_batchmode_failure": "Permission denied (publickey,gssapi-keyex,gssapi-with-mic,password)",
+    "pbs_job_submission_possible": false
+  },
+  "python_tests": {
+    "command": "PYTHONPATH=<repo-root> python3 -m unittest -v test_recovery_stages test_generation_publication test_preservation test_validate",
+    "passed": 41,
+    "failed": 0
+  },
+  "recovery_output_root_proposed_not_verified": "/auto/budejovice1/nico/lmi-metacentrum/results/sisap23-lmi-recovered-20261026-01"
+}
