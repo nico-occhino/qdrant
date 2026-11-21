@@ -100,7 +100,7 @@ Paired query bootstrap (10,000 resamples, seed 20261120):
 
 ## Next
 
-10M (arms G0 and E1), submitted from `a33b3edd9`. That commit differs from the pilot only
+10M (arms G0 and E1) is job `25814270`, submitted from `af9e8fdc1`. That commit differs from the pilot only
 in documentation and the PBS binary cache; the compiled-source key `5e30b2b4…` is
 identical.
 

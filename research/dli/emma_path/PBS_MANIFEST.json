@@ -35,6 +35,16 @@
    "walltime_used": "00:44:21",
    "host": "eluo1-3",
    "validation": "pilot gate PASS for E1 (all criteria; 10M projection 1.23 h). See RESULTS_PILOT.md. G0 10/100 exact fallbacks explained (no_learned_bucket under slot with one learned level; not gated)."
+  },
+  {
+   "id": "25814270.pbs-m1.metacentrum.cz",
+   "mode": "10m",
+   "commit": "af9e8fdc1",
+   "input_dir": "native-af9e8fdc1dfc",
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
+   "submitted_utc": "2026-11-21",
+   "status": "submitted",
+   "arms": "G0 E1"
   }
  ]
 }
