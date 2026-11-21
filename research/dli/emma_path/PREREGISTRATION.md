@@ -150,3 +150,24 @@ query set or policy:
 2. From now on the gate also requires that the per-publication wait exceed 3× the longest
    projected publication.
 The model, bucket rule and thread policy of the arm are unchanged.
+
+## Amendment 4 — 2026-11-21, during 10M job 25823237, before any 10M estimand
+
+In job 25823237, publication 1100 (the fresh level 4, 10⁴ buckets) was still running after
+1 h 53 min, against a projection of 45 min. Stack samples on the compute node showed one
+busy thread, in spherical k-means assignment (`spherical_kmeans::assign_all`). Cause: the
+native DLI maintenance path built every segment with a hard-coded budget of one CPU
+(`ResourceBudget::new(1, 1)` in `dli_maintenance.rs`), whatever the job requested. The
+pilot's per-FLOP training rate was fitted on 100-bucket levels, whose centroids fit in
+cache. At 10⁴ centroids (31 MB) the rate is several times worse, so the projection
+(Amendment 3) underestimated this publication.
+
+Change: the DLI build CPU permit is read from `QDRANT_DLI_BUILD_CPUS`; unset keeps 1 CPU.
+The 10M job uses 16, the job's allocation, for both arms. This changes no result:
+- k-means assignment with several threads is bit-identical to one thread (unit test
+  `parallel_assignment_is_bit_identical_to_single_thread`);
+- the MLP keeps its single-thread Torch policy.
+
+Wall and training seconds become 16-CPU measurements for both arms. H3 compares E1 and G0
+within the job, so it stays like for like. Comparisons with H-10M seconds (one CPU) are
+descriptive only.

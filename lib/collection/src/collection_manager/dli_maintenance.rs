@@ -803,11 +803,15 @@ impl DliMaintenance {
                             .recv_timeout(std::time::Duration::from_secs(10))
                             .map_err(|e| e.to_string())?;
                     }
-                    let budget = common::budget::ResourceBudget::new(1, 1);
+                    // CPUs for the build (k-means assignment parallelises and is bit-identical
+                    // to one thread: `parallel_assignment_is_bit_identical_to_single_thread`).
+                    // Unset keeps the historical single CPU.
+                    let cpus = build_cpus();
+                    let budget = common::budget::ResourceBudget::new(cpus, cpus);
                     let optimizer_started = std::time::Instant::now();
                     let result = shard::optimize::execute_optimization("dli_research", job_holder.clone(), ids, output,
                         None, &shard::optimize::OptimizationPaths { segments_path, temp_path: staging.path().to_owned() },
-                        budget.try_acquire(0,1).ok_or("resource unavailable")?, budget, &state.stopped,
+                        budget.try_acquire(0, cpus).ok_or("resource unavailable")?, budget, &state.stopped,
                         common::progress_tracker::new_progress_tracker().1,
                         &segment::common::operation_time_statistics::OperationDurationsAggregator::new(), &adapter, Box::new(|| {}));
                     result.map_err(|e| e.to_string())?;
@@ -1045,5 +1049,17 @@ mod worker_lifecycle_tests {
 
         assert!(worker.join().is_err());
         assert!(!state.running.load(Ordering::Acquire));
+    }
+}
+
+/// CPU permit for one native DLI build, from `QDRANT_DLI_BUILD_CPUS` (default 1).
+fn build_cpus() -> usize {
+    match std::env::var("QDRANT_DLI_BUILD_CPUS") {
+        Err(_) => 1,
+        Ok(v) => v
+            .parse::<usize>()
+            .ok()
+            .filter(|&n| n > 0)
+            .unwrap_or_else(|| panic!("QDRANT_DLI_BUILD_CPUS must be a positive integer, got {v}")),
     }
 }
