@@ -1,8 +1,8 @@
 # Preregistration — Phase 3: distribution shift and deletes in native Qdrant DLI
 
-**Status: DRAFT, 2026-11-21.** Not frozen. It is frozen by a commit that changes this
-line to "FROZEN" after (a) the author's review of the decisions in §9 and (b) the tooling
-is implemented and preflighted, all before any Phase 3 result exists. After freezing,
+**Status: DRAFT, 2026-11-21. Author decisions recorded (§9).** Not frozen. It is frozen
+by a commit that changes this line to "FROZEN" after the tooling (§7) is implemented and
+preflighted and the precision check (§5) is applied, all before any Phase 3 result exists. After freezing,
 changes are appended as amendments only, as in Phase 1–2.
 
 Depends on: [PREREGISTRATION.md](PREREGISTRATION.md) (arms G0/E1/E1R, routing policies,
@@ -72,20 +72,24 @@ The three Shift scenarios share one ingestion per arm; only the query sets diffe
 - Insert cluster by cluster in chain order, by ID within each cluster.
 
 **Query sets.**
-- **ID** (uniform scenarios): the Phase 1–2 sets, validation rows 900–931 and test rows
-  9000–9255. They are constant across batches.
+- **ID** (uniform scenarios): validation rows 900–931 as in Phase 1–2, and **test rows
+  9000–9999 (1,000 queries)**, extending Phase 2's 9000–9255 (decision §9.1). They are
+  constant across batches.
 - **IDS:**
   - Before insertion, hold out 1% of each inserted cluster (seeded); held-out rows are
     never inserted.
-  - After batch t, sample 256 test and 32 validation queries from the held-out rows of
+  - After batch t, sample 1,000 test and 32 validation queries from the held-out rows of
     the clusters inserted so far, proportional to their inserted counts, seeded per batch.
 - **OOD:**
   - The cluster that would come *last* in the chain is withheld entirely, so only 9
     clusters are inserted; the chain is still built over all 10.
-  - 256 + 32 queries are sampled from it once.
-- **MQ:** 256 + 32 queries sampled once from the held-out 1% of the last *inserted*
+  - 1,000 + 32 queries are sampled from it once.
+- **MQ:** 1,000 + 32 queries sampled once from the held-out 1% of the last *inserted*
   cluster. They start out-of-distribution and become in-distribution as the data reaches
   that cluster.
+- At 1M the 1% holdout is ≈ 1,000 rows per cluster. If a cluster's holdout is smaller than
+  the queries it must supply, the holdout fraction is raised for that cluster only, and the
+  rows are taken from that cluster before insertion. This is recorded in the manifest.
 
 Validation queries are used only for the secondary "best policy on validation" choice,
 as in Phase 2.
@@ -146,15 +150,58 @@ bootstraps:
 - queries resampled within each batch, using the same resample for both arms;
 - for IDS, the per-batch query sets are the resampling units.
 
-- **H5, primary (shift).** In Shift-M, E1R − E1 mean recall ≥ 2.0 pp, with CI lower bound
-  > 0. Her analogue is 8.4 pp (Table 4.6, No Retrain vs From Scratch). Reported with it:
-  the same difference in Insert-only, and the ratio of training seconds E1R / E1.
-- **H6, primary (random deletes).** In Constant-R, E1G − E1 mean recall ≥ 1.0 pp, with CI
-  lower bound > 0. Her difference is 0.5 pp (Table 4.5); we expect more, because Qdrant's
-  dead postings consume budget. Reported with it: E1's dead-postings share at batch 20, and
-  rewritten points E1G / E1.
-- **H7 (oldest deletes, temporal advantage).** In Constant-O, |E1G − E1| mean recall
-  < 0.5 pp, with the whole CI inside ±0.5 pp. E1G's rebuild count is reported.
+**Why these thresholds (smallest effects of interest).** On the Phase 2 pilot E1 curve
+(test, `mdn_code`, budgets 6K–16K), 1 pp of mean R@30 costs about 7–8% more scored
+candidates. So 2 pp ≈ 15% more work, half of H1's 30% threshold, and 1 pp ≈ 8%. Effects
+below about 0.5 pp (≈ 4% work) are not treated as practically meaningful.
+
+**Outcomes.** Each primary hypothesis has exactly one of these outcomes, decided by the rule
+stated with it:
+- *supported*;
+- *not supported*;
+- *inconclusive*, when the CI is too wide to decide: its half-width is greater than the
+  threshold (H5, H6) or than the margin (H7).
+
+"Not supported" is used only when the experiment was precise enough to see the threshold
+effect.
+
+- **H5, primary (shift).** In Shift-M, consider Δ = E1R − E1 mean recall.
+  - **Supported** if Δ ≥ 2.0 pp and the 95% CI lower bound > 0.
+  - **Inconclusive** if the 95% CI half-width > 2.0 pp.
+  - **Not supported** otherwise.
+
+  Her analogue is 8.4 pp (Table 4.6, No Retrain vs From Scratch). Reported with it: the
+  same Δ in Insert-only, and the ratio of training seconds E1R / E1.
+- **H6, primary (random deletes).** In Constant-R, consider Δ = E1G − E1 mean recall.
+  - **Supported** if Δ ≥ 1.0 pp and the 95% CI lower bound > 0.
+  - **Inconclusive** if the half-width > 1.0 pp.
+  - **Not supported** otherwise.
+
+  Her difference is 0.5 pp (Table 4.5); we expect more, because Qdrant's dead postings
+  consume budget. Reported with it: E1's dead-postings share at batch 20, and rewritten
+  points E1G / E1.
+- **H7 (oldest deletes, temporal advantage), equivalence by TOST.** In Constant-O, consider
+  Δ = E1G − E1 mean recall, with margin M = 1.0 pp.
+  - **Supported (equivalent)** if the whole **90%** CI of Δ lies inside ±1.0 pp. That is
+    two one-sided tests at 5% each.
+  - **Not supported** if the 90% CI lies entirely outside ±1.0 pp.
+  - **Inconclusive** otherwise, including whenever the 90% CI half-width > 1.0 pp.
+
+  A non-significant difference is never reported as equivalence. E1G's rebuild count is
+  reported.
+
+**Multiplicity.** H5, H6 and H7 address three distinct questions on different scenarios,
+each with its own decision. No family-wise correction is applied, and none is claimed. As a
+sensitivity check, the report also gives Bonferroni-adjusted intervals (98.33% for H5 and
+H6; 96.67% two-sided, i.e. two one-sided 1.67% tests, for H7). It states whether any
+outcome would change under them.
+
+**Precision check before primary data.** The preflight-stage noise is estimated from the
+1,000 test queries for each primary contrast (SD of per-query differences at B*). If the
+projected 95% half-width at 1M exceeds a threshold, the test query count for that scenario
+is raised to the number needed, up to 5,000, before any primary run. The number is fixed by
+amendment. The pilot proxy (E1R − E1 at 300K, 256 queries) had a per-query SD of 13–24 pp
+and a paired SE of 0.8–1.5 pp; with 1,000 queries the expected SE is 0.4–0.8 pp per snapshot.
 - **H8 (descriptive).** Every scenario and arm:
   - per-batch recall curves and work at mean R@30 = 0.90 (linear interpolation as
     Amendment 1, where reached);
@@ -168,8 +215,10 @@ contrasts do not change after Phase 3 data exist.
 
 ## 6. Scale, budgets and stages
 
-- **Preflight**, N = 100K: Constant-R E1G and Shift-M E1 only, 3 batches, 8 queries,
-  budgets 1K/4K/16K. It checks the pipeline end to end; its numbers are not interpreted.
+- **Preflight**, N = 100K: the arm pairs of the three primary contrasts (Shift-M E1/E1R,
+  Constant-R E1/E1G, Constant-O E1/E1G), 3 batches each, all 1,000 test queries, budgets
+  1K/4K/16K. It checks the pipeline end to end and estimates per-query noise for the
+  precision check (§5). Its recall values are not interpreted.
 - **Primary**, N = 1M: all scenarios and arms in §2–3. That is 13 ingestions: 1 + 6 + 6
   for Insert-only and the uniform delete scenarios across arms, plus 2 for Shift (E1,
   E1R). Budgets: 1K, 2K, 3.5K, 5K, 7K, 10K, 14K, 20K, 28K, 40K, 56K.
@@ -208,19 +257,29 @@ evaluation.
 4. Rebuild events match the M1/M2 planner replayed offline from the logged occupancies.
 5. The E1R 10M projection and the per-publication wait rule (§6) hold.
 
-## 9. Decisions for the author before freezing
+## 9. Decisions by the author (recorded 2026-11-21, before any Phase 3 data)
 
-1. **Thresholds:**
-   - H5: 2.0 pp. Her effect is 8.4 pp, so this is conservative.
-   - H6: 1.0 pp.
-   - H7: equivalence margin ±0.5 pp.
-   Are these the effect sizes you consider practically meaningful?
-2. **Primary scale 1M with a conditional 10M confirmation.** The alternative is 300K
-   primary, which is cheaper, but buckets are about 3K vectors and there are only 3 levels.
-3. **Primary budget B* = 0.5% of N.** Her fixed-candidate convention, not matched recall.
-   Work at R@30 = 0.90 stays as a secondary (H8), because under shift some curves may
-   never reach 0.90.
-4. Is it acceptable to omit Basic rebuild and Partial or Full retraining (§3)?
-5. **Original-idea boundary.** A drift-triggered retrain ("reuse until drift") is
-   deliberately not an arm here. Phase 3 measures the reuse penalty that such a method
-   would have to recover, and the method gets its own preregistration later.
+The author accepted all six proposals on 2026-11-21 after reviewing the Phase 2 pilot noise
+analysis (per-query E1R − E1 differences at 300K):
+1. **Queries:** 1,000 test queries per scenario (rows 9000–9999 for ID; 1,000 sampled for
+   IDS/OOD/MQ), with a precision check after preflight that may raise the count (§5).
+2. **H5 threshold:** 2.0 pp (≈ 15% more work at the operating point).
+3. **H6 threshold:** 1.0 pp (≈ 8% more work).
+4. **H7:** equivalence by TOST with a 90% CI and margin ±1.0 pp. The ±0.5 pp margin of the
+   first draft was dropped: it would need ≈ 4,000+ queries at the observed noise.
+5. **Outcomes:** each primary hypothesis is supported, not supported or *inconclusive*
+   (CI wider than the threshold or margin).
+6. **Multiplicity:** no family-wise correction. The three questions are distinct; a
+   Bonferroni sensitivity check is reported.
+
+Also accepted:
+- **Scale:** 1M primary, with the conditional 10M confirmation (§6). At 300K, B* is about
+  one bucket per level.
+- **Budget:** fixed B* = 0.5% of N, with work at R@30 = 0.90 as secondary.
+- **Omissions:** Basic rebuild (dominated in her Tables 4.4–4.5) and Partial or Full
+  retraining (warm-start training is not implemented in Qdrant) are omitted.
+- **Original-idea boundary:** drift-triggered retraining is not an arm; it gets its own
+  preregistration after Phase 3.
+
+Remaining before freezing: implement and test M1–M9 (§7), run the preflight, apply the
+precision check, then change the status line to FROZEN.
