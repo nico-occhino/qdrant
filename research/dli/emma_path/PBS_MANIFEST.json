@@ -4,21 +4,37 @@
  "local_results": "C:\\Users\\nicoo\\Workspace\\Research-Results\\2026-11-20-dli-emma-path",
  "jobs": [
   {
-   "id": "25801511.pbs-m1.metacentrum.cz", "mode": "preflight", "commit": "6d6e9955e7fa",
-   "input_dir": "native-6d6e9955e7fa", "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=3:00:00",
-   "exit": 101, "failed_phase": "frontier-G0",
+   "id": "25801511.pbs-m1.metacentrum.cz",
+   "mode": "preflight",
+   "commit": "6d6e9955e7fa",
+   "input_dir": "native-6d6e9955e7fa",
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=3:00:00",
+   "exit": 101,
+   "failed_phase": "frontier-G0",
    "validation": "gold tool identical to official SISAP23 gold on full 10M (val 32/32, test 256/256 rows); 3/3 cluster unit tests; G0 ingest OK. Replay failed: G0's 250K buffer never fills at 100K, so no learned member exists (design error in the preflight arm list, fixed in eb20276f9)."
   },
   {
-   "id": "25801978.pbs-m1.metacentrum.cz", "mode": "preflight", "commit": "eb20276f906f",
-   "input_dir": "native-eb20276f906f", "resources": "as above",
-   "exit": 0, "walltime_used": "00:41:46",
+   "id": "25801978.pbs-m1.metacentrum.cz",
+   "mode": "preflight",
+   "commit": "eb20276f906f",
+   "input_dir": "native-eb20276f906f",
+   "resources": "as above",
+   "exit": 0,
+   "walltime_used": "00:41:46",
    "validation": "all pilot-gate checks true for E1 and E1R (one build per publication, outputs match plans, 100/100 learned / 0 fallback, reuse builds keep router with zero training, fresh builds have arity^i buckets); gold check identical again; both arms topology L2 55,000/100 buckets, L1 45,000/10 buckets, empty buffer; ingestion 20.4 s (E1) vs 58.7 s (E1R). SHA256SUMS all OK except job.log (known tee final-line case, verified). Numbers not interpreted (8 queries, 3 budgets)."
   },
   {
-   "id": "25813227.pbs-m1.metacentrum.cz", "mode": "pilot", "commit": "eb20276f906f",
-   "input_dir": "native-eb20276f906f", "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=6:00:00",
-   "submitted_utc": "2026-11-21", "status": "submitted"
+   "id": "25813227.pbs-m1.metacentrum.cz",
+   "mode": "pilot",
+   "commit": "eb20276f906f",
+   "input_dir": "native-eb20276f906f",
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=6:00:00",
+   "submitted_utc": "2026-11-21",
+   "status": "complete",
+   "exit": 0,
+   "walltime_used": "00:44:21",
+   "host": "eluo1-3",
+   "validation": "pilot gate PASS for E1 (all criteria; 10M projection 1.23 h). See RESULTS_PILOT.md. G0 10/100 exact fallbacks explained (no_learned_bucket under slot with one learned level; not gated)."
   }
  ]
 }
