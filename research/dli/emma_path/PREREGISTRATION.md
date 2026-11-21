@@ -123,3 +123,16 @@ Corrections and additions made while writing the tooling. No data had been produ
    B the topology's learned bucket total and the E1 model otherwise.
 6. **Analysis.** All estimands are computed by `analyze.py` (committed before any job).
    Comparisons use the same resampled query multiset for every arm and policy.
+
+## Amendment 2 — 2026-11-21, after the failed 10M job 25814270, before any 10M estimand
+
+Job 25814270 failed in the G0 collection search pass. G0 ingested all 10,120,191 points;
+the first post-ingestion query then exceeded Qdrant's default 60 s search timeout. The node
+(zenon3, EPYC 7351) ingested 2.5× slower than the H-10M node and recorded 16.2M major page
+faults, so the query read cold on-disk segments. No frontier replay ran and E1 never
+started, so no 10M estimand had been produced. Two engineering changes, neither touching an
+estimand, threshold, query set or policy:
+1. The collection pass passes an explicit search timeout of 1,800 s
+   (`DLI_BENCH_QUERY_TIMEOUT_S`; unset keeps the default). Its latency stays descriptive.
+2. The 10M job runs E1 before G0, so the new arm is not lost to a G0 failure. Arms use
+   separate collections and scratch is removed between them.

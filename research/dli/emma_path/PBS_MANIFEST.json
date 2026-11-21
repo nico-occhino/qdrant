@@ -43,8 +43,13 @@
    "input_dir": "native-af9e8fdc1dfc",
    "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
    "submitted_utc": "2026-11-21",
-   "status": "submitted",
-   "arms": "G0 E1"
+   "status": "failed",
+   "arms": "G0 E1",
+   "exit": 101,
+   "walltime_used": "02:49:13",
+   "host": "zenon3.cerit-sc.cz (AMD EPYC 7351, 2017)",
+   "failed_phase": "ingest-G0",
+   "validation": "G0 ingestion completed all 10,120,191 points (40 publications, 6,502 s vs 2,577 s on the H-10M node). The harness collection search pass then panicked: the first query hit the collection default 60 s search timeout ('Operation Search timed out after 59.99 s'). 16.2M major page faults: cold on-disk segments under the 128 GB cgroup on a slow node, as in the 23-26 Oct cold-read timeout. No estimand data exists (frontier never ran; E1 never ran). Fix: DLI_BENCH_QUERY_TIMEOUT_S=1800 and arm order E1 G0 (Amendment 2)."
   }
  ]
 }

@@ -518,3 +518,7 @@ Details are in `emma_path/{PREREGISTRATION,IMPLEMENTATION,REPRODUCE}.md`.
 **Arithmetic.** With rebuild-everything, Emma's settings would need 2,024 publications and 14.4× retraining at 10M; with reuse, 0.85×. b = 50K would mean 50K-vector buckets, so the second arm is the E1R ablation (no reuse, 300K only).
 
 **Not run yet.** No job has been submitted: MetaCentrum Kerberos had expired. Staging is in `~/research-admin/experiments/2026-11-20-dli-emma-path/`.
+
+## 2026-11-21 — Emma path: pilot passes, first 10M attempt fails on a search timeout
+
+Pilot 25813227 passed its gate (`emma_path/RESULTS_PILOT.md`). 10M job 25814270 failed after 2:49 (exit 101, phase ingest-G0). G0 ingestion itself completed: 10,120,191 points, 40 publications, 6,502 s on zenon3 (EPYC 7351), against 2,577 s for H-10M. The harness's 100-query collection pass then panicked: the first query hit Qdrant's default 60 s search timeout. The job had 16.2M major page faults; this repeats the October cold-read timeout. Fix (Amendment 2): an explicit 1,800 s timeout for that pass and arm order E1, G0. No estimand data existed when the fix was made.

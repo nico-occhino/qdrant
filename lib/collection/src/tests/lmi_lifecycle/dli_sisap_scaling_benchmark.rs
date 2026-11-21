@@ -430,7 +430,11 @@ async fn run_queries_params(
                 None,
                 None,
                 &ShardSelectorInternal::All,
-                None,
+                // Unset keeps the collection default (60 s). Cold on-disk segments
+                // after a 10M ingestion can exceed it on the first queries.
+                std::env::var("DLI_BENCH_QUERY_TIMEOUT_S").ok().map(|v| {
+                    Duration::from_secs(v.parse().expect("DLI_BENCH_QUERY_TIMEOUT_S"))
+                }),
             )
             .await
             .unwrap();
