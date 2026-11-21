@@ -301,7 +301,11 @@ async fn wait_for_dli_publications(
 ) {
     let started = Instant::now();
     let mut last_report = Duration::ZERO;
-    let result = tokio::time::timeout(Duration::from_secs(30 * 60), async {
+    // Unset keeps 30 min. A fresh level with a^i buckets can need longer (E1 at 10M:
+    // publication 1100 trains 10,000 buckets, projected 45 min).
+    let limit = std::env::var("DLI_BENCH_PUBLICATION_TIMEOUT_S")
+        .map_or(30 * 60, |v| v.parse().expect("DLI_BENCH_PUBLICATION_TIMEOUT_S"));
+    let result = tokio::time::timeout(Duration::from_secs(limit), async {
         loop {
             let diagnostics = replica.local_dli_diagnostics_for_test().await.unwrap();
             if diagnostics.1 >= target {

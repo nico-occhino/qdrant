@@ -136,3 +136,17 @@ estimand, threshold, query set or policy:
    (`DLI_BENCH_QUERY_TIMEOUT_S`; unset keeps the default). Its latency stays descriptive.
 2. The 10M job runs E1 before G0, so the new arm is not lost to a G0 failure. Arms use
    separate collections and scratch is removed between them.
+
+## Amendment 3 — 2026-11-21, after the failed 10M job 25820728, before any 10M estimand
+
+E1 ingested 5.25M points (1,099 publications) and then failed at publication 1100, the
+first build of a fresh level 4 (5.5M points, 10⁴ buckets, 400K training sample). The
+harness waits at most 30 min for each publication. The pilot projection (§4 criterion 4)
+predicts 2,717 s for this one publication; every other publication is projected ≤ 80 s.
+The gate checked only the projected total. Changes, none touching an estimand, threshold,
+query set or policy:
+1. The per-publication wait is configurable (`DLI_BENCH_PUBLICATION_TIMEOUT_S`; unset keeps
+   30 min). The 10M job uses 14,400 s, 5.3× the longest projected publication.
+2. From now on the gate also requires that the per-publication wait exceed 3× the longest
+   projected publication.
+The model, bucket rule and thread policy of the arm are unchanged.

@@ -58,9 +58,14 @@
    "input_dir": "native-10c65e2551d5",
    "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
    "submitted_utc": "2026-11-21",
-   "status": "submitted",
+   "status": "failed",
    "arms": "E1 G0",
-   "note": "resubmission of 25814270 under Amendment 2; inputs copied from native-af9e8fdc1dfc and re-verified; source.bundle sha256 1b33b8e2\u2026"
+   "note": "resubmission of 25814270 under Amendment 2; inputs copied from native-af9e8fdc1dfc and re-verified; source.bundle sha256 1b33b8e2\u2026",
+   "exit": 101,
+   "walltime_used": "01:24:14",
+   "host": "elmu1-3 (AMD EPYC 9474F)",
+   "failed_phase": "ingest-E1",
+   "validation": "E1 ingested 5.25M points in 1,203 s with 1,099 successful publications (reuse builds 0 training s). Publication 1100 (first fresh level 4: 5.5M points, 10,000 buckets, 400K sample) was still building when the harness's hard-coded 30 min publication wait expired; the test panicked and the build unwound (outcome failed_or_unwound, no optimizer error). The pilot projection itself predicted 2,717 s for that publication; the wait was never compared with it. Peak RSS 94.9 GB of 128 GB. Fix: DLI_BENCH_PUBLICATION_TIMEOUT_S=14400 (Amendment 3)."
   }
  ]
 }
