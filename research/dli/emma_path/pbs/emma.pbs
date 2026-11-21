@@ -70,10 +70,32 @@ SRC="$W/qdrant/research/dli/emma_path"
 
 phase=build
 cd "$W/qdrant"
-export CARGO_TARGET_DIR="$W/target" CARGO_BUILD_JOBS=$NCPUS
-/usr/bin/time -v cargo test --locked --offline --profile perf -p collection --lib \
-    --features 'testing,lmi-training,dli-research' --no-run > "$OUT/build.stdout" 2> "$OUT/build.stderr"
-BIN=$(ls -t "$W/target/perf/deps"/collection-* | grep -v '\.d$' | head -1)
+# Binary cache keyed by the compiled source only (lib/, src/, Cargo.toml, Cargo.lock),
+# so research-only commits reuse it. A cached binary is used only if its recorded
+# SHA-256 verifies; otherwise it is rebuilt and the cache refilled.
+SRC_KEY=$(git rev-parse HEAD:lib HEAD:src HEAD:Cargo.toml HEAD:Cargo.lock | sha256sum | cut -c1-24)
+CACHE="$CAMPAIGN/bin-cache/$SRC_KEY"
+echo "source key $SRC_KEY" | tee "$OUT/source-key.txt"
+if [[ -f "$CACHE/collection.sha256" ]] && ( cd "$CACHE" && sha256sum -c --quiet collection.sha256 ); then
+  mkdir -p "$W/target/perf/deps"
+  cp "$CACHE/collection" "$W/target/perf/deps/collection-cached"
+  BIN="$W/target/perf/deps/collection-cached"
+  cp "$CACHE/provenance.json" "$OUT/binary-cache-provenance.json"
+  echo "binary from cache $CACHE" | tee -a "$OUT/source-key.txt"
+else
+  export CARGO_TARGET_DIR="$W/target" CARGO_BUILD_JOBS=$NCPUS
+  /usr/bin/time -v cargo test --locked --offline --profile perf -p collection --lib \
+      --features 'testing,lmi-training,dli-research' --no-run > "$OUT/build.stdout" 2> "$OUT/build.stderr"
+  BIN=$(ls -t "$W/target/perf/deps"/collection-* | grep -v '\.d$' | head -1)
+  mkdir -p "$CACHE.tmp-$PBS_JOBID"
+  cp "$BIN" "$CACHE.tmp-$PBS_JOBID/collection"
+  ( cd "$CACHE.tmp-$PBS_JOBID" && sha256sum collection > collection.sha256 )
+  printf '{"built_by_job":"%s","commit":"%s","source_key":"%s","host":"%s","utc":"%s"}\n' \
+    "$PBS_JOBID" "$EXPECTED_COMMIT" "$SRC_KEY" "$(hostname)" "$(date -u +%FT%TZ)" > "$CACHE.tmp-$PBS_JOBID/provenance.json"
+  cp "$OUT/toolchain.txt" "$CACHE.tmp-$PBS_JOBID/"
+  [[ -e "$CACHE" ]] || mv "$CACHE.tmp-$PBS_JOBID" "$CACHE"
+  rm -rf "$CACHE.tmp-$PBS_JOBID"
+fi
 sha256sum "$BIN" | tee "$OUT/binary.sha256"
 phase=unit_tests
 "$BIN" --exact tests::lmi_lifecycle::dli_sisap_scaling_benchmark::emma_level_rule_and_router_reuse_in_configured_collection \
