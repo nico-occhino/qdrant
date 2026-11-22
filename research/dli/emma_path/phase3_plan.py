@@ -60,22 +60,27 @@ def normalized(rows):
 
 
 def exact_top(corpus, live_rows, queries, chunk=65_536):
-    """Top-K corpus row indices (of `live_rows`) per query, descending, ties by smaller row."""
+    """Top-K corpus row indices (of `live_rows`) per query, descending, ties by smaller row.
+
+    Per chunk, every score >= the chunk's K-th best is kept (so no tie at the boundary is
+    lost) and merged with the running best by an exact (-score, row) sort.
+    """
     q = normalized(queries)
-    best_s = np.full((len(q), 0), -np.inf)
-    best_r = np.zeros((len(q), 0), dtype=np.int64)
+    best_s = [np.empty(0) for _ in range(len(q))]
+    best_r = [np.empty(0, dtype=np.int64) for _ in range(len(q))]
     live_rows = np.sort(np.asarray(live_rows, dtype=np.int64))
     for lo in range(0, len(live_rows), chunk):
         rows = live_rows[lo: lo + chunk]
         s = q @ normalized(corpus[rows]).T
-        cand_s = np.concatenate([best_s, s], axis=1)
-        cand_r = np.concatenate([best_r, np.broadcast_to(rows, s.shape)], axis=1)
-        keep = min(K, cand_s.shape[1])
-        # Exact tie rule: sort each row by (-score, row) and keep the first K.
-        order = np.lexsort((cand_r, -cand_s), axis=1)[:, :keep]
-        best_s = np.take_along_axis(cand_s, order, axis=1)
-        best_r = np.take_along_axis(cand_r, order, axis=1)
-    return best_r
+        kk = min(K, s.shape[1])
+        kth = -np.partition(-s, kk - 1, axis=1)[:, kk - 1]
+        for i in range(len(q)):
+            keep = np.flatnonzero(s[i] >= kth[i])
+            cs = np.concatenate([best_s[i], s[i, keep]])
+            cr = np.concatenate([best_r[i], rows[keep]])
+            order = np.lexsort((cr, -cs))[:K]
+            best_s[i], best_r[i] = cs[order], cr[order]
+    return np.stack(best_r)
 
 
 def spherical_kmeans(x, k, iters, rng):
