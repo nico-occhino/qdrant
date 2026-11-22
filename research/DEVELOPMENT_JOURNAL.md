@@ -764,13 +764,79 @@ whole-bucket work that contains the true top-30, separates structure from select
   a 10,000-bucket build several times over.
 - **Snapshot dependence is a methodological trap for any hierarchical index.** One N can favour or punish a design.
 
+### Phase 3: tooling, two preflights and a frozen preregistration (21–22 November)
+
+**Tooling** (M1–M12, commits `7d6b6bea9` … `4c05d2360`, then `c42fde1ee`), each with a test:
+- the Greedy underutilisation planner (`plan_rebuild`, her three target rules) and its native execution;
+- the consolidating maintenance policy (E1C). Its 10.12M replay test reproduces the simulation's final levels exactly;
+- dead-posting counters in routing results, request events and replay rows;
+- a Python workload planner (`phase3_plan.py`) that fixes every insert and delete per batch and records the live-set
+  SHA-256 and tie-exact gold. Its gold equals `prefix_gold.py` byte for byte;
+- the `dli_phase3_workload` driver, which checks the collection's live set against that ledger after **every** batch;
+- per-batch frontier replay, now a callable `run_frontier`;
+- calibrated level-aware allocation (E1L): isotonic regression per level plus a fractional-knapsack selection, on the
+  same scoring path as every policy;
+- `analyze_phase3.py` with a known-answer test.
+
+The collection DLI suite went from 46 to 51 tests.
+
+**Preflight 1** (job 25842074, 100K, 3 batches). The pipeline worked, and it exposed two design flaws:
+1. **B\* = 0.5% of N was degenerate.** The buffer alone exhausted it, so the per-query SD was 0 in every contrast,
+   although the Shift arms differed at larger budgets. Sommerová's 50K at 10M was 10·b. The 0.5% rule only matched
+   that ratio at her scale.
+2. **Her Greedy rebuild is nearly inert in Qdrant.** It triggers on *live* occupancy. Qdrant deletes are soft, so a
+   level can keep a healthy live count while about 75% of its selected postings are dead. A 1M simulation gave 1
+   Greedy rebuild in Constant-R and 0 in Constant-O.
+
+**Author decisions** (§9b of the preregistration):
+- B\* = 10·b = 50K;
+- a new vacuum arm E1V, which rewrites a level in place when its dead fraction exceeds 0.2 (Qdrant's own vacuum
+  default);
+- H6 = E1V vs E1 in Constant-R, H6b = Greedy in Medium-R, H7 = TOST in Medium-O;
+- a precision preflight at 1M with a seed never used for primary data.
+
+**Preflight 2** (job 25857840, 1M, seed 20261199). The 95% half-widths per snapshot with 1,000 queries were
+1.58 / 0.23 / 0.24 / 0.06 pp for H5 / H6 / H6b / H7, all below their thresholds, so the query count stays at 1,000.
+- Vacuum cut the dead-posting share at B\* from 0.31–0.37 to about 0.10.
+- Greedy fired 1 time in Medium-O and 4 times in Medium-R, as simulated.
+
+**The preregistration was frozen** at `6538a4483`. The primary jobs (8 scenarios) await submission.
+
+**Statistics, as taught in this phase.**
+- **Thresholds as smallest effects of interest.** On the pilot's E1 curve, 1 pp of R@30 ≈ 8% of work.
+- **Power from pilot noise.** The per-query SD of paired differences was 13–24 pp at 300K, so 256 queries resolve only
+  about ±3 pp. Hence 1,000 queries.
+- **Equivalence by TOST** with a 90% CI. A margin of ±0.5 pp would have needed about 4,000 queries.
+- An explicit **"inconclusive"** outcome.
+- No family-wise correction for four distinct questions, with a Bonferroni sensitivity check.
+- Unseen query rows (8000–8999) for the Part B hypotheses that the diagnosis suggested.
+
 **Other tracks in this period.**
-- **PostgreSQL** (separate repository `nico-occhino/postgresql-learned-indexes`): baseline 02 (2 November). It is a
-  reproducible synthetic 10,000-vector cosine run comparing exact search, pgvector IVFFlat and HNSW, with exact
-  ground truth. No learned PostgreSQL index exists yet.
+- **PostgreSQL** (separate repository `nico-occhino/postgresql-learned-indexes`, branch `feature/native-dli`; working
+  clone `~/work/postgresql-learned-indexes`):
+  - **What exists.** A native `lmi` access method and a temporal `dli` access method (relation format v6,
+    extension 0.7), with posting recycling under Generic WAL.
+  - **Results so far.**
+    - A static 10M MetaCentrum study.
+    - A single-level DLI at 10.12M (job 25794264).
+    - A native temporal E1 ingestion at 10M (job 25840511). It produced the same Bentley–Saxe topology as Qdrant
+      (220K / 4.4M / 5.5M in 100 / 1,000 / 10,000 buckets) and wrote 230 GB of WAL.
+  - **Engineering audit of 22 November** (`docs/research/AUDIT_2026-11-22.md`):
+    - CI never ran the native suite (fixed).
+    - About 15.6 GiB, or 40% of the 10M index, is drained mutable-buffer pages that are never retired. It is a space
+      leak, not corruption; the fix is scheduled.
+    - The default planner never chooses the learned index, because `amcostestimate` is inherited.
+    - The PostgreSQL router computes **exactly** the accepted Qdrant router's function (max |Δ| = 0 on 128 probes),
+      but the earlier static cross-engine table paired a different Qdrant training.
+    - Static 10M bootstrap CIs: at equal recall HNSW is about 16× faster (188 ms against 11.8 ms median).
+  - **Next.** A preregistered 10M temporal *query-quality* job is prepared but not submitted. It asks whether the 2.4×
+    multi-level penalty is algorithmic or Qdrant-specific. Its commits were not yet pushed when this was written.
 - **Thesis:** the LaTeX repository has Chapter 1 drafted and Chapters 2–9 as skeletons. The submission target is
   10 March 2027.
 - **Interview study guide** on testing, using this project's tests as examples (`~/worktrees/TESTING_INTERVIEW_GUIDE.md`).
+- **First-principles explainer and audit** of both repositories (22 November, read-only):
+  `C:\Users\nicoo\Workspace\Learning stuff\Progress_Ladder\PROJECT_EXPLAINER.md`. It ranks 14 audit findings and
+  lists code–documentation disagreements.
 
 ---
 
@@ -814,6 +880,11 @@ whole-bucket work that contains the true top-30, separates structure from select
 9. **Hidden resource caps.** A hard-coded 1-CPU permit made every DLI build single-threaded for weeks without
    failing anything; it surfaced only when one build became large. Read the permits, not just the job request.
 10. **Validate a projection's maximum step, not only its total** (the 45-minute publication against a 30-minute wait).
+11. **A small-scale preflight can be degenerate at the primary operating point.** At 100K the buffer filled the primary
+    budget, and the delete arms were identical indexes. Measure precision at the primary scale and budget, with a seed
+    never used for primary data.
+12. **Port a design rule only together with its assumptions.** Sommerová's live-count rebuild assumes hard deletes.
+    Under Qdrant's soft deletes the relevant signal is the dead fraction.
 
 ### Process
 1. **Coding agents** (Codex, then Claude Code) did most implementation and documentation. That needed explicit rules:
@@ -847,6 +918,8 @@ whole-bucket work that contains the true top-30, separates structure from select
 | 21 Nov | E1 trains less than G0 at 10M (H3) | Not supported: 1,543 s vs 1,522 s; one 10,000-bucket build = 1,337 s | Snapshot-dependent; reuse saves training except where a fresh level is born |
 | 22 Nov | Her invariant closes the gap to static LMI | No: E1 needs 2.4× the matched static work; the penalty is structural (coarse buckets of a full co-resident level) | Motivates consolidation (Phase 3 Part B) |
 | 21 Nov | ±0.5 pp equivalence margin for Phase 3 | Infeasible at the observed per-query noise (≈ 4,000 queries needed) | Margin widened to ±1 pp with TOST |
+| 22 Nov | Phase 3 primary budget B* = 0.5% of N | Buffer-dominated: identical arms at B* in preflight 25842074 | B* = 10·b |
+| 22 Nov | Sommerová's Greedy rebuild as the Qdrant delete fix | Nearly inert (live-count trigger vs soft deletes) | Vacuum arm E1V added |
 | Sep–Oct | L2P prototype routing; statistical router | Discussed, not implemented | A statistical router stays the natural control for any future router |
 
 ---
@@ -934,12 +1007,10 @@ against Sommerová's reported results; CLI; and finally external API tests acros
 filtering, against one `main` build.
 
 
-**Next priorities (updated 22 November).** The thesis is submitted on 10 March 2027, and the author writes it; agents
-advise.
-- Phase 3 (shift and deletes) plus Part B (multi-level penalty): tooling M1–M12, preflight, freeze, 1M, then 10M
-  confirmation.
-- CLI (Jakubík) implemented in Qdrant.
-- The PostgreSQL learned index in its own repository.
-- An original contribution, chosen once the full picture exists.
-- Thesis chapters in order of evidence stability: 5 (static LMI), 2–3 (background), 6 (DLI), 8 (evaluation),
-  9 (conclusions).
+**Next priorities (updated 22 November, evening).** The thesis is submitted on 10 March 2027, and the author writes it;
+agents advise.
+- Phase 3 primary jobs (8 scenarios at 1M), then analysis and conditional 10M confirmation.
+- The PostgreSQL 10M temporal quality job, to compare engines.
+- CLI implementation.
+- An original contribution: candidates are "reuse until drift", hierarchy cost models, and vacuum-aware rebuilds.
+- Thesis chapters in order of evidence stability: 5, 2–3, 6, 8, 9.

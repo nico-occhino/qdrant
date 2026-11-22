@@ -530,3 +530,11 @@ Pilot 25813227 passed its gate (`emma_path/RESULTS_PILOT.md`). 10M job 25814270 
 The fourth attempt completed (exit 0, 4:24, 167 GB peak; 16 build CPUs after Amendment 4). G0 reproduces H-10M exactly at every shared budget. **H1 supported**: E1 (`mdn_code`) needs 72.4% less work than G0 (`slot`) at test R@30 = 0.90 [67.5, 77.8]. **H2 supported**: Plain is 0.21% of E1 work. **H3 not supported**: E1 trains 1,543 s against G0's 1,522 s, and a single fresh level-4 build (10,000 buckets) accounts for 1,337 s. **H4**: E1 still needs 2.4× the work of a static LMI with the same 11,100 buckets (34K vs 82K). The buffer penalty is solved, and a multi-level penalty remains. Write amplification 14.4 vs 3.1. Report: `emma_path/RESULTS_10M.md`.
 
 **2026-11-22 — multi-level penalty diagnosis and Phase 3 Part B.** The oracle costs from job 25827532 show that E1's remaining 2.4× gap to the matched static index is structural (oracle 29.5K vs 12.1K), not selection. G0's had been selection. The cause is L3's coarse buckets (4.4M in 1,000 buckets). A planner simulation (`emma_path/consolidation_sim.py`) predicts that merging co-resident large levels into the deepest one (ρ = 0.25) reaches static granularity at 10M without extra write amplification, but the gain depends on the snapshot. Preregistered as Phase 3 Part B: E1C (consolidation) and E1L (calibrated level-aware allocation), on unseen queries 8000–8999, averaged over 20 batches. Diagnosis: `emma_path/MULTILEVEL_DIAGNOSIS.md`. This supersedes the mechanism suggested in RESULTS_10M.md point 2 ("each level's router must succeed independently").
+
+**2026-11-22 (evening) — Phase 3 ready.** All tooling M1–M12 is in place, plus the vacuum arm E1V.
+- **Preflight 25842074** (100K) passed the pipeline but exposed a buffer-dominated B\* and an inert Greedy rule. The
+  author chose B\* = 10·b = 50K, the vacuum arm and the re-mapped H6/H6b/H7.
+- **Preflight 25857840** (1M, separate seed): 95% half-widths of 1.58 / 0.23 / 0.24 / 0.06 pp, all below their
+  thresholds, so 1,000 queries stay. Vacuum cut dead postings at B\* from about 0.34 to 0.10, and Greedy fired 1×/4×
+  as simulated.
+- **Preregistration frozen** at `6538a4483`. Primary jobs not yet submitted.
