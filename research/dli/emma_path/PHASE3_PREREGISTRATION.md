@@ -1,9 +1,7 @@
 # Preregistration — Phase 3: distribution shift and deletes in native Qdrant DLI
 
-**Status: DRAFT, 2026-11-21. Author decisions recorded (§9).** Not frozen. It is frozen
-by a commit that changes this line to "FROZEN" after the tooling (§7) is implemented and
-preflighted and the precision check (§5) is applied, all before any Phase 3 result exists. After freezing,
-changes are appended as amendments only, as in Phase 1–2.
+**Status: FROZEN, 2026-11-22**, after the precision check (§9c), before any primary data.
+From here on, changes are appended as amendments only.
 
 Depends on: [PREREGISTRATION.md](PREREGISTRATION.md) (arms G0/E1/E1R, routing policies,
 gold tooling, bootstrap). Phase 2 (10M job 25823237) must finish before Phase 3 runs, but
@@ -317,6 +315,37 @@ exposed two design flaws. Its recall values were not interpreted. The author cho
    B*. The §5 rule then sets the query count before any primary run. Recall values are not interpreted.
 
 Remaining before freezing: preflight1m, then the precision check, then FROZEN.
+
+
+## 9c. Precision check (preflight1m 25857840) and freeze, 2026-11-22
+
+Job `25857840.pbs-m1.metacentrum.cz` (turin25, exit 0, 2:46:35, commit `c42fde1ee`) ran 1M, 20-batch plans with
+seed 20261199. That seed is never used for primary data. Batches 10 and 20 were evaluated at 20K/50K/80K. Recall
+values were not inspected beyond the per-query SD of differences. Evidence:
+`C:\Users\nicoo\Workspace\Research-Results\2026-11-20-dli-emma-path\phase3-preflight1m-25857840\`
+(`SHA256SUMS` verify, except the known `job.log` final-line case).
+
+| Contrast | Per-query SD at B* = 50K | 95% half-width per snapshot, 1,000 queries | Threshold / margin |
+|---|---|---|---|
+| H5 (Shift-M, E1R − E1) | 25.5 pp | 1.58 pp | 2.0 pp |
+| H6 (Constant-R, E1V − E1) | 3.7 pp | 0.23 pp | 1.0 pp |
+| H6b (Medium-R, E1G − E1) | 3.9 pp | 0.24 pp | 1.0 pp |
+| H7 (Medium-O, E1G − E1; 90%) | 1.2 pp | 0.06 pp | ±1.0 pp |
+
+Every half-width is below its threshold from a single snapshot; the batch average can only narrow it. By the §5 rule,
+**the test query count stays at 1,000**.
+
+Mechanism checks (not estimands):
+- E1V ran 41 vacuum rewrites in Constant-R, and the dead-posting share at B* fell from 0.31–0.37 (E1) to about 0.10.
+- E1G rebuilt once in Medium-O and 4 times in Medium-R, as the planner simulation predicted (§9b.2), changing the
+  final topology in both.
+- Every batch matched its live-set ledger.
+
+Walltime for the primary jobs, from these timings: 12 h for each delete scenario, 24 h for Shift and Insert-only
+(more batches evaluated, more queries and policies).
+
+**Frozen.** Hypotheses, thresholds, B*, query sets, seeds, arms and analysis (`analyze_phase3.py`) are fixed as of
+this commit.
 
 ---
 

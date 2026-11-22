@@ -1,0 +1,33 @@
+{
+ "hypotheses": {},
+ "descriptive": {
+  "precision_H5": {
+   "per_query_sd_pp": 25.531921874197906,
+   "queries": 1000,
+   "snapshot_half_width_pp_95": 1.5824849128132321,
+   "snapshot_half_width_pp_90": 1.32815698039682,
+   "budget": 50000
+  },
+  "precision_H6": {
+   "per_query_sd_pp": 3.68927749191059,
+   "queries": 1000,
+   "snapshot_half_width_pp_95": 0.22866378797868542,
+   "snapshot_half_width_pp_90": 0.1919142506249681,
+   "budget": 50000
+  },
+  "precision_H6b": {
+   "per_query_sd_pp": 3.9365503871875283,
+   "queries": 1000,
+   "snapshot_half_width_pp_95": 0.24398992081159399,
+   "snapshot_half_width_pp_90": 0.20477725496687352,
+   "budget": 50000
+  },
+  "precision_H7": {
+   "per_query_sd_pp": 1.195699110574937,
+   "queries": 1000,
+   "snapshot_half_width_pp_95": 0.07411019867882476,
+   "snapshot_half_width_pp_90": 0.06219963103401363,
+   "budget": 50000
+  }
+ }
+}

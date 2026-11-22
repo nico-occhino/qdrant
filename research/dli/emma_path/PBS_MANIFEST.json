@@ -120,9 +120,13 @@
    "input_dir": "native-c42fde1eeeb3",
    "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=06:00:00",
    "submitted_utc": "2026-11-22",
-   "status": "submitted",
+   "status": "complete",
    "runs": "shift E1/E1R, constant_r E1/E1V, medium_r E1/E1G, medium_o E1/E1G; N=1M, seed 20261199, eval batches 10,20, budgets 20K/50K/80K",
-   "note": "precision check at B*=50K (\u00a79b.4); recall values not interpreted"
+   "note": "precision check at B*=50K (\u00a79b.4); recall values not interpreted",
+   "exit": 0,
+   "walltime_used": "02:46:35",
+   "host": "turin25",
+   "validation": "precision check passes for H5/H6/H6b/H7 at 1,000 queries (half-widths 1.58/0.23/0.24/0.06 pp); vacuum and Greedy fire as simulated; ledgers OK. Phase 3 prereg FROZEN (\u00a79c)."
   }
  ]
 }
