@@ -179,6 +179,7 @@ struct Evaluated {
     selected: HashSet<(Uuid, Option<usize>)>,
     posting_entries: usize,
     unique_offsets: usize,
+    dead_offsets: usize,
     original_scored: usize,
     plain_scored: usize,
     buckets_per_level: HashMap<usize, usize>,
@@ -219,7 +220,8 @@ fn run_route(
     for b in &routed.plan.buckets {
         *buckets_per_level.entry(b.level).or_insert(0) += 1;
     }
-    let (posting_entries, unique_offsets) = (routed.posting_candidates, routed.unique_posting_offsets);
+    let (posting_entries, unique_offsets, dead_offsets) =
+        (routed.posting_candidates, routed.unique_posting_offsets, routed.dead_posting_offsets);
     let hits = match resolve_pinned_candidates(members, routed, TOP).unwrap() {
         CandidateResolution::Resolved(hits) => hits.into_iter().map(|h| num(h.id)).collect(),
         CandidateResolution::ExactFallback(reason) => {
@@ -231,6 +233,7 @@ fn run_route(
         selected,
         posting_entries,
         unique_offsets,
+        dead_offsets,
         original_scored: trace.scoring.original_scored,
         plain_scored: trace.scoring.plain_scored,
         buckets_per_level,
@@ -256,6 +259,7 @@ fn run_proportional(
         selected: HashSet::new(),
         posting_entries: 0,
         unique_offsets: 0,
+        dead_offsets: 0,
         original_scored: 0,
         plain_scored: 0,
         buckets_per_level: HashMap::new(),
@@ -295,6 +299,7 @@ fn run_proportional(
         }
         out.posting_entries += routed.posting_candidates;
         out.unique_offsets += routed.unique_posting_offsets;
+        out.dead_offsets += routed.dead_posting_offsets;
         out.original_scored += trace.scoring.original_scored;
         out.plain_scored += trace.scoring.plain_scored;
         for (_, hits) in routed.per_segment {
@@ -560,7 +565,7 @@ fn dli_65k_selection_frontier() {
                 let row = serde_json::json!({
                     "set": set.label, "query": qi, "policy": name, "budget": budget,
                     "recall10": recall(10), "recall30": recall(30),
-                    "posting_entries": e.posting_entries, "unique_offsets": e.unique_offsets,
+                    "posting_entries": e.posting_entries, "unique_offsets": e.unique_offsets, "dead_offsets": e.dead_offsets,
                     "original_scored": e.original_scored, "plain_scored": e.plain_scored,
                     "scored_total": e.original_scored + e.plain_scored,
                     "buckets_per_level": e.buckets_per_level,

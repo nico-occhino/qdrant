@@ -47,6 +47,9 @@ pub struct NativeRouteResult {
     pub models_evaluated: usize,
     pub posting_candidates: usize,
     pub unique_posting_offsets: usize,
+    /// Unique selected learned offsets that are soft-deleted (point or vector) or out of
+    /// range: they consume routing budget but are never scored.
+    pub dead_posting_offsets: usize,
     /// Optional request-local native scorer measurements for learned members.
     pub learned_scoring: Option<LearnedScoringProfile>,
     /// Learned members scored with original vectors because quantized scoring
@@ -426,6 +429,7 @@ pub fn route_pinned_traced(
     let started_scoring = Instant::now();
     let mut posting_candidates = 0usize;
     let mut unique_posting_offsets = 0usize;
+    let mut dead_posting_offsets = 0usize;
     let mut buffer_point_estimate = 0usize;
     let mut quantization_degraded_members = 0usize;
     // Thread-local attribution is sound here because the whole route executes
@@ -497,6 +501,20 @@ pub fn route_pinned_traced(
             unique_posting_offsets += candidates.len();
             let tracker = segment.id_tracker.borrow();
             let storage = data.vector_storage.borrow();
+            {
+                use segment::vector_storage::VectorStorageRead as _;
+                let deleted = tracker.deleted_point_bitslice();
+                let total = storage.total_vector_count();
+                dead_posting_offsets += candidates
+                    .iter()
+                    .filter(|&&offset| {
+                        let i = offset as usize;
+                        i >= total
+                            || deleted.get(i).map_or(true, |bit| *bit)
+                            || storage.is_deleted_vector(offset)
+                    })
+                    .count();
+            }
             let score_started = Instant::now();
             let rerank_candidates;
             let candidates = if let Some(shortlist) = shortlist {
@@ -600,6 +618,7 @@ pub fn route_pinned_traced(
         scoring_time: started_scoring.elapsed(),
         posting_candidates,
         unique_posting_offsets,
+        dead_posting_offsets,
         // Owned by the caller's trace when tracing; see `route_pinned_traced`.
         learned_scoring: None,
         quantization_degraded_members,
@@ -1646,6 +1665,10 @@ mod tests {
         // consume routing budget, but deleted offsets are filtered before the
         // scorer, so successful original evaluations are exactly zero.
         assert!(event["attempt"]["unique_offsets"].as_u64().unwrap() >= 1);
+        assert_eq!(
+            event["attempt"]["dead_offsets"], event["attempt"]["unique_offsets"],
+            "every selected posting is dead"
+        );
         assert_eq!(attempt["original_scored"].as_u64().unwrap(), 0);
         assert_eq!(attempt["quantized_scored"].as_u64().unwrap(), 0);
         let exact = &event["exact_fallback"];
@@ -1976,11 +1999,18 @@ mod tests {
                 .unwrap();
             let members = [(1, &learned), (0, &buffer)];
             let routed = route_pinned(&members, &[1., 0.], 2, 1000, &context).unwrap();
+            // Budget 1000 selects every learned posting; soft-deleted ones still
+            // consume budget and are counted as dead.
+            assert_eq!(routed.unique_posting_offsets, rows.len());
+            let dead = if deleted == 41 { 1 } else { 2 };
+            assert_eq!(routed.dead_posting_offsets, dead);
             let CandidateResolution::Resolved(hits) =
                 resolve_pinned_candidates(&members, routed, 10).unwrap()
             else {
                 panic!("unrelated deleted slots forced exact fallback")
             };
+            // Independent check: live selected postings are exactly the scored hits.
+            assert_eq!(hits.len(), rows.len() - dead);
             for hit in &hits {
                 assert!(hit.id != 41_u64.into());
                 if deleted == 44 {

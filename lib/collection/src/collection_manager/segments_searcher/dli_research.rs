@@ -510,7 +510,7 @@ impl SegmentsSearcher {
                 );
                 let attempt_summary = trace.as_ref().map(|_| serde_json::json!({
                     "posting_entries": routed.posting_candidates,
-                    "unique_offsets": routed.unique_posting_offsets,
+                    "unique_offsets": routed.unique_posting_offsets, "dead_offsets": routed.dead_posting_offsets,
                     "models": routed.models_evaluated,
                     "selected_buckets": routed.plan.buckets.len(),
                     "routing_ns": routed.routing_and_planning_time.as_nanos(),
