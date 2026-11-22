@@ -1,0 +1,168 @@
+#!/bin/bash
+#PBS -N dli-phase3
+#PBS -l select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd
+#PBS -j oe
+#
+# Phase 3 (shift, deletes) and Part B (multi-level penalty): research/dli/emma_path/PHASE3_PREREGISTRATION.md.
+# Submit with: qsub -l walltime=HH:MM:SS -v MODE=preflight|primary,SCENARIO=<name>,IN=<input dir> phase3.pbs
+#   preflight: N = 100K, 3 batches, the arm pairs of the primary contrasts (SCENARIO ignored), budgets 1K/4K/16K.
+#   primary:   N = 1M, 20 batches (+ initial for uniform scenarios), one SCENARIO per job, arms per §3/§10.1.
+# Phases: verify -> build -> plan + gold (phase3_plan.py) -> per run: dli_phase3_workload -> analysis.
+set -euo pipefail
+: "${PBS_JOBID:?must run under PBS}" "${SCRATCHDIR:?scratch_ssd required}" "${MODE:?}" "${IN:?}"
+CAMPAIGN=/storage/budejovice1/home/nico/lmi-metacentrum/dli-emma-path-20261120
+CORPUS=/storage/budejovice1/home/nico/lmi-metacentrum/results/sisap23-matched-final-20261028-01/corpus.f16le
+CORPUS_SHA=f5868d6e002a6e73aea47491ee040a70a151406fe9e4552292428e2bfe0616e5
+EXPECTED_COMMIT=$(cat "$IN/native.commit")
+case "$MODE" in
+  preflight) N=100000;  BATCHES=3;  BUDGETS=1000,4000,16000; STATIC=2
+             RUNS="shift:E1 shift:E1R constant_r:E1 constant_r:E1G constant_o:E1 constant_o:E1G" ;;
+  primary)   N=1000000; BATCHES=20; BUDGETS=1000,2000,3500,5000,7000,10000,14000,20000,28000,40000,56000; STATIC=5,10,15,20
+             case "${SCENARIO:?}" in
+               insert_only) RUNS="insert_only:E1 insert_only:E1R insert_only:E1C insert_only:E1C50" ;;
+               shift)       RUNS="shift:E1 shift:E1R shift:E1C" ;;
+               heavy_r|medium_r|constant_r|heavy_o|medium_o|constant_o) RUNS="$SCENARIO:E1 $SCENARIO:E1G" ;;
+               *) echo "unknown SCENARIO $SCENARIO"; exit 2 ;;
+             esac ;;
+  *) echo "unknown MODE $MODE"; exit 2 ;;
+esac
+POLICIES=mdn_code,slot,static_flat
+OUT="$CAMPAIGN/results/phase3-$MODE-${SCENARIO:-all}-$PBS_JOBID"
+mkdir -p "$CAMPAIGN/results"; mkdir "$OUT"              # never reuse a result directory
+exec > >(tee "$OUT/job.log") 2>&1
+W="$SCRATCHDIR/work"
+phase=start
+finish() {
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    printf '{"job":"%s","mode":"%s","phase":"%s","exit":%d,"utc":"%s"}\n' "$PBS_JOBID" "$MODE" "$phase" "$rc" "$(date -u +%FT%TZ)" > "$OUT/FAILED.json"
+    for f in "$W"/run/*/*.log "$W"/run/*/summary.json "$W"/run/*/*.jsonl; do
+      [[ -f "$f" ]] && cp -n "$f" "$OUT/partial-$(basename "$(dirname "$f")")-$(basename "$f")" || true
+    done
+  fi
+  rm -rf "$W"
+  exit $rc
+}
+trap finish EXIT
+echo "START $(date -u +%FT%TZ) host=$(hostname) job=$PBS_JOBID mode=$MODE commit=$EXPECTED_COMMIT N=$N runs=$RUNS"
+{ lscpu; free -g; df -h "$SCRATCHDIR"; } > "$OUT/hardware.txt"
+
+phase=verify_inputs
+( cd "$IN" && sha256sum -c inputs.sha256 )
+phase=environment
+source /storage/budejovice1/home/nico/lmi-metacentrum/development-search-timeout-24900597-20261026/sisap23-build-environment-v1.sh
+sisap23_export_build_environment
+sisap23_load_build_modules
+sisap23_check_build_environment | tee "$OUT/toolchain.txt"
+PY="$SISAP23_PYTHON_ENV/bin/python"
+"$PY" -c "import numpy; print('numpy', numpy.__version__)" | tee -a "$OUT/toolchain.txt"
+
+phase=stage
+git() { command git -c filter.lfs.smudge= -c filter.lfs.clean= -c filter.lfs.process= -c filter.lfs.required=false "$@"; }
+export GIT_LFS_SKIP_SMUDGE=1
+mkdir -p "$W/data" "$W/run"
+git clone --quiet --no-checkout "$IN/source.bundle" "$W/qdrant"
+git -C "$W/qdrant" checkout --quiet --detach "$EXPECTED_COMMIT"
+test "$(git -C "$W/qdrant" rev-parse HEAD)" = "$EXPECTED_COMMIT"
+test -z "$(git -C "$W/qdrant" status --porcelain)"
+tar -C "$W" -xf "$IN/vendor.tar"
+mkdir -p "$W/qdrant/.cargo"
+sed "s|__VENDOR_DIR__|$W/vendor|" "$IN/cargo-config.toml" > "$W/qdrant/.cargo/config.toml"
+/usr/bin/time -v cp "$CORPUS" "$W/data/vectors.f16" 2> "$OUT/stage-corpus.time"
+echo "$CORPUS_SHA  $W/data/vectors.f16" | sha256sum -c -
+cp "$IN"/queries.f32 "$W/data/"
+SRC="$W/qdrant/research/dli/emma_path"
+
+phase=build
+cd "$W/qdrant"
+# Binary cache keyed by the compiled source only (lib/, src/, Cargo.toml, Cargo.lock),
+# so research-only commits reuse it. A cached binary is used only if its recorded
+# SHA-256 verifies; otherwise it is rebuilt and the cache refilled.
+SRC_KEY=$(git rev-parse HEAD:lib HEAD:src HEAD:Cargo.toml HEAD:Cargo.lock | sha256sum | cut -c1-24)
+CACHE="$CAMPAIGN/bin-cache/$SRC_KEY"
+echo "source key $SRC_KEY" | tee "$OUT/source-key.txt"
+if [[ -f "$CACHE/collection.sha256" ]] && ( cd "$CACHE" && sha256sum -c --quiet collection.sha256 ); then
+  mkdir -p "$W/target/perf/deps"
+  cp "$CACHE/collection" "$W/target/perf/deps/collection-cached"
+  BIN="$W/target/perf/deps/collection-cached"
+  cp "$CACHE/provenance.json" "$OUT/binary-cache-provenance.json"
+  echo "binary from cache $CACHE" | tee -a "$OUT/source-key.txt"
+else
+  export CARGO_TARGET_DIR="$W/target" CARGO_BUILD_JOBS=$NCPUS
+  /usr/bin/time -v cargo test --locked --offline --profile perf -p collection --lib \
+      --features 'testing,lmi-training,dli-research' --no-run > "$OUT/build.stdout" 2> "$OUT/build.stderr"
+  BIN=$(ls -t "$W/target/perf/deps"/collection-* | grep -v '\.d$' | head -1)
+  mkdir -p "$CACHE.tmp-$PBS_JOBID"
+  cp "$BIN" "$CACHE.tmp-$PBS_JOBID/collection"
+  ( cd "$CACHE.tmp-$PBS_JOBID" && sha256sum collection > collection.sha256 )
+  printf '{"built_by_job":"%s","commit":"%s","source_key":"%s","host":"%s","utc":"%s"}\n' \
+    "$PBS_JOBID" "$EXPECTED_COMMIT" "$SRC_KEY" "$(hostname)" "$(date -u +%FT%TZ)" > "$CACHE.tmp-$PBS_JOBID/provenance.json"
+  cp "$OUT/toolchain.txt" "$CACHE.tmp-$PBS_JOBID/"
+  [[ -e "$CACHE" ]] || mv "$CACHE.tmp-$PBS_JOBID" "$CACHE"
+  rm -rf "$CACHE.tmp-$PBS_JOBID"
+fi
+sha256sum "$BIN" | tee "$OUT/binary.sha256"
+phase=unit_tests
+"$BIN" --exact tests::lmi_lifecycle::dli_sisap_scaling_benchmark::emma_level_rule_and_router_reuse_in_configured_collection \
+    collection_manager::dli_schedule::tests::level_model_policy_sizes_buckets_and_samples_per_level \
+    collection_manager::dli_bucket_plan::tests::model_normalized_scales_by_member_bucket_count_and_code_variant_divides_by_arity \
+    tests::lmi_lifecycle::dli_sisap_scaling_benchmark::greedy_rebuild_after_deletes_in_configured_collection \
+    collection_manager::dli_schedule::tests::greedy_rebuild_follows_the_three_target_rules \
+    collection_manager::dli_schedule::tests::consolidation_reproduces_the_planner_simulation \
+    collection_manager::dli_schedule::tests::consolidation_boundary_fit_guard_and_shape \
+    > "$OUT/unit-tests.log" 2>&1
+grep -q "test result: ok. 7 passed" "$OUT/unit-tests.log"
+"$PY" -I "$SRC/test_analyze_phase3.py" >> "$OUT/unit-tests.log"
+
+phase=plan
+# One plan (inserts, deletes, live-set ledger, per-batch gold) per scenario, shared by its arms.
+for S in $(for r in $RUNS; do echo "${r%%:*}"; done | sort -u); do
+  /usr/bin/time -v "$PY" -I "$SRC/phase3_plan.py" --corpus "$W/data/vectors.f16" --queries "$W/data/queries.f32" \
+      --rows "$N" --scenario "$S" --batches "$BATCHES" --out "$W/plans/$S" > "$OUT/plan-$S.log" 2>&1
+  mkdir -p "$OUT/plans/$S"; cp "$W/plans/$S/plan.json" "$OUT/plans/$S/"
+done
+
+export QDRANT_LMI_SAMPLE_BUDGET_BYTES=2000000000
+ANALYSIS_ARGS=()
+for RUN in $RUNS; do
+  S=${RUN%%:*}; ARM=${RUN##*:}
+  case $ARM in
+    E1)    BASE=E1;  VARIANT=none ;;
+    E1G)   BASE=E1;  VARIANT=greedy ;;
+    E1R)   BASE=E1R; VARIANT=none ;;
+    E1C)   BASE=E1;  VARIANT=consolidate250 ;;
+    E1C50) BASE=E1;  VARIANT=consolidate500 ;;
+  esac
+  case $S in
+    shift)       SETS=mq,mq_val,ids,ids_val,ood,ood_val ;;
+    insert_only) SETS=test,val,partb ;;
+    *)           SETS=test,val ;;
+  esac
+  phase=run-$S-$ARM
+  R="$W/run/$S-$ARM"; A="$OUT/$S-$ARM"; mkdir -p "$R/scratch"
+  (
+    export DLI_ARM=$BASE DLI_P3_VARIANT=$VARIANT DLI_P3_PLAN="$W/plans/$S" DLI_P3_CORPUS="$W/data/vectors.f16"
+    export DLI_P3_OUTPUT="$A" DLI_P3_SCRATCH="$R/scratch" DLI_P3_SETS=$SETS DLI_P3_STATIC_BATCHES=$STATIC
+    export DLI_FRONTIER_BUDGETS=$BUDGETS DLI_FRONTIER_POLICIES=$POLICIES DLI_BENCH_HEAD="$EXPECTED_COMMIT"
+    export QDRANT_DLI_BUILD_CPUS=$NCPUS DLI_BENCH_PUBLICATION_TIMEOUT_S=14400
+    export QDRANT_OPTIMIZATION_EVENTS="$R/native-events.jsonl" QDRANT_LMI_BUILD_EVENTS="$R/build-events.jsonl"
+    /usr/bin/time -v "$BIN" --ignored --exact \
+      tests::lmi_lifecycle::dli_sisap_scaling_benchmark::dli_phase3_workload --nocapture > "$R/run.log" 2>&1
+  )
+  cp "$R/run.log" "$R"/*.jsonl "$A/"
+  rm -rf "$R"
+  ANALYSIS_ARGS+=(--run "$S-$ARM=$S:$ARM:$A")
+done
+for S in $(for r in $RUNS; do echo "${r%%:*}"; done | sort -u); do ANALYSIS_ARGS+=(--plans "$S=$W/plans/$S"); done
+
+phase=analysis
+"$PY" -I "$SRC/analyze_phase3.py" $([[ $MODE == preflight ]] && echo --precision) "${ANALYSIS_ARGS[@]}" \
+    --out "$OUT/analysis.json" > "$OUT/analysis.txt"
+
+phase=persist
+( cd "$OUT" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS )
+( cd "$OUT" && sha256sum -c --quiet SHA256SUMS )
+printf '{"job":"%s","mode":"%s","scenario":"%s","commit":"%s","binary_sha256":"%s","utc":"%s","status":"complete"}\n' \
+  "$PBS_JOBID" "$MODE" "${SCENARIO:-all}" "$EXPECTED_COMMIT" "$(cut -d' ' -f1 "$OUT/binary.sha256")" "$(date -u +%FT%TZ)" > "$OUT/COMPLETE.json"
+phase=done
+echo "COMPLETE $(date -u +%FT%TZ)"

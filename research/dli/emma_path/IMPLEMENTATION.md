@@ -79,11 +79,18 @@ Tracked against [PHASE3_PREREGISTRATION.md](PHASE3_PREREGISTRATION.md) §7 and �
 | M1 | Underutilisation: `HierarchyConfig::minimum_capacity`, Cmin(i) = b·a^(i−1) | done |
 | M2 | Greedy rebuild: `HierarchyConfig::plan_rebuild` (her §3.4.2 target rules 1–3; Greedy upward accumulation stops at the first level that does not fit; deepest underutilised level first; level 1 is never moved into the buffer) | done (planner only; native execution is M4) |
 | M10 | Consolidation: `MaintenancePolicy::GeometricConsolidating { rho_permille }` overrides a Bentley–Saxe plan into a level above the deepest non-empty level D when its output would exceed ρ·live(D) and buffer + all levels above D fit D | done (planner); runs through the existing native path, which reuses D's router |
-| M3–M9, M11, M12 | dead-posting counters, native rebuild, workload driver, shift data, live-mask gold, per-batch replay, analysis, calibrated allocation, Part-B queries | to do |
+| M3 | Dead postings: `NativeRouteResult.dead_posting_offsets` (soft-deleted point or vector, or out of range), in request events (`dead_offsets`) and frontier rows | done; test `dli_learned_resolution_survives_delete_and_reinsert` checks it against the scored hits, the all-deleted request-event test checks dead = unique |
+| M4 | Native rebuild: `DliExperimentalConfig.greedy_rebuild`; `dli_maintenance::next_plan` plans a rebuild when no compaction is due; rebuild plans (`buffer_points = 0`) leave the buffer out and are re-derived by `plan_rebuild` in topology validation; `local_dli_observe_for_test` re-plans without an update | done; test `greedy_rebuild_after_deletes_in_configured_collection` (random and oldest 70% deletes, b = 40, a = 4: 2 rebuilds each, no level below Cmin, rebuilt destinations hold no deleted points, learned search = exact over live points, 0 fallbacks) |
+| M5 | Workload driver `dli_phase3_workload` (ignored test): executes a plan, inserts in buffer-sized chunks, deletes, `settle_dli_maintenance` fixed point, **live-set SHA-256 against the plan ledger every batch**, flushed copy, per-batch replay | done; smoke runs on synthetic 20K plans (Constant-R + Greedy, Shift, Insert-only + consolidation) pass every ledger check |
+| M6, M7 | `phase3_plan.py`: scenarios, shift chain and holdouts, query pools, tie-exact live-set gold | done; gold of an insert-only batch equals `prefix_gold.py` exactly (with ties); holdout and OOD rows asserted never inserted; deterministic for a seed |
+| M8 | `dli_selection_frontier::run_frontier(FrontierRun)` callable per batch; the old env-driven test is a thin wrapper | done |
+| M9 | `analyze_phase3.py` (Part A batch-stratified paired bootstrap, TOST, inconclusive rule, Bonferroni sensitivity; Part B work-ratio; `--precision` for preflight) | done; `test_analyze_phase3.py` known-answer test (Δ = 3.0 pp supported; equivalence detected and rejected; work ratio 0.6) |
+| PBS | `pbs/phase3.pbs` (MODE preflight / primary with SCENARIO) | written, not yet run |
+| M11, M12 | calibrated level-aware allocation; calibration-query fitting in the replay | to do |
 
 Tests in `dli_schedule::tests`:
 - `consolidation_reproduces_the_planner_simulation`: final levels and write amplification equal `consolidation_sim.py` at 10.12M for ρ = 0.25 and 0.5; ρ = 1 equals Bentley–Saxe.
 - `consolidation_boundary_fit_guard_and_shape`: the strict ρ boundary, the fit guard, plans already targeting D, an empty hierarchy.
 - `greedy_rebuild_follows_the_three_target_rules`: each rule, empty intermediate levels, the Greedy stop, deepest-first, the level-1 exclusion, over-capacity rejection.
 
-Collection `--lib -- dli_ lmi`: 46 passed.
+Collection `--lib -- dli_ lmi`: 47 passed (after M4).
