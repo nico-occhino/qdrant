@@ -1,0 +1,75 @@
+{
+ "study": "static_qdrant_vs_dli",
+ "branch": "research/static-vs-dli-20261122",
+ "jobs": [
+  {
+   "id": "25863307.pbs-m1.metacentrum.cz",
+   "mode": "pilot",
+   "scenario": "insert_only",
+   "commit": "301319ada",
+   "input_dir": "native-301319adabd9",
+   "seed": 20261301,
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
+   "arms": "D (E1 mdn_code), S1 (seg 1, 1000 buckets), S4 (seg 4, 250 buckets)",
+   "batches": "first 6 plan batches",
+   "panels": "validation only",
+   "submitted_utc": "2026-11-22",
+   "status": "SUBMITTED"
+  },
+  {
+   "id": "25863308.pbs-m1.metacentrum.cz",
+   "mode": "pilot",
+   "scenario": "shift",
+   "commit": "301319ada",
+   "input_dir": "native-301319adabd9",
+   "seed": 20261301,
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
+   "arms": "D (E1 mdn_code), S1 (seg 1, 1000 buckets), S4 (seg 4, 250 buckets)",
+   "batches": "first 6 plan batches",
+   "panels": "validation only",
+   "submitted_utc": "2026-11-22",
+   "status": "SUBMITTED"
+  },
+  {
+   "id": "25863309.pbs-m1.metacentrum.cz",
+   "mode": "pilot",
+   "scenario": "constant_r",
+   "commit": "301319ada",
+   "input_dir": "native-301319adabd9",
+   "seed": 20261301,
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
+   "arms": "D (E1 mdn_code), S1 (seg 1, 1000 buckets), S4 (seg 4, 250 buckets)",
+   "batches": "first 6 plan batches",
+   "panels": "validation only",
+   "submitted_utc": "2026-11-22",
+   "status": "SUBMITTED"
+  },
+  {
+   "id": "25863310.pbs-m1.metacentrum.cz",
+   "mode": "pilot",
+   "scenario": "constant_o",
+   "commit": "301319ada",
+   "input_dir": "native-301319adabd9",
+   "seed": 20261301,
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
+   "arms": "D (E1 mdn_code), S1 (seg 1, 1000 buckets), S4 (seg 4, 250 buckets)",
+   "batches": "first 6 plan batches",
+   "panels": "validation only",
+   "submitted_utc": "2026-11-22",
+   "status": "SUBMITTED"
+  }
+ ],
+ "staging": {
+  "source_bundle_sha256": "9b845fe69bf3d627c193b189cdec62d16f8f0914773884fdb8dc0a0a28d7e8e6",
+  "inputs_sha256_file_sha256": "1bce6774a2c94feb1e6c95c79818fc4aa254c35d16247d047317ed132923d0cd"
+ },
+ "status_vocabulary": [
+  "PREPARED",
+  "SUBMITTED",
+  "QUEUED",
+  "RUNNING",
+  "FAILED",
+  "COMPLETED",
+  "ACCEPTED"
+ ]
+}
