@@ -119,6 +119,9 @@ impl LocalShard {
             .destination_on_disk
             .store(destination_on_disk, Ordering::Release);
         *maintenance.level_model.lock() = config.level_model;
+        maintenance
+            .greedy_rebuild
+            .store(config.greedy_rebuild, std::sync::atomic::Ordering::Release);
         maintenance.attach_search(search.clone());
         maintenance.native_enabled.store(true, Ordering::Release);
 

@@ -160,23 +160,23 @@ impl shard::optimize::OptimizationStrategy for DliOptimizationStrategy {
         if seen.len() != roles.len() {
             return Err(fail());
         }
-        let actual = hierarchy
-            .plan(buffer, &counts)
-            .map_err(|_| fail())?
-            .ok_or_else(fail)?;
+        // A rebuild plan (no buffer points) is re-derived by the rebuild planner.
+        let actual = if expected.buffer_points == 0 {
+            hierarchy.plan_rebuild(&counts)
+        } else {
+            hierarchy.plan(buffer, &counts)
+        }
+        .map_err(|_| fail())?
+        .ok_or_else(fail)?;
         if actual.target_level != expected.target_level
             || actual.source_levels != expected.source_levels
+            || (actual.buffer_points == 0) != (expected.buffer_points == 0)
         {
             return Err(fail());
         }
         let selected: std::collections::HashSet<_> = roles
             .iter()
-            .filter_map(|(uuid, level)| {
-                (*level == 0
-                    || *level == actual.target_level
-                    || actual.source_levels.contains(level))
-                .then_some(*uuid)
-            })
+            .filter_map(|(uuid, level)| plan_selects(&actual, *level).then_some(*uuid))
             .collect();
         if selected != self.expected_sources {
             return Err(fail());
@@ -363,6 +363,8 @@ pub struct DliMaintenance {
     /// Per-level model rule for new learned destinations (default: one fixed model,
     /// full retraining).
     pub level_model: Mutex<super::dli_schedule::LevelModelPolicy>,
+    /// Plan a Greedy underutilisation rebuild when no compaction is due.
+    pub greedy_rebuild: AtomicBool,
     pub published: AtomicUsize,
     pub published_uuids: Mutex<Vec<Uuid>>,
     pub publication_events: Mutex<Vec<DliPublicationEvent>>,
@@ -566,6 +568,7 @@ impl DliMaintenance {
             native_enabled: AtomicBool::new(false),
             destination_on_disk: AtomicBool::new(true),
             level_model: Mutex::new(Default::default()),
+            greedy_rebuild: AtomicBool::new(false),
             published: AtomicUsize::new(0),
             published_uuids: Mutex::new(Vec::new()),
             publication_events: Mutex::new(Vec::new()),
@@ -708,14 +711,12 @@ impl DliMaintenance {
             roles.push(level);
         }
         fingerprints.sort_unstable();
-        let Ok(Some(plan)) = self.hierarchy.plan(buffer, &counts) else {
+        let rebuild = self.greedy_rebuild.load(Ordering::Acquire);
+        let Ok(Some(plan)) = next_plan(self.hierarchy, rebuild, buffer, &counts) else {
             self.running.store(false, Ordering::Release);
             return;
         };
-        fingerprints.retain(|(uuid, _, _)| {
-            let level = roles_snapshot[uuid];
-            level == 0 || level == plan.target_level || plan.source_levels.contains(&level)
-        });
+        fingerprints.retain(|(uuid, _, _)| plan_selects(&plan, roles_snapshot[uuid]));
         let job_model = match self.destination_model(&captured, &roles_snapshot, &plan) {
             Ok(model) => model,
             Err(error) => {
@@ -739,9 +740,7 @@ impl DliMaintenance {
         let sources: Vec<_> = captured
             .into_iter()
             .zip(roles)
-            .filter_map(|(s, l)| {
-                (l == 0 || l == plan.target_level || plan.source_levels.contains(&l)).then_some(s)
-            })
+            .filter_map(|(s, l)| plan_selects(&plan, l).then_some(s))
             .collect();
         self.scheduled.fetch_add(1, Ordering::Relaxed);
         let state = self.clone();
@@ -1062,4 +1061,27 @@ fn build_cpus() -> usize {
             .filter(|&n| n > 0)
             .unwrap_or_else(|| panic!("QDRANT_DLI_BUILD_CPUS must be a positive integer, got {v}")),
     }
+}
+
+/// The next maintenance job: a buffer compaction when due, otherwise (when enabled) a
+/// Greedy underutilisation rebuild planned from live counts.
+pub fn next_plan(
+    hierarchy: HierarchyConfig,
+    greedy_rebuild: bool,
+    buffer: usize,
+    counts: &[usize],
+) -> Result<Option<CompactionPlan>, super::dli_schedule::ScheduleError> {
+    match hierarchy.plan(buffer, counts)? {
+        Some(plan) => Ok(Some(plan)),
+        None if greedy_rebuild => hierarchy.plan_rebuild(counts),
+        None => Ok(None),
+    }
+}
+
+/// Members of a job: the target, its sources, and the buffer only when the plan drains it
+/// (a rebuild leaves the buffer alone, which preserves temporal order).
+fn plan_selects(plan: &CompactionPlan, level: usize) -> bool {
+    (level == 0 && plan.buffer_points > 0)
+        || level == plan.target_level
+        || plan.source_levels.contains(&level)
 }

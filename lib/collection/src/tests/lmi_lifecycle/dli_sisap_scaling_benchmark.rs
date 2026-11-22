@@ -184,6 +184,7 @@ fn collection_config(dli: bool) -> CollectionConfigInternal {
                 Default::default()
             },
             level_model,
+            greedy_rebuild: std::env::var("DLI_GREEDY_REBUILD").as_deref() == Ok("1"),
             buffer_capacity,
             arity,
             candidate_budget: std::env::var("DLI_BENCH_BUDGET")
@@ -2091,6 +2092,196 @@ async fn emma_level_rule_and_router_reuse_in_configured_collection() {
         }
         let attribution = local.local_dli_search_metrics_for_test().await.unwrap();
         println!("EMMA_TEST reuse={reuse} reused={reused} retrained={retrained} search={attribution:?}");
+        collection.stop_gracefully().await;
+    }
+}
+
+/// Drives maintenance to a fixed point after deletes: re-plans without an update (rebuild
+/// cascades have none) and waits until nothing is scheduled or running. Fails on any
+/// optimizer error or after `limit`.
+async fn settle_dli_maintenance(
+    replica: &crate::shards::replica_set::ShardReplicaSet,
+    limit: Duration,
+) -> usize {
+    let started = Instant::now();
+    let initial = replica.local_dli_diagnostics_for_test().await.unwrap().1;
+    loop {
+        assert!(started.elapsed() < limit, "DLI maintenance did not settle");
+        let before = replica.local_dli_diagnostics_for_test().await.unwrap();
+        assert!(before.4.is_empty(), "DLI maintenance failed: {before:?}");
+        if before.3 || before.0 > before.1 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            continue;
+        }
+        replica.local_dli_observe_for_test().await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let after = replica.local_dli_diagnostics_for_test().await.unwrap();
+        if after.0 == before.0 && !after.3 && after.0 == after.1 {
+            return after.1 - initial;
+        }
+    }
+}
+
+/// Phase 3 M4: Greedy underutilisation rebuild through the native optimizer, after
+/// random and oldest-first deletes, in a configured collection (b = 40, a = 4). After
+/// maintenance settles, no level is below Cmin, every rebuilt destination holds no
+/// deleted points, and full-budget learned search equals exact search over live points.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn greedy_rebuild_after_deletes_in_configured_collection() {
+    let _scope = common::ambient::test_guard();
+    use rand::seq::SliceRandom;
+    use rand::{RngExt, SeedableRng};
+    use segment::entry::SegmentEntry as _;
+    use crate::collection_manager::dli_bucket_plan::RoutingPolicy;
+    use crate::collection_manager::dli_schedule::{
+        HierarchyConfig, LevelBuckets, LevelModelPolicy, MaintenancePolicy,
+    };
+    const B: usize = 40;
+    const A: usize = 4;
+    const BATCHES: usize = 12;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(20261122);
+    let centers: Vec<Vec<f32>> = (0..8)
+        .map(|_| (0..DIMENSIONS).map(|_| rng.random_range(-1.0f32..1.0)).collect())
+        .collect();
+    let rows: Vec<Vec<f32>> = (0..B * BATCHES)
+        .map(|i| {
+            centers[i % centers.len()]
+                .iter()
+                .map(|c| c + rng.random_range(-0.3f32..0.3))
+                .collect()
+        })
+        .collect();
+    let queries: Vec<Vec<f32>> = (0..6)
+        .map(|i| centers[i].iter().map(|c| c + rng.random_range(-0.3f32..0.3)).collect())
+        .collect();
+    let stored = |v: &[f32]| -> Vec<f32> {
+        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        v.iter().map(|x| f16::from_f32(x / norm).to_f32()).collect()
+    };
+    let hierarchy = HierarchyConfig {
+        buffer_capacity: B,
+        arity: A,
+        policy: MaintenancePolicy::Geometric,
+    };
+    for oldest in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = collection_config(true);
+        let dli = config.dli_experimental.as_mut().unwrap();
+        dli.buffer_capacity = B;
+        dli.arity = A;
+        dli.candidate_budget = usize::MAX / 2;
+        dli.routing_policy = RoutingPolicy::ModelDrivenNormalizedCode;
+        dli.greedy_rebuild = true;
+        dli.level_model = LevelModelPolicy {
+            buckets: LevelBuckets::ArityPower,
+            min_samples_per_bucket: 4,
+            reuse_target_router: true,
+        };
+        dli.model = LmiConfig {
+            n_buckets: A,
+            sample_size: 64,
+            hidden_dim: 8,
+            epochs: 2,
+            batch_size: 16,
+            routing_batch_size: 16,
+            kmeans_iterations: 3,
+            nprobe: 1,
+            seed: 5,
+            reuse_router: None,
+        };
+        let collection = create_collection_with_config("rebuild", root.path(), config).await;
+        let local = replica(&collection).await;
+        for batch in 0..BATCHES {
+            let points = (batch * B..(batch + 1) * B)
+                .map(|row| PointStructPersisted {
+                    id: ((row + 1) as u64).into(),
+                    vector: VectorStructPersisted::Single(rows[row].clone()),
+                    payload: None,
+                })
+                .collect();
+            apply_points(&collection, points).await;
+            wait_for_dli_publications(&local, batch + 1).await;
+        }
+        // Delete 70% of the points: the oldest IDs, or a seeded random subset.
+        let mut ids: Vec<u64> = (1..=(B * BATCHES) as u64).collect();
+        if !oldest {
+            ids.shuffle(&mut rand::rngs::StdRng::seed_from_u64(7));
+        }
+        let deleted: HashSet<u64> = ids[..B * BATCHES * 7 / 10].iter().copied().collect();
+        let before_events = local.local_dli_publication_events_for_test().await.unwrap().len();
+        apply_delete(&collection, deleted.iter().copied().collect()).await;
+        let rebuilds = settle_dli_maintenance(&local, Duration::from_secs(120)).await;
+        let events = local.local_dli_publication_events_for_test().await.unwrap();
+        let rebuilt: HashSet<uuid::Uuid> =
+            events[before_events..].iter().map(|e| e.destination_uuid).collect();
+        assert_eq!(rebuilt.len(), rebuilds);
+
+        // Fixed point: no level below Cmin; rebuilt destinations dropped dead points.
+        let members = learned_members(&collection, root.path()).await;
+        let mut live = vec![0usize; members.keys().max().copied().unwrap_or(0)];
+        for (level, (_, _, _, points)) in &members {
+            live[level - 1] = *points;
+        }
+        assert_eq!(hierarchy.plan_rebuild(&live).unwrap(), None, "levels {live:?}");
+        let holder = replica(&collection).await.local_segments_for_test().await.unwrap();
+        for (_, member) in holder.read().iter_original() {
+            let segment = member.read();
+            if rebuilt.contains(&segment.uuid) {
+                assert_eq!(segment.deleted_point_count(), 0, "rebuild kept dead points");
+            }
+        }
+        println!("REBUILD_TEST oldest={oldest} rebuilds={rebuilds} levels={live:?}");
+        if !oldest {
+            assert!(rebuilds >= 1, "70% random deletes must trigger a rebuild");
+        }
+
+        let corpus: Vec<(u64, Vec<f32>)> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, v)| ((i + 1) as u64, stored(v)))
+            .filter(|(id, _)| !deleted.contains(id))
+            .collect();
+        let (learned_before, fallback_before) =
+            local.local_dli_search_counts_for_test().await.unwrap();
+        for query in &queries {
+            let result = collection
+                .search(
+                    CoreSearchRequest {
+                        query: QueryEnum::Nearest(NamedQuery::default_dense(query.clone())),
+                        filter: None,
+                        params: None,
+                        limit: 10,
+                        offset: 0,
+                        with_payload: None,
+                        with_vector: None,
+                        score_threshold: None,
+                    },
+                    None,
+                    None,
+                    &ShardSelectorInternal::All,
+                    None,
+                )
+                .await
+                .unwrap();
+            let norm = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let mut exact: Vec<f32> = corpus
+                .iter()
+                .map(|(_, v)| v.iter().zip(query).map(|(a, b)| a * b / norm).sum())
+                .collect();
+            exact.sort_by(|a, b| b.total_cmp(a));
+            assert_eq!(result.len(), 10);
+            for (hit, oracle) in result.iter().zip(&exact) {
+                assert!((hit.score - oracle).abs() < 2e-3, "{} vs {oracle}", hit.score);
+                let id = match hit.id {
+                    segment::types::ExtendedPointId::NumId(n) => n,
+                    other => panic!("unexpected id {other:?}"),
+                };
+                assert!(!deleted.contains(&id), "deleted point {id} returned");
+            }
+        }
+        let (learned, fallback) = local.local_dli_search_counts_for_test().await.unwrap();
+        assert_eq!(learned - learned_before, queries.len() as u64, "learned routing");
+        assert_eq!(fallback - fallback_before, 0, "exact fallbacks");
         collection.stop_gracefully().await;
     }
 }

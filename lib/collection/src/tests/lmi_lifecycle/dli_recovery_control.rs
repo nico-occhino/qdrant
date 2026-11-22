@@ -1635,6 +1635,7 @@ async fn dli_recovery_control_body() {
         routing_policy: crate::collection_manager::dli_bucket_plan::RoutingPolicy::ReservedPerLevel,
         maintenance_policy: Default::default(),
         level_model: Default::default(),
+        greedy_rebuild: false,
         buffer_capacity: 3,
         arity: 2,
         candidate_budget: 64,

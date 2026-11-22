@@ -413,6 +413,10 @@ pub struct DliExperimentalConfig {
     /// Per-level bucket count, sample floor and router reuse for new learned levels.
     #[serde(default)]
     pub level_model: crate::collection_manager::dli_schedule::LevelModelPolicy,
+    /// Greedy underutilisation rebuild after deletes (Sommerová §3.4.2). Off keeps
+    /// the historical No-Rebuild behaviour.
+    #[serde(default)]
+    pub greedy_rebuild: bool,
     pub buffer_capacity: usize,
     pub arity: usize,
     pub candidate_budget: usize,

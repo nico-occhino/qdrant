@@ -97,6 +97,7 @@ fn config(buffer_capacity: usize) -> CollectionConfigInternal {
             routing_policy: Default::default(),
             maintenance_policy: Default::default(),
         level_model: Default::default(),
+        greedy_rebuild: false,
             buffer_capacity,
             arity: 2,
             // Exhaustive learned routing: isolates visibility from ANN recall.

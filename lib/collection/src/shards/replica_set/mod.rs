@@ -502,6 +502,20 @@ impl ShardReplicaSet {
         Some(maintenance.publication_events.lock().clone())
     }
 
+    /// Re-run DLI maintenance planning without an update. Rebuild cascades and
+    /// post-delete rebuilds have no update to trigger them in the research harness.
+    #[cfg(all(test, feature = "dli-research"))]
+    pub async fn local_dli_observe_for_test(&self) {
+        use crate::shards::shard::Shard;
+        let local = self.local.read().await;
+        let Some(Shard::Local(local)) = local.as_ref() else {
+            return;
+        };
+        if let Some(maintenance) = local.update_tracker.dli_maintenance.read().clone() {
+            maintenance.observe(&local.segments());
+        }
+    }
+
     #[cfg(all(test, feature = "dli-research"))]
     pub async fn local_dli_diagnostics_for_test(
         &self,
