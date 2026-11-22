@@ -692,3 +692,138 @@ pub(super) fn run_frontier(run: &FrontierRun) {
         println!("FRONTIER_SET_DONE set={} queries={}", set.label, set.queries.len());
     }
 }
+
+/// Static-LMI frontier over a frozen ordinary Qdrant shard (arm S of
+/// `research/dli/static_qdrant_vs_dli/`). Mirrors native per-segment search
+/// (`LmiIndex::search`): every learned segment routes the cosine-normalised query to
+/// the same `nprobe` buckets (capped at its bucket count) and widens by doubling until
+/// it has `min(top, live)` hits (`widen_until_filled`); every Plain segment is scored
+/// exhaustively. Per-segment top-k lists are merged by score, ties by smaller id.
+/// Work counts every scoring pass, including widening re-scores. No DLI descriptor is
+/// read. Rows use the DLI frontier schema with `policy = "static_nprobe"` and
+/// `budget = nprobe`.
+pub(super) fn run_static_frontier(
+    segments_dir: &Path,
+    output: &Path,
+    sets: &[QuerySet],
+    nprobes: &[usize],
+    query_cap: usize,
+) {
+    use segment::data_types::vectors::{QueryVector, VectorInternal};
+    use segment::index::candidate_scoring::score_candidates_quantized_profiled;
+    use segment::vector_storage::VectorStorageRead as _;
+    assert!(!output.join("rows.jsonl").exists(), "refusing to overwrite");
+    fs_err::create_dir_all(output).unwrap();
+    let mut loaded: Vec<Segment> = fs_err::read_dir(segments_dir.join("segments"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_dir() && !path.file_name().unwrap().to_string_lossy().starts_with('.'))
+        .map(|path| {
+            let uuid: Uuid = path.file_name().unwrap().to_string_lossy().parse().unwrap();
+            load_segment(&path, uuid, None, &AtomicBool::new(false), true)
+                .unwrap_or_else(|e| panic!("segment {uuid} did not load: {e}"))
+        })
+        .collect();
+    loaded.sort_by_key(|s| s.uuid);
+    let total_live: usize = loaded.iter().map(|s| s.available_point_count()).sum();
+    let topology: Vec<serde_json::Value> = loaded
+        .iter()
+        .map(|s| {
+            let index = s.vector_data[DEFAULT_VECTOR_NAME].vector_index.borrow();
+            let buckets = match &*index {
+                VectorIndexEnum::Lmi(lmi) => lmi.routing_state().map(|st| st.postings().len()),
+                _ => None,
+            };
+            serde_json::json!({"uuid": s.uuid, "appendable": s.is_appendable(), "live": s.available_point_count(),
+                "deleted": s.deleted_point_count(), "learned_buckets": buckets})
+        })
+        .collect();
+    fs_err::write(
+        output.join("topology.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({"segments": topology, "total_live": total_live, "nprobes": nprobes})).unwrap(),
+    )
+    .unwrap();
+    let stopped = AtomicBool::new(false);
+    let context = VectorQueryContext::default();
+    let mut rows = fs_err::File::create(output.join("rows.jsonl")).unwrap();
+    for set in sets {
+        for (qi, (query, gold)) in set.queries.iter().zip(&set.gold).enumerate().take(query_cap) {
+            let original = QueryVector::Nearest(VectorInternal::Dense(query.clone()));
+            let routed = QueryVector::Nearest(VectorInternal::Dense(
+                Distance::Cosine.preprocess_vector::<f32>(query.clone()),
+            ));
+            for &nprobe in nprobes {
+                let started = std::time::Instant::now();
+                let (mut learned_scored, mut plain_scored, mut raw, mut unique, mut dead) = (0, 0, 0, 0, 0);
+                let mut widened = 0usize;
+                let mut hits: Vec<(f32, u64)> = Vec::new();
+                for segment in &loaded {
+                    let data = &segment.vector_data[DEFAULT_VECTOR_NAME];
+                    let index = data.vector_index.borrow();
+                    let tracker = segment.id_tracker.borrow();
+                    let storage = data.vector_storage.borrow();
+                    let deleted = tracker.deleted_point_bitslice();
+                    let is_dead = |o: u32| {
+                        let i = o as usize;
+                        i >= storage.total_vector_count()
+                            || deleted.get(i).map_or(true, |b| *b)
+                            || storage.is_deleted_vector(o)
+                    };
+                    let state = match &*index {
+                        VectorIndexEnum::Lmi(lmi) => lmi.routing_state(),
+                        _ => None,
+                    };
+                    let segment_hits = if let Some(state) = state {
+                        let buckets = state.postings().len();
+                        let needed = TOP.min(tracker.available_point_count());
+                        let mut probe = nprobe.clamp(1, buckets);
+                        loop {
+                            let (candidates, raw_count) = state
+                                .candidates_with_raw_count(&routed, probe, &stopped)
+                                .unwrap()
+                                .expect("dense query");
+                            raw += raw_count;
+                            unique += candidates.len();
+                            dead += candidates.iter().filter(|&&o| is_dead(o)).count();
+                            let (found, stats) = score_candidates_quantized_profiled(
+                                &original, &candidates, TOP, &*tracker, &*storage, None, &context,
+                            )
+                            .unwrap();
+                            learned_scored += stats.scored_vectors;
+                            if found.len() >= needed || probe >= buckets {
+                                break found;
+                            }
+                            probe = probe.saturating_mul(2).min(buckets);
+                            widened += 1;
+                        }
+                    } else {
+                        let all: Vec<u32> = (0..storage.total_vector_count() as u32).collect();
+                        let (found, stats) = score_candidates_quantized_profiled(
+                            &original, &all, TOP, &*tracker, &*storage, None, &context,
+                        )
+                        .unwrap();
+                        plain_scored += stats.scored_vectors;
+                        found
+                    };
+                    for hit in segment_hits {
+                        let id = tracker.external_id(hit.idx).expect("scored offset is live");
+                        hits.push((hit.score, num(id)));
+                    }
+                }
+                hits.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+                let ids: Vec<u64> = hits.iter().take(TOP).map(|h| h.1).collect();
+                let recall = |k: usize| gold[..k].iter().filter(|id| ids[..k.min(ids.len())].contains(id)).count();
+                let row = serde_json::json!({
+                    "set": set.label, "query": qi, "policy": "static_nprobe", "budget": nprobe,
+                    "recall10": recall(10), "recall30": recall(30),
+                    "posting_entries": raw, "unique_offsets": unique, "dead_offsets": dead,
+                    "original_scored": learned_scored, "plain_scored": plain_scored,
+                    "scored_total": learned_scored + plain_scored, "widened": widened,
+                    "elapsed_ns": started.elapsed().as_nanos(),
+                });
+                writeln!(rows, "{row}").unwrap();
+            }
+        }
+        println!("STATIC_FRONTIER_SET_DONE set={} queries={}", set.label, set.queries.len());
+    }
+}

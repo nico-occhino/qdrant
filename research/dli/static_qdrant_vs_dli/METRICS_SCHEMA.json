@@ -1,0 +1,40 @@
+{
+ "schema": "static_qdrant_vs_dli/1",
+ "per_run_files": {
+  "batches.jsonl": {
+   "one_line_per_batch": true,
+   "fields": {
+    "batch": "plan batch index",
+    "arm": "D: 'E1/none'; S: 'S/b<buckets>/seg<target segments>'",
+    "live": "live points counted from the collection (must equal the plan ledger)",
+    "live_sha256": "SHA-256 of sorted little-endian u32 live ids (must equal the plan)",
+    "writes_seconds": "inserts + deletes of the batch (D includes its synchronous drains)",
+    "settle_seconds": "S only: time until optimizers idle (Green, status Ok) after the writes",
+    "ingest_seconds": "writes + settle",
+    "segments": "[{uuid, appendable, live, deleted, learned_buckets}] after settling",
+    "levels": "D only: learned levels {level, live, buckets, router fingerprint}",
+    "publications": "D only: DLI publication events of this batch",
+    "frontier_seconds": "replay wall time (not query latency)"
+   }
+  },
+  "batch_XX/rows.jsonl": {
+   "one_line_per": "(set, query, policy, budget)",
+   "policy": "D: 'mdn_code' (budget = global candidate budget); S: 'static_nprobe' (budget = nprobe per segment)",
+   "fields": ["recall10", "recall30", "posting_entries", "unique_offsets", "dead_offsets", "original_scored",
+              "plain_scored", "scored_total", "widened (S)", "elapsed_ns (instrumented, not latency)"]
+  },
+  "batch_XX/topology.json": "segments (S) or members (D) of the replayed snapshot",
+  "native-events.jsonl": "every native optimizer job of both arms (QDRANT_OPTIMIZATION_EVENTS): sources, source_live_points, destination_points, job_wall_micros, native_phases",
+  "build-events.jsonl": "every LMI build (QDRANT_LMI_BUILD_EVENTS): n_buckets, sample_count, teacher_mlp_seconds, reused_router, router_fingerprint, routing_postings_seconds",
+  "summary.json": "system, arm, model, static_model, publications (D), seconds, source_head"
+ },
+ "derived": {
+  "W_X(t)": "work (mean scored_total) at mean test R@30 = 0.90 by linear interpolation in mean-work order; null if not attained",
+  "R_w": "mean_t W_D(t) / mean_t W_S(t) over batches 1-20 attained by both arms",
+  "A_write_logical": "sum destination_points of optimizer jobs after the initial load / points inserted after the initial load",
+  "training_seconds": "sum teacher_mlp_seconds",
+  "full_retrainings": "builds with reused_router = null",
+  "router_reuses": "builds with reused_router != null"
+ },
+ "not_yet_collected": ["live-request latency/QPS under concurrent writes", "per-arm CPU-seconds, RSS, cgroup memory, I/O bytes per batch", "maximum maintenance stall", "router/selection/scoring time split for S"]
+}

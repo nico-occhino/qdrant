@@ -2440,6 +2440,55 @@ async fn vacuum_rebuild_after_deletes_in_configured_collection() {
     }
 }
 
+/// Arm S of `research/dli/static_qdrant_vs_dli/`: wait until Qdrant's ordinary
+/// optimizers are idle (collection Green, optimizer status Ok) for two consecutive
+/// polls one second apart. Nothing is triggered or forced; an optimizer error fails.
+async fn settle_static_optimizers(collection: &Collection, limit: Duration) -> f64 {
+    use crate::operations::types::{CollectionStatus, OptimizersStatus};
+    let started = Instant::now();
+    let mut green_polls = 0;
+    loop {
+        assert!(started.elapsed() < limit, "static optimizers did not settle");
+        let info = collection.info(&ShardSelectorInternal::All).await.unwrap();
+        if let OptimizersStatus::Error(error) = &info.optimizer_status {
+            panic!("static optimizer error: {error}");
+        }
+        if info.status == CollectionStatus::Green {
+            green_polls += 1;
+            if green_polls >= 2 {
+                return started.elapsed().as_secs_f64();
+            }
+        } else {
+            green_polls = 0;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+/// Segment topology of the local shard: kind, live and deleted points, learned buckets.
+async fn segment_topology(collection: &Collection) -> Vec<serde_json::Value> {
+    let holder = replica(collection).await.local_segments_for_test().await.unwrap();
+    let guard = holder.read();
+    let mut out: Vec<serde_json::Value> = guard
+        .iter_original()
+        .map(|(_, member)| {
+            let segment = member.read();
+            let index = segment.vector_data[segment::data_types::vectors::DEFAULT_VECTOR_NAME]
+                .vector_index
+                .borrow();
+            let buckets = match &*index {
+                VectorIndexEnum::Lmi(lmi) => lmi.routing_state().map(|st| st.postings().len()),
+                _ => None,
+            };
+            serde_json::json!({"uuid": segment.uuid, "appendable": segment.is_appendable(),
+                "live": segment.available_point_count(), "deleted": segment.deleted_point_count(),
+                "learned_buckets": buckets})
+        })
+        .collect();
+    out.sort_by_key(|v| v["uuid"].as_str().unwrap_or_default().to_owned());
+    out
+}
+
 fn env_list(name: &str) -> Option<Vec<String>> {
     std::env::var(name)
         .ok()
@@ -2513,8 +2562,39 @@ async fn dli_phase3_workload() {
         serde_json::from_slice(&std::fs::read(plan_dir.join("plan.json")).unwrap()).unwrap();
     let variant = std::env::var("DLI_P3_VARIANT").unwrap_or_else(|_| "none".into());
     let (buffer_capacity, arity, base_model, _, _) = arm_config();
-    let mut config = collection_config(true);
-    {
+    // DLI_P3_SYSTEM = dli (default) | static. `static` is arm S of
+    // research/dli/static_qdrant_vs_dli: ordinary Qdrant optimizers with one fixed
+    // static-LMI model on every optimized segment (the arm's model rule with
+    // `DLI_P3_STATIC_BUCKETS` buckets), `DLI_P3_STATIC_SEGMENTS` target segments,
+    // `DLI_P3_STATIC_INDEXING_KB` indexing threshold, one optimization job at a time.
+    let static_system = match std::env::var("DLI_P3_SYSTEM").as_deref() {
+        Err(_) | Ok("dli") => false,
+        Ok("static") => true,
+        Ok(other) => panic!("DLI_P3_SYSTEM must be dli or static, got {other}"),
+    };
+    let env_usize = |name: &str| -> usize {
+        std::env::var(name).unwrap_or_else(|_| panic!("{name} required")).parse().expect(name)
+    };
+    let static_model = static_system.then(|| {
+        let buckets = env_usize("DLI_P3_STATIC_BUCKETS");
+        let mut model = base_model;
+        model.n_buckets = buckets;
+        model.sample_size = buckets.max(100_000.max(40 * buckets).min(1_000_000));
+        model.nprobe = 1;
+        model.reuse_router = None;
+        model
+    });
+    let mut config = collection_config(!static_system);
+    if let Some(model) = static_model {
+        let crate::operations::types::VectorsConfig::Single(vectors) = &mut config.params.vectors else {
+            unreachable!()
+        };
+        vectors.lmi_config = Some(model);
+        config.optimizer_config.default_segment_number = env_usize("DLI_P3_STATIC_SEGMENTS");
+        config.optimizer_config.indexing_threshold = Some(env_usize("DLI_P3_STATIC_INDEXING_KB"));
+        config.optimizer_config.max_optimization_threads = Some(1);
+        assert_eq!(variant, "none", "variants apply to the DLI system only");
+    } else {
         let dli = config.dli_experimental.as_mut().unwrap();
         match variant.as_str() {
             "none" => {}
@@ -2529,7 +2609,17 @@ async fn dli_phase3_workload() {
             other => panic!("unknown DLI_P3_VARIANT {other}"),
         }
     }
-    let arm_label = format!("{:?}/{variant}", arm());
+    let arm_label = if static_system {
+        format!("S/b{}/seg{}", static_model.unwrap().n_buckets, env_usize("DLI_P3_STATIC_SEGMENTS"))
+    } else {
+        format!("{:?}/{variant}", arm())
+    };
+    let static_nprobes: Vec<usize> = if static_system {
+        env_list("DLI_P3_STATIC_NPROBES").expect("DLI_P3_STATIC_NPROBES").iter().map(|s| s.parse().unwrap()).collect()
+    } else {
+        Vec::new()
+    };
+    let max_batches = std::env::var("DLI_P3_MAX_BATCHES").map_or(usize::MAX, |v| v.parse().unwrap());
     let eval: Option<HashSet<usize>> =
         env_list("DLI_P3_EVAL").map(|v| v.iter().map(|s| s.parse().unwrap()).collect());
     let static_batches: HashSet<usize> = env_list("DLI_P3_STATIC_BATCHES")
@@ -2539,6 +2629,7 @@ async fn dli_phase3_workload() {
         .collect();
     let set_filter: Option<HashSet<String>> = env_list("DLI_P3_SETS").map(|v| v.into_iter().collect());
     let budgets: Vec<usize> = env_list("DLI_FRONTIER_BUDGETS")
+        .or_else(|| static_system.then(Vec::new))
         .expect("DLI_FRONTIER_BUDGETS")
         .iter()
         .map(|s| s.parse().unwrap())
@@ -2572,30 +2663,48 @@ async fn dli_phase3_workload() {
     let mut log = std::fs::File::create(output.join("batches.jsonl")).unwrap();
     let started = Instant::now();
     let batches = plan["batches"].as_array().unwrap();
-    for batch in batches {
+    for batch in batches.iter().take(max_batches) {
         let index = batch["index"].as_u64().unwrap() as usize;
         let dir = plan_dir.join(format!("batch_{index:02}"));
         let batch_started = Instant::now();
-        let events_before = local.local_dli_publication_events_for_test().await.unwrap().len();
+        let events_before = local.local_dli_publication_events_for_test().await.map_or(0, |e| e.len());
         let inserts = read_u32(dir.join("insert.u32"));
+        // DLI drains synchronously after every buffer-sized chunk (Phase 3 protocol); the
+        // static system lets Qdrant's optimizers run concurrently and settles at batch end.
         for chunk in inserts.chunks(buffer_capacity) {
             apply_points(&collection, read_rows(chunk)).await;
-            settle_dli_maintenance(&local, Duration::from_secs(4 * 3600)).await;
+            if !static_system {
+                settle_dli_maintenance(&local, Duration::from_secs(4 * 3600)).await;
+            }
         }
         let deletes = read_u32(dir.join("delete.u32"));
         for chunk in deletes.chunks(10_000) {
             apply_delete(&collection, chunk.iter().map(|&i| i as u64).collect()).await;
-            settle_dli_maintenance(&local, Duration::from_secs(4 * 3600)).await;
+            if !static_system {
+                settle_dli_maintenance(&local, Duration::from_secs(4 * 3600)).await;
+            }
         }
+        let writes_seconds = batch_started.elapsed().as_secs_f64();
+        let settle_seconds = if static_system {
+            settle_static_optimizers(&collection, Duration::from_secs(4 * 3600)).await
+        } else {
+            0.0
+        };
         let ingest_seconds = batch_started.elapsed().as_secs_f64();
         let (live, digest) = live_id_digest(&collection).await;
         assert_eq!(live as u64, batch["live_count"].as_u64().unwrap(), "batch {index} live count");
         assert_eq!(digest, batch["live_sha256"].as_str().unwrap(), "batch {index} live set");
-        let events = local.local_dli_publication_events_for_test().await.unwrap();
+        let events = if static_system {
+            Vec::new()
+        } else {
+            local.local_dli_publication_events_for_test().await.unwrap()
+        };
         let members = learned_members(&collection, root.path()).await;
+        let segments = segment_topology(&collection).await;
         let mut record = serde_json::json!({
             "batch": index, "arm": arm_label, "live": live, "live_sha256": digest,
-            "ingest_seconds": ingest_seconds, "elapsed_seconds": started.elapsed().as_secs_f64(),
+            "ingest_seconds": ingest_seconds, "writes_seconds": writes_seconds, "settle_seconds": settle_seconds,
+            "elapsed_seconds": started.elapsed().as_secs_f64(), "segments": segments,
             "publications": &events[events_before..],
             "levels": members.iter().map(|(l, (_, fp, b, n))| serde_json::json!({
                 "level": l, "live": n, "buckets": b, "router": format!("{fp:016x}")})).collect::<Vec<_>>(),
@@ -2635,6 +2744,11 @@ async fn dli_phase3_workload() {
                 )
             });
             let frontier_started = Instant::now();
+            if static_system {
+                super::dli_selection_frontier::run_static_frontier(
+                    &copy, &output.join(format!("batch_{index:02}")), &sets, &static_nprobes, query_cap,
+                );
+            } else {
             run_frontier(&FrontierRun {
                 segments_dir: &copy,
                 output: &output.join(format!("batch_{index:02}")),
@@ -2646,18 +2760,24 @@ async fn dli_phase3_workload() {
                 static_model,
                 calibration_set: calibration_set.as_ref(),
             });
+            }
             std::fs::remove_dir_all(&copy).unwrap();
             record["frontier_seconds"] = frontier_started.elapsed().as_secs_f64().into();
         }
         writeln!(log, "{record}").unwrap();
         println!("PHASE3_BATCH {record}");
     }
-    let diagnostics = local.local_dli_diagnostics_for_test().await.unwrap();
+    let diagnostics = if static_system {
+        (0, 0, 0, false, Vec::new())
+    } else {
+        local.local_dli_diagnostics_for_test().await.unwrap()
+    };
     assert!(diagnostics.4.is_empty(), "maintenance errors: {diagnostics:?}");
     let summary = serde_json::json!({
+        "system": if static_system { "static" } else { "dli" }, "static_model": static_model,
         "arm": arm_label, "scenario": plan["scenario"], "rows": plan["rows"],
         "buffer_capacity": buffer_capacity, "arity": arity, "model": base_model,
-        "publications": local.local_dli_publication_events_for_test().await.unwrap(),
+        "publications": if static_system { Vec::new() } else { local.local_dli_publication_events_for_test().await.unwrap() },
         "diagnostics": format!("{diagnostics:?}"), "seconds": started.elapsed().as_secs_f64(),
         "source_head": std::env::var("DLI_BENCH_HEAD").ok(),
     });
