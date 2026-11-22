@@ -2338,6 +2338,7 @@ fn copy_dir(from: &Path, to: &Path) {
 /// shard. Environment:
 /// * `DLI_P3_PLAN` (plan dir), `DLI_P3_CORPUS` (Float16 rows), `DLI_P3_OUTPUT`, `DLI_P3_SCRATCH`;
 /// * `DLI_ARM` = E1 | E1R and `DLI_P3_VARIANT` = none | greedy | consolidate250 | consolidate500;
+/// * `DLI_P3_CALIB_SET` (plan set fitted per batch for the `calibrated` policy, E1L),
 /// * `DLI_P3_EVAL` (batch indices, default all), `DLI_P3_STATIC_BATCHES` (default 5,10,15,20),
 ///   `DLI_P3_SETS` (set names, default every set of the batch), `DLI_FRONTIER_BUDGETS`,
 ///   `DLI_FRONTIER_POLICIES`, `DLI_FRONTIER_MAX_QUERIES`.
@@ -2469,6 +2470,14 @@ async fn dli_phase3_workload() {
                 model.nprobe = 1;
                 model
             });
+            let calibration_set = std::env::var("DLI_P3_CALIB_SET").ok().map(|name| {
+                let spec = &batch["sets"][&name];
+                read_set(
+                    &name,
+                    &plan_dir.join(spec["queries"].as_str().expect("calibration set in plan")),
+                    &plan_dir.join(spec["gold"].as_str().unwrap()),
+                )
+            });
             let frontier_started = Instant::now();
             run_frontier(&FrontierRun {
                 segments_dir: &copy,
@@ -2479,6 +2488,7 @@ async fn dli_phase3_workload() {
                 query_cap,
                 static_reference: static_model.is_some(),
                 static_model,
+                calibration_set: calibration_set.as_ref(),
             });
             std::fs::remove_dir_all(&copy).unwrap();
             record["frontier_seconds"] = frontier_started.elapsed().as_secs_f64().into();

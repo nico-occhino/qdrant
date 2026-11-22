@@ -133,9 +133,11 @@ for RUN in $RUNS; do
     E1C)   BASE=E1;  VARIANT=consolidate250 ;;
     E1C50) BASE=E1;  VARIANT=consolidate500 ;;
   esac
+  CALIB=; RUN_POLICIES=$POLICIES
   case $S in
     shift)       SETS=mq,mq_val,ids,ids_val,ood,ood_val ;;
-    insert_only) SETS=test,val,partb ;;
+    # Part B: E1L / E1CL = the `calibrated` policy, fitted per batch on rows 1000-2999 (§10.1).
+    insert_only) SETS=test,val,partb; CALIB=calib; RUN_POLICIES=$POLICIES,calibrated ;;
     *)           SETS=test,val ;;
   esac
   phase=run-$S-$ARM
@@ -143,7 +145,8 @@ for RUN in $RUNS; do
   (
     export DLI_ARM=$BASE DLI_P3_VARIANT=$VARIANT DLI_P3_PLAN="$W/plans/$S" DLI_P3_CORPUS="$W/data/vectors.f16"
     export DLI_P3_OUTPUT="$A" DLI_P3_SCRATCH="$R/scratch" DLI_P3_SETS=$SETS DLI_P3_STATIC_BATCHES=$STATIC
-    export DLI_FRONTIER_BUDGETS=$BUDGETS DLI_FRONTIER_POLICIES=$POLICIES DLI_BENCH_HEAD="$EXPECTED_COMMIT"
+    export DLI_FRONTIER_BUDGETS=$BUDGETS DLI_FRONTIER_POLICIES=$RUN_POLICIES DLI_BENCH_HEAD="$EXPECTED_COMMIT"
+    [[ -n "$CALIB" ]] && export DLI_P3_CALIB_SET=$CALIB
     export QDRANT_DLI_BUILD_CPUS=$NCPUS DLI_BENCH_PUBLICATION_TIMEOUT_S=14400
     export QDRANT_OPTIMIZATION_EVENTS="$R/native-events.jsonl" QDRANT_LMI_BUILD_EVENTS="$R/build-events.jsonl"
     /usr/bin/time -v "$BIN" --ignored --exact \

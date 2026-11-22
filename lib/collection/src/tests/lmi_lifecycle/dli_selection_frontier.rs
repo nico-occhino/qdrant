@@ -34,7 +34,7 @@ use segment::index::lmi_index::LmiConfig;
 use segment::types::{Distance, ExtendedPointId, HnswGlobalConfig, Indexes};
 use uuid::Uuid;
 
-use crate::collection_manager::dli_bucket_plan::RoutingPolicy;
+use crate::collection_manager::dli_bucket_plan::{IsotonicMap, LevelCalibration, RoutingPolicy};
 use crate::collection_manager::dli_native_route::{
     CandidateResolution, RouteTrace, resolve_pinned_candidates, route_pinned_traced,
 };
@@ -128,6 +128,56 @@ fn member_ranking(segment: &Segment, query: &[f32]) -> Vec<usize> {
     order
 }
 
+/// Softmax router probabilities of one learned member (temperature 1, as routing).
+fn member_probabilities(segment: &Segment, query: &[f32]) -> Vec<f32> {
+    let index = segment.vector_data[DEFAULT_VECTOR_NAME].vector_index.borrow();
+    let VectorIndexEnum::Lmi(lmi) = &*index else {
+        unreachable!()
+    };
+    let routed = Distance::Cosine.preprocess_vector::<f32>(query.to_vec());
+    let logits = lmi.routing_state().unwrap().router().forward(&routed).unwrap();
+    let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let denominator: f32 = logits.iter().map(|v| (v - max).exp()).sum();
+    logits.iter().map(|v| (v - max).exp() / denominator).collect()
+}
+
+/// Calibration for E1L fitted on `set` over this snapshot (PHASE3_PREREGISTRATION.md
+/// §10.1): per level, isotonic regression of the number of the query's gold top-30 in a
+/// bucket on the bucket's router probability, over each member's top-64 buckets by P.
+/// The buffer gets 30 / N expected neighbours per point.
+fn fit_calibration(
+    members: &[(usize, &Segment)],
+    index: &[Option<MemberIndex>],
+    set: &QuerySet,
+    total_live: usize,
+) -> LevelCalibration {
+    let mut pairs: HashMap<usize, Vec<(f64, f64)>> = HashMap::new();
+    for (query, gold) in set.queries.iter().zip(&set.gold) {
+        let mut in_bucket: HashMap<(usize, usize), usize> = HashMap::new();
+        for id in &gold[..30] {
+            if let Owner::Learned { member, bucket } = locate(members, index, *id) {
+                *in_bucket.entry((member, bucket)).or_default() += 1;
+            }
+        }
+        for (m, ((level, segment), idx)) in members.iter().zip(index).enumerate() {
+            if idx.is_none() {
+                continue;
+            }
+            let probabilities = member_probabilities(segment, query);
+            let mut order: Vec<usize> = (0..probabilities.len()).collect();
+            order.sort_by(|&a, &b| probabilities[b].total_cmp(&probabilities[a]).then(a.cmp(&b)));
+            for &bucket in order.iter().take(64) {
+                let y = in_bucket.get(&(m, bucket)).copied().unwrap_or(0) as f64;
+                pairs.entry(*level).or_default().push((f64::from(probabilities[bucket]), y));
+            }
+        }
+    }
+    LevelCalibration {
+        levels: pairs.into_iter().map(|(level, p)| (level, IsotonicMap::fit(p))).collect(),
+        plain_density: 30.0 / total_live.max(1) as f64,
+    }
+}
+
 /// Where a gold neighbor physically lives.
 #[derive(Clone, Copy)]
 enum Owner {
@@ -196,20 +246,28 @@ fn run_route(
     budget: usize,
     policy: RoutingPolicy,
 ) -> Evaluated {
+    run_route_with(members, query, arity, budget, policy, None)
+}
+
+fn run_route_with(
+    members: &[(usize, &Segment)],
+    query: &[f32],
+    arity: usize,
+    budget: usize,
+    policy: RoutingPolicy,
+    calibration: Option<&LevelCalibration>,
+) -> Evaluated {
     let started = std::time::Instant::now();
     let context = VectorQueryContext::default();
     let mut trace = RouteTrace::default();
-    let routed = route_pinned_traced(
-        members,
-        query,
-        arity,
-        budget,
-        &context,
-        policy,
-        TOP,
-        None,
-        Some(&mut trace),
-    )
+    let routed = match calibration {
+        Some(calibration) => crate::collection_manager::dli_native_route::route_pinned_calibrated(
+            members, query, arity, budget, &context, calibration, TOP, Some(&mut trace),
+        ),
+        None => route_pinned_traced(
+            members, query, arity, budget, &context, policy, TOP, None, Some(&mut trace),
+        ),
+    }
     .unwrap();
     let selected = routed
         .plan
@@ -388,6 +446,7 @@ fn dli_65k_selection_frontier() {
         query_cap,
         static_reference: std::env::var_os("DLI_FRONTIER_STATIC").is_some(),
         static_model,
+        calibration_set: None,
     });
 }
 
@@ -403,6 +462,8 @@ pub(super) struct FrontierRun<'a> {
     pub static_reference: bool,
     /// Explicit static-reference model; `None` uses the first learned member's model.
     pub static_model: Option<LmiConfig>,
+    /// Calibration queries for the `calibrated` policy (E1L); fitted on this snapshot.
+    pub calibration_set: Option<&'a QuerySet>,
 }
 
 pub(super) fn run_frontier(run: &FrontierRun) {
@@ -464,6 +525,13 @@ pub(super) fn run_frontier(run: &FrontierRun) {
         })),
     });
     fs_err::write(output.join("topology.json"), serde_json::to_vec_pretty(&topology).unwrap()).unwrap();
+    let calibration = run.calibration_set.map(|set| {
+        let started = std::time::Instant::now();
+        let fitted = fit_calibration(&members, &index, set, total);
+        fs_err::write(output.join("calibration.json"), serde_json::to_vec_pretty(&fitted).unwrap()).unwrap();
+        println!("CALIBRATION_FITTED seconds={:.1} queries={}", started.elapsed().as_secs_f64(), set.queries.len());
+        fitted
+    });
 
     for set in sets {
         for (qi, (query, gold)) in set.queries.iter().zip(&set.gold).enumerate().take(query_cap) {
@@ -553,6 +621,15 @@ pub(super) fn run_frontier(run: &FrontierRun) {
                         None => run_proportional(&members, query, arity, budget),
                     };
                     configs.push((name.to_owned(), budget, evaluated));
+                }
+                if let Some(calibration) = calibration
+                    .as_ref()
+                    .filter(|_| policy_filter.is_none_or(|f| f.contains("calibrated")))
+                {
+                    let evaluated = run_route_with(
+                        &members, query, arity, budget, RoutingPolicy::SlotWeighted, Some(calibration),
+                    );
+                    configs.push(("calibrated".to_owned(), budget, evaluated));
                 }
                 if let Some((static_segment, _)) = static_ref
                     .as_ref()

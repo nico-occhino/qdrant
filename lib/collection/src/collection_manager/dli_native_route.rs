@@ -313,6 +313,57 @@ pub fn route_pinned_traced(
     policy: RoutingPolicy,
     materialize_limit: usize,
     shortlist: Option<usize>,
+    trace: Option<&mut RouteTrace>,
+) -> OperationResult<NativeRouteResult> {
+    route_pinned_selected(
+        members, query, arity, budget, context, policy, None, materialize_limit, shortlist, trace,
+    )
+}
+
+/// Calibrated level-aware allocation (Phase 3 Part B, E1L) on the same routing,
+/// scoring and resolution path as every policy; only bucket selection differs.
+#[allow(clippy::too_many_arguments)]
+pub fn route_pinned_calibrated(
+    members: &[(usize, &Segment)],
+    query: &[f32],
+    arity: usize,
+    budget: usize,
+    context: &VectorQueryContext,
+    calibration: &super::dli_bucket_plan::LevelCalibration,
+    materialize_limit: usize,
+    trace: Option<&mut RouteTrace>,
+) -> OperationResult<NativeRouteResult> {
+    let selector = |predictions: Vec<BucketPrediction>| {
+        super::dli_bucket_plan::select_calibrated(predictions, calibration, budget)
+    };
+    route_pinned_selected(
+        members,
+        query,
+        arity,
+        budget,
+        context,
+        RoutingPolicy::SlotWeighted,
+        Some(&selector),
+        materialize_limit,
+        None,
+        trace,
+    )
+}
+
+type Selector<'a> =
+    &'a dyn Fn(Vec<BucketPrediction>) -> Result<SelectedBuckets, super::dli_bucket_plan::PlanError>;
+
+#[allow(clippy::too_many_arguments)]
+fn route_pinned_selected(
+    members: &[(usize, &Segment)],
+    query: &[f32],
+    arity: usize,
+    budget: usize,
+    context: &VectorQueryContext,
+    policy: RoutingPolicy,
+    selector: Option<Selector>,
+    materialize_limit: usize,
+    shortlist: Option<usize>,
     mut trace: Option<&mut RouteTrace>,
 ) -> OperationResult<NativeRouteResult> {
     let fail = |message: &str| OperationError::service_error(message.to_owned());
@@ -399,19 +450,20 @@ pub fn route_pinned_traced(
         }
     }
     let planning_started = Instant::now();
-    let plan = match policy {
-        RoutingPolicy::SlotWeighted => select(predictions, arity, budget),
-        RoutingPolicy::ReservedPerLevel => select_reserved(predictions, arity, budget),
-        RoutingPolicy::PopulationDensity | RoutingPolicy::TemperatureDensity { .. } => {
+    let plan = match (selector, policy) {
+        (Some(selector), _) => selector(predictions),
+        (None, RoutingPolicy::SlotWeighted) => select(predictions, arity, budget),
+        (None, RoutingPolicy::ReservedPerLevel) => select_reserved(predictions, arity, budget),
+        (None, RoutingPolicy::PopulationDensity | RoutingPolicy::TemperatureDensity { .. }) => {
             select_density(predictions, arity, budget)
         }
-        RoutingPolicy::PopulationDensityUncached => {
+        (None, RoutingPolicy::PopulationDensityUncached) => {
             select_density_uncached(predictions, arity, budget)
         }
-        RoutingPolicy::ModelDrivenNormalized => {
+        (None, RoutingPolicy::ModelDrivenNormalized) => {
             select_model_normalized(predictions, arity, budget, false)
         }
-        RoutingPolicy::ModelDrivenNormalizedCode => {
+        (None, RoutingPolicy::ModelDrivenNormalizedCode) => {
             select_model_normalized(predictions, arity, budget, true)
         }
     }
@@ -420,7 +472,7 @@ pub fn route_pinned_traced(
     let routing_and_planning_time = start.elapsed();
     if let Some(trace) = trace.as_deref_mut() {
         // Captured only; never written while the caller's guards are held.
-        trace.routing_event = Some(serde_json::json!({"policy":policy,"budget":budget,"buckets":plan.buckets,"members":members.iter().map(|(l,s)|(s.uuid,l,s.available_point_count())).collect::<Vec<_>>()}));
+        trace.routing_event = Some(serde_json::json!({"policy":if selector.is_some() { serde_json::json!("calibrated") } else { serde_json::json!(policy) },"budget":budget,"buckets":plan.buckets,"members":members.iter().map(|(l,s)|(s.uuid,l,s.available_point_count())).collect::<Vec<_>>()}));
     }
     let mut learned_scoring = trace.map(|trace| &mut trace.scoring);
 

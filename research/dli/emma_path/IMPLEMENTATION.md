@@ -86,7 +86,8 @@ Tracked against [PHASE3_PREREGISTRATION.md](PHASE3_PREREGISTRATION.md) §7 and �
 | M8 | `dli_selection_frontier::run_frontier(FrontierRun)` callable per batch; the old env-driven test is a thin wrapper | done |
 | M9 | `analyze_phase3.py` (Part A batch-stratified paired bootstrap, TOST, inconclusive rule, Bonferroni sensitivity; Part B work-ratio; `--precision` for preflight) | done; `test_analyze_phase3.py` known-answer test (Δ = 3.0 pp supported; equivalence detected and rejected; work ratio 0.6) |
 | PBS | `pbs/phase3.pbs` (MODE preflight / primary with SCENARIO) | written, not yet run |
-| M11, M12 | calibrated level-aware allocation; calibration-query fitting in the replay | to do |
+| M11 | Calibrated level-aware allocation: `dli_bucket_plan::{IsotonicMap, LevelCalibration, select_calibrated}` (pool-adjacent-violators fit; buckets by g_level(P) / occupancy, buffer by k / N; whole buckets to the budget); `dli_native_route::route_pinned_calibrated` on the shared routing/scoring/resolution path (`route_pinned_traced` now delegates to `route_pinned_selected` with an optional selector) | done; tests `isotonic_fit_matches_hand_computed_pav` (hand PAV, ties, monotone on random input), `calibrated_selection_is_greedy_value_per_cost_with_whole_buckets` (equals a reference sort, whole-bucket budget, empty buckets skipped, missing level rejected) |
+| M12 | Per-snapshot calibration fit in the replay (`fit_calibration`: each member's top-64 buckets of every calibration query, y = gold top-30 in the bucket); `FrontierRun.calibration_set`, `DLI_P3_CALIB_SET`; policy `calibrated`; `calibration.json` per batch | done; PBS insert_only runs fit on rows 1000–2999 |
 
 Tests in `dli_schedule::tests`:
 - `consolidation_reproduces_the_planner_simulation`: final levels and write amplification equal `consolidation_sim.py` at 10.12M for ρ = 0.25 and 0.5; ρ = 1 equals Bentley–Saxe.

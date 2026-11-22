@@ -298,6 +298,115 @@ pub fn select_reserved(
     })
 }
 
+/// Monotone (non-decreasing) step map fitted by pool-adjacent-violators: the value
+/// at `x` is the mean of the block whose smallest input is the largest one <= `x`
+/// (the first block below its range).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct IsotonicMap {
+    pub thresholds: Vec<f64>,
+    pub values: Vec<f64>,
+}
+
+impl IsotonicMap {
+    /// Least-squares isotonic regression of `y` on `x` (equal weights). Ties in `x`
+    /// are pooled into one block. Empty input gives the constant map 0.
+    pub fn fit(mut pairs: Vec<(f64, f64)>) -> Self {
+        pairs.retain(|(x, y)| x.is_finite() && y.is_finite());
+        pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // (min x, sum y, count)
+        let mut blocks: Vec<(f64, f64, f64)> = Vec::new();
+        for (x, y) in pairs {
+            match blocks.last_mut() {
+                Some(last) if last.0 == x => {
+                    last.1 += y;
+                    last.2 += 1.;
+                }
+                _ => blocks.push((x, y, 1.)),
+            }
+            while blocks.len() >= 2 {
+                let n = blocks.len();
+                let (a, b) = (blocks[n - 2], blocks[n - 1]);
+                if a.1 / a.2 <= b.1 / b.2 {
+                    break;
+                }
+                blocks[n - 2] = (a.0, a.1 + b.1, a.2 + b.2);
+                blocks.pop();
+            }
+        }
+        if blocks.is_empty() {
+            return Self { thresholds: vec![f64::NEG_INFINITY], values: vec![0.] };
+        }
+        Self {
+            thresholds: blocks.iter().map(|b| b.0).collect(),
+            values: blocks.iter().map(|b| b.1 / b.2).collect(),
+        }
+    }
+
+    pub fn eval(&self, x: f64) -> f64 {
+        let idx = self.thresholds.partition_point(|t| *t <= x);
+        self.values[idx.saturating_sub(1)]
+    }
+}
+
+/// Per-level calibration for `select_calibrated` (Phase 3 Part B, arm E1L): for each
+/// learned level, the expected number of the query's true top-k neighbours in a bucket
+/// given its router probability; `plain_density` is the expected neighbours per
+/// buffer point (k / N under exchangeability).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LevelCalibration {
+    pub levels: std::collections::BTreeMap<usize, IsotonicMap>,
+    pub plain_density: f64,
+}
+
+/// Calibrated level-aware allocation: buckets in decreasing expected neighbours per
+/// unit of cost, g_level(P) / occupancy (the buffer: `plain_density`), the greedy
+/// solution of the fractional knapsack with whole buckets, until `budget` is met.
+/// Empty learned buckets cost and yield nothing and are skipped. A learned level
+/// without a calibration map is rejected.
+pub fn select_calibrated(
+    predictions: Vec<BucketPrediction>,
+    calibration: &LevelCalibration,
+    budget: usize,
+) -> Result<SelectedBuckets, PlanError> {
+    if budget == 0 {
+        return Err(PlanError::ZeroBudget);
+    }
+    if !calibration.plain_density.is_finite() || calibration.plain_density < 0. {
+        return Err(PlanError::InvalidPrediction);
+    }
+    // Reuse the baseline validation and deterministic tie order.
+    let ranked = select(predictions, 2, usize::MAX)?.buckets;
+    let mut scored = Vec::with_capacity(ranked.len());
+    for p in ranked {
+        let score = if p.level == 0 {
+            calibration.plain_density
+        } else {
+            if p.occupancy == 0 {
+                continue;
+            }
+            let map = calibration.levels.get(&p.level).ok_or(PlanError::InvalidPrediction)?;
+            map.eval(f64::from(p.probability)) / p.occupancy as f64
+        };
+        scored.push((score, p));
+    }
+    scored.sort_by(|a, b| {
+        b.0.total_cmp(&a.0)
+            .then(a.1.level.cmp(&b.1.level))
+            .then(a.1.physical.cmp(&b.1.physical))
+            .then(a.1.bucket.cmp(&b.1.bucket))
+    });
+    let mut count = 0usize;
+    let mut buckets = Vec::new();
+    for (_, p) in scored {
+        if count >= budget {
+            break;
+        }
+        count = count.checked_add(p.occupancy).ok_or(PlanError::NumericOverflow)?;
+        buckets.push(p);
+    }
+    Ok(SelectedBuckets { requested: budget, estimated_candidates: count, buckets })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,5 +592,82 @@ mod tests {
             select(vec![b(usize::MAX, 1, Some(0), 0.5, 1)], 2, 1),
             Err(PlanError::NumericOverflow)
         );
+    }
+
+    #[test]
+    fn isotonic_fit_matches_hand_computed_pav() {
+        // (0.1,0) (0.2,2) (0.3,1) (0.4,3): the violator pair 2,1 pools to 1.5.
+        let map = IsotonicMap::fit(vec![(0.3, 1.), (0.1, 0.), (0.4, 3.), (0.2, 2.)]);
+        assert_eq!(map.thresholds, vec![0.1, 0.2, 0.4]);
+        assert_eq!(map.values, vec![0., 1.5, 3.]);
+        assert_eq!(map.eval(0.05), 0.);
+        assert_eq!(map.eval(0.25), 1.5);
+        assert_eq!(map.eval(0.3999), 1.5);
+        assert_eq!(map.eval(0.9), 3.);
+        // Ties in x pool; a fully decreasing sequence pools to one block (its mean).
+        let tie = IsotonicMap::fit(vec![(0.5, 1.), (0.5, 3.), (0.6, 0.)]);
+        assert_eq!((tie.thresholds, tie.values), (vec![0.5], vec![4. / 3.]));
+        assert_eq!(IsotonicMap::fit(vec![]).eval(0.3), 0.);
+        // Output is non-decreasing on random input.
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let pairs: Vec<_> = (0..500).map(|_| (next(), next() * 3.)).collect();
+        let map = IsotonicMap::fit(pairs);
+        assert!(map.values.windows(2).all(|w| w[0] <= w[1]));
+        assert!(map.thresholds.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
+    fn calibrated_selection_is_greedy_value_per_cost_with_whole_buckets() {
+        let (l1, l2, plain) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
+        let p = |level, physical, bucket, probability, occupancy| BucketPrediction {
+            level, physical, bucket, probability, occupancy,
+        };
+        let calibration = LevelCalibration {
+            // Level 1: value = 10·P (as a step map on these inputs); level 2: value = 2 flat.
+            levels: [
+                (1, IsotonicMap { thresholds: vec![0., 0.5, 0.9], values: vec![1., 5., 9.] }),
+                (2, IsotonicMap { thresholds: vec![0.], values: vec![2.] }),
+            ]
+            .into_iter()
+            .collect(),
+            plain_density: 0.01,
+        };
+        let predictions = vec![
+            p(1, l1, Some(0), 0.95, 100), // 9 / 100 = 0.09
+            p(1, l1, Some(1), 0.6, 10),   // 5 / 10  = 0.5
+            p(1, l1, Some(2), 0.1, 0),    // empty: skipped
+            p(2, l2, Some(0), 0.2, 4),    // 2 / 4   = 0.5 (tie: lower level first)
+            p(2, l2, Some(1), 0.1, 40),   // 2 / 40  = 0.05
+            p(0, plain, None, 0., 50),    // 0.01
+        ];
+        let order = |budget| {
+            select_calibrated(predictions.clone(), &calibration, budget)
+                .unwrap()
+                .buckets
+                .iter()
+                .map(|b| (b.level, b.bucket))
+                .collect::<Vec<_>>()
+        };
+        let all = order(usize::MAX / 2);
+        assert_eq!(all, vec![(1, Some(1)), (2, Some(0)), (1, Some(0)), (2, Some(1)), (0, None)]);
+        // Reference implementation: sort by value/cost descending (same tie rule).
+        let mut reference: Vec<(f64, usize, Option<usize>)> = vec![
+            (9. / 100., 1, Some(0)), (0.5, 1, Some(1)), (0.5, 2, Some(0)), (0.05, 2, Some(1)), (0.01, 0, None),
+        ];
+        reference.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+        assert_eq!(all, reference.iter().map(|r| (r.1, r.2)).collect::<Vec<_>>());
+        // Budget is a minimum met by whole buckets: 10 < 12 so a second bucket is taken.
+        assert_eq!(order(12), vec![(1, Some(1)), (2, Some(0))]);
+        assert_eq!(order(10), vec![(1, Some(1))]);
+        // Missing calibration for a learned level is rejected; zero budget too.
+        let partial = LevelCalibration { levels: calibration.levels.iter().take(1).map(|(k, v)| (*k, v.clone())).collect(), plain_density: 0.01 };
+        assert_eq!(select_calibrated(predictions.clone(), &partial, 5), Err(PlanError::InvalidPrediction));
+        assert_eq!(select_calibrated(predictions, &calibration, 0), Err(PlanError::ZeroBudget));
     }
 }
