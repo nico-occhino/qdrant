@@ -1,0 +1,26 @@
+{
+ "hypotheses": {},
+ "descriptive": {
+  "precision_H5": {
+   "per_query_sd_pp": 0.0,
+   "queries": 1000,
+   "snapshot_half_width_pp_95": 0.0,
+   "snapshot_half_width_pp_90": 0.0,
+   "budget": 1000
+  },
+  "precision_H6": {
+   "per_query_sd_pp": 0.0,
+   "queries": 1000,
+   "snapshot_half_width_pp_95": 0.0,
+   "snapshot_half_width_pp_90": 0.0,
+   "budget": 1000
+  },
+  "precision_H7": {
+   "per_query_sd_pp": 0.0,
+   "queries": 1000,
+   "snapshot_half_width_pp_95": 0.0,
+   "snapshot_half_width_pp_90": 0.0,
+   "budget": 1000
+  }
+ }
+}
