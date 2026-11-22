@@ -69,3 +69,21 @@ Regression run before commit (local, WSL, torch 2.5.1):
 - `collection --lib -- lmi dli` (43 passed).
 - `shard --test dli_view` with `segment/lmi-training` (5 passed).
 - `segment --features lmi-research --tests` check.
+
+## Phase 3 (in progress, 2026-11-22)
+
+Tracked against [PHASE3_PREREGISTRATION.md](PHASE3_PREREGISTRATION.md) §7 and §10.6.
+
+| # | Component | Status |
+|---|---|---|
+| M1 | Underutilisation: `HierarchyConfig::minimum_capacity`, Cmin(i) = b·a^(i−1) | done |
+| M2 | Greedy rebuild: `HierarchyConfig::plan_rebuild` (her §3.4.2 target rules 1–3; Greedy upward accumulation stops at the first level that does not fit; deepest underutilised level first; level 1 is never moved into the buffer) | done (planner only; native execution is M4) |
+| M10 | Consolidation: `MaintenancePolicy::GeometricConsolidating { rho_permille }` overrides a Bentley–Saxe plan into a level above the deepest non-empty level D when its output would exceed ρ·live(D) and buffer + all levels above D fit D | done (planner); runs through the existing native path, which reuses D's router |
+| M3–M9, M11, M12 | dead-posting counters, native rebuild, workload driver, shift data, live-mask gold, per-batch replay, analysis, calibrated allocation, Part-B queries | to do |
+
+Tests in `dli_schedule::tests`:
+- `consolidation_reproduces_the_planner_simulation`: final levels and write amplification equal `consolidation_sim.py` at 10.12M for ρ = 0.25 and 0.5; ρ = 1 equals Bentley–Saxe.
+- `consolidation_boundary_fit_guard_and_shape`: the strict ρ boundary, the fit guard, plans already targeting D, an empty hierarchy.
+- `greedy_rebuild_follows_the_three_target_rules`: each rule, empty intermediate levels, the Greedy stop, deepest-first, the level-1 exclusion, over-capacity rejection.
+
+Collection `--lib -- dli_ lmi`: 46 passed.

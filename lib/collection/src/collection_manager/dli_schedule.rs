@@ -11,6 +11,11 @@ pub enum MaintenancePolicy {
     /// Flush independent runs until `arity` runs exist, then merge the buffer
     /// with the smallest run. Logical slots retain physical capacity checks.
     SizeTiered,
+    /// Bentley–Saxe, except that a level above the deepest non-empty level D may
+    /// hold at most `rho_permille / 1000 · live(D)` points. A compaction that would
+    /// exceed it merges the buffer and every level above D into D instead, if the
+    /// result fits D's capacity. Phase 3 Part B arm E1C (`MULTILEVEL_DIAGNOSIS.md`).
+    GeometricConsolidating { rho_permille: u16 },
 }
 
 /// How many buckets a freshly trained learned level gets.
@@ -199,6 +204,17 @@ impl HierarchyConfig {
                 let output_points = incoming
                     .checked_add(occupied)
                     .ok_or(ScheduleError::OccupancyOverflow)?;
+                if let MaintenancePolicy::GeometricConsolidating { rho_permille } = self.policy
+                    && let Some(plan) = self.consolidation(
+                        buffer_points,
+                        levels,
+                        target,
+                        output_points,
+                        rho_permille,
+                    )?
+                {
+                    return Ok(Some(plan));
+                }
                 return Ok(Some(CompactionPlan {
                     target_level: target,
                     source_levels: (1..target).collect(),
@@ -215,6 +231,145 @@ impl HierarchyConfig {
                 .checked_add(1)
                 .ok_or(ScheduleError::CapacityOverflow)?;
         }
+    }
+}
+
+impl HierarchyConfig {
+    /// Consolidation override for a Bentley–Saxe plan into `target` with
+    /// `output_points`. `None` keeps the Bentley–Saxe plan.
+    fn consolidation(
+        self,
+        buffer_points: usize,
+        levels: &[usize],
+        target: usize,
+        output_points: usize,
+        rho_permille: u16,
+    ) -> Result<Option<CompactionPlan>, ScheduleError> {
+        let Some(deepest) = levels.iter().rposition(|&n| n > 0).map(|i| i + 1) else {
+            return Ok(None);
+        };
+        if target >= deepest {
+            return Ok(None);
+        }
+        let deepest_points = levels[deepest - 1];
+        // output > rho · live(D), in integers: output · 1000 > rho_permille · live(D).
+        let lhs = (output_points as u128) * 1000;
+        let rhs = u128::from(rho_permille) * deepest_points as u128;
+        if lhs <= rhs {
+            return Ok(None);
+        }
+        let above: usize = levels[..deepest - 1].iter().sum();
+        let merged = buffer_points
+            .checked_add(above)
+            .and_then(|n| n.checked_add(deepest_points))
+            .ok_or(ScheduleError::OccupancyOverflow)?;
+        let capacity = self.level_capacity(deepest)?;
+        if merged > capacity {
+            return Ok(None);
+        }
+        Ok(Some(CompactionPlan {
+            target_level: deepest,
+            source_levels: (1..deepest).collect(),
+            buffer_points,
+            target_existing_points: deepest_points,
+            output_points: merged,
+            target_capacity: capacity,
+        }))
+    }
+
+    /// Minimum capacity of learned level `level`: Cmin(i) = b·a^(i-1) (Sommerová eq. 3.3).
+    pub fn minimum_capacity(self, level: usize) -> Result<usize, ScheduleError> {
+        if level == 0 {
+            return Ok(0);
+        }
+        self.level_capacity(level - 1)
+    }
+
+    /// Greedy underutilisation rebuild (Sommerová §3.4.2, Algorithm 11), planned from
+    /// **live** occupancies after deletes. `levels[0]` is learned level 1. The deepest
+    /// underutilised level is handled first, since it holds the oldest data. Level 1 is
+    /// never rebuilt into the buffer: her third rule would target level 0, which is not a
+    /// learned level here. Returns `None` when no level needs a rebuild.
+    ///
+    /// Target preference, first match wins:
+    /// 1. the nearest non-empty deeper level whose free capacity exceeds live(i);
+    /// 2. level i itself, if some non-empty level lies above it;
+    /// 3. level i−1 (empty by then; it holds live(i) < Cmin(i) = Cmax(i−1)).
+    ///
+    /// Greedy then adds, moving upward from the target, every contiguous level that
+    /// still fits the remaining capacity; it stops at the first one that does not, so
+    /// temporal order is preserved. Empty levels are passed over.
+    pub fn plan_rebuild(self, levels: &[usize]) -> Result<Option<CompactionPlan>, ScheduleError> {
+        self.validate()?;
+        for (idx, &occupied) in levels.iter().enumerate() {
+            let capacity = self.level_capacity(idx + 1)?;
+            if occupied > capacity {
+                return Err(ScheduleError::LevelOverCapacity {
+                    level: idx + 1,
+                    occupied,
+                    capacity,
+                });
+            }
+        }
+        let live = |level: usize| levels.get(level - 1).copied().unwrap_or(0);
+        let mut underutilised = None;
+        for level in (1..=levels.len()).rev() {
+            let n = live(level);
+            if n > 0 && n < self.minimum_capacity(level)? {
+                underutilised = Some(level);
+                break;
+            }
+        }
+        let Some(level) = underutilised else {
+            return Ok(None);
+        };
+        let deeper = (level + 1..=levels.len()).find(|&j| live(j) > 0);
+        let above_non_empty = (1..level).any(|j| live(j) > 0);
+        let target = match deeper {
+            Some(j) if self.level_capacity(j)? - live(j) > live(level) => j,
+            _ if above_non_empty => level,
+            _ if level >= 2 => level - 1,
+            _ => return Ok(None),
+        };
+        let capacity = self.level_capacity(target)?;
+        let mut output = live(target);
+        let mut sources = Vec::new();
+        // Levels to absorb, from just above the target upward; when the target is
+        // level − 1 (rule 3) the only source is `level` itself.
+        let candidates: Vec<usize> = if target < level {
+            vec![level]
+        } else {
+            (1..target).rev().collect()
+        };
+        for source in candidates {
+            let n = live(source);
+            if n == 0 {
+                continue;
+            }
+            match output.checked_add(n) {
+                Some(total) if total <= capacity => {
+                    output = total;
+                    sources.push(source);
+                }
+                _ => break,
+            }
+        }
+        if !sources.contains(&level) && target != level {
+            // The underutilised level must move, or the rebuild achieves nothing.
+            return Ok(None);
+        }
+        if sources.is_empty() {
+            return Ok(None);
+        }
+        sources.sort_unstable();
+        Ok(Some(CompactionPlan {
+            target_level: target,
+            source_levels: sources,
+            buffer_points: 0,
+            target_existing_points: live(target),
+            output_points: output,
+            target_capacity: capacity,
+        }))
     }
 }
 
@@ -256,7 +411,10 @@ mod tests {
             reuse_target_router: true,
         };
         let level1 = emma.fresh_config(base, 10, 1).unwrap();
-        assert_eq!((level1.n_buckets, level1.sample_size, level1.nprobe), (10, 100_000, 4));
+        assert_eq!(
+            (level1.n_buckets, level1.sample_size, level1.nprobe),
+            (10, 100_000, 4)
+        );
         let level2 = emma.fresh_config(base, 2, 1).unwrap();
         assert_eq!((level2.n_buckets, level2.nprobe), (2, 2));
         let level4 = emma.fresh_config(base, 10, 4).unwrap();
@@ -266,12 +424,18 @@ mod tests {
             ..base
         };
         assert_eq!(emma.fresh_config(reused, 10, 1).unwrap().reuse_router, None);
-        assert_eq!(emma.fresh_config(base, 10, 5), Err(ScheduleError::CapacityOverflow));
+        assert_eq!(
+            emma.fresh_config(base, 10, 5),
+            Err(ScheduleError::CapacityOverflow)
+        );
         let huge = LevelModelPolicy {
             min_samples_per_bucket: 1_000,
             ..emma
         };
-        assert_eq!(huge.fresh_config(base, 10, 4).unwrap().sample_size, MAX_SAMPLE_SIZE);
+        assert_eq!(
+            huge.fresh_config(base, 10, 4).unwrap().sample_size,
+            MAX_SAMPLE_SIZE
+        );
     }
 
     #[test]
@@ -389,5 +553,128 @@ mod tests {
             config().level_capacity(usize::MAX),
             Err(ScheduleError::CapacityOverflow)
         );
+    }
+
+    fn consolidating(buffer_capacity: usize, arity: usize, rho_permille: u16) -> HierarchyConfig {
+        HierarchyConfig {
+            policy: MaintenancePolicy::GeometricConsolidating { rho_permille },
+            buffer_capacity,
+            arity,
+        }
+    }
+
+    /// Replays whole buffer drains; returns final levels and points written.
+    fn ingest(config: HierarchyConfig, population: usize) -> (Vec<usize>, usize) {
+        let (mut levels, mut written, mut n) = (Vec::new(), 0usize, 0usize);
+        while n + config.buffer_capacity <= population {
+            n += config.buffer_capacity;
+            let plan = config
+                .plan(config.buffer_capacity, &levels)
+                .unwrap()
+                .unwrap();
+            assert!(plan.output_points <= plan.target_capacity);
+            apply(&mut levels, &plan);
+            written += plan.output_points;
+            assert_eq!(levels.iter().sum::<usize>(), n, "population conserved");
+        }
+        while levels.last() == Some(&0) {
+            levels.pop();
+        }
+        (levels, written)
+    }
+
+    #[test]
+    fn consolidation_reproduces_the_planner_simulation() {
+        // Final levels printed by research/dli/emma_path/consolidation_sim.py.
+        let plain = HierarchyConfig {
+            policy: MaintenancePolicy::Geometric,
+            buffer_capacity: 5_000,
+            arity: 10,
+        };
+        assert_eq!(
+            ingest(plain, 10_120_191).0,
+            vec![0, 220_000, 4_400_000, 5_500_000]
+        );
+        let (levels, written) = ingest(consolidating(5_000, 10, 250), 10_120_191);
+        assert_eq!(levels, vec![40_000, 0, 1_100_000, 8_980_000]);
+        assert_eq!((written as f64 / 10_120_191.0 * 10.0).round() / 10.0, 14.2);
+        assert_eq!(
+            ingest(consolidating(5_000, 10, 500), 10_120_191).0,
+            vec![35_000, 55_000, 2_200_000, 7_830_000]
+        );
+        // rho = 1000 can only trigger when a level would outgrow the deepest one.
+        assert_eq!(
+            ingest(consolidating(5_000, 10, 1000), 10_120_191).0,
+            vec![0, 220_000, 4_400_000, 5_500_000]
+        );
+    }
+
+    #[test]
+    fn consolidation_boundary_fit_guard_and_shape() {
+        let c = consolidating(10, 10, 250);
+        // Bentley–Saxe would put 10 + 30 = 40 into level 1; deepest is level 3 with 160.
+        // 40 > 0.25 · 160 = 40 is false: the boundary keeps Bentley–Saxe.
+        let p = c.plan(10, &[30, 0, 160]).unwrap().unwrap();
+        assert_eq!((p.target_level, p.output_points), (1, 40));
+        // One more point above the boundary consolidates everything into level 3.
+        let p = c.plan(10, &[31, 0, 160]).unwrap().unwrap();
+        assert_eq!(p.target_level, 3);
+        assert_eq!(p.source_levels, vec![1, 2]);
+        assert_eq!((p.target_existing_points, p.output_points), (160, 201));
+        // Fit guard: level 3 capacity is 10_000; a nearly full deepest level keeps Bentley–Saxe.
+        let p = c.plan(10, &[95, 0, 9_950]).unwrap().unwrap();
+        assert_ne!(p.target_level, 3);
+        // A plan already targeting the deepest level is unchanged.
+        let p = c.plan(10, &[90]).unwrap().unwrap();
+        assert_eq!((p.target_level, p.output_points), (1, 100));
+        // No learned level yet: plain Bentley–Saxe.
+        assert_eq!(c.plan(10, &[]).unwrap().unwrap().target_level, 1);
+    }
+
+    fn rebuild(levels: &[usize]) -> Option<(usize, Vec<usize>, usize)> {
+        // b = 10, a = 10: Cmin = [10, 100, 1_000], Cmax = [100, 1_000, 10_000].
+        HierarchyConfig {
+            policy: MaintenancePolicy::Geometric,
+            buffer_capacity: 10,
+            arity: 10,
+        }
+        .plan_rebuild(levels)
+        .unwrap()
+        .map(|p| (p.target_level, p.source_levels, p.output_points))
+    }
+
+    #[test]
+    fn greedy_rebuild_follows_the_three_target_rules() {
+        // Nothing below its minimum capacity.
+        assert_eq!(rebuild(&[50, 500, 5_000]), None);
+        assert_eq!(rebuild(&[]), None);
+        // Rule 1: level 2 (50 < 100) moves into the nearest non-empty deeper level 3,
+        // and Greedy also absorbs level 1 because it still fits.
+        assert_eq!(rebuild(&[40, 50, 5_000]), Some((3, vec![1, 2], 5_090)));
+        // Rule 1 across an empty intermediate level 3 into level 4.
+        let c = HierarchyConfig {
+            policy: MaintenancePolicy::Geometric,
+            buffer_capacity: 10,
+            arity: 10,
+        };
+        let p = c.plan_rebuild(&[0, 60, 0, 20_000]).unwrap().unwrap();
+        assert_eq!(
+            (p.target_level, p.source_levels, p.output_points),
+            (4, vec![2], 20_060)
+        );
+        // Greedy stops at the first level that does not fit (temporal order): level 3
+        // takes level 2 (9_900 + 60 = 9_960), but adding level 1's 80 would exceed 10_000.
+        assert_eq!(rebuild(&[80, 60, 9_900]), Some((3, vec![2], 9_960)));
+        // Rule 2: the deeper level has no room, an upper level is non-empty, so level 2
+        // is the target and absorbs level 1.
+        assert_eq!(rebuild(&[70, 60, 9_990]), Some((2, vec![1], 130)));
+        // Rule 3: no deeper level, nothing above: level 2's 60 points move up into level 1.
+        assert_eq!(rebuild(&[0, 60]), Some((1, vec![2], 60)));
+        // Deepest underutilised level first (its data is oldest).
+        assert_eq!(rebuild(&[5, 60, 500]).map(|r| r.0), Some(3));
+        // Level 1 alone below Cmin(1) is never moved into the buffer.
+        assert_eq!(rebuild(&[5]), None);
+        // Over-capacity input is rejected.
+        assert!(c.plan_rebuild(&[101]).is_err());
     }
 }
