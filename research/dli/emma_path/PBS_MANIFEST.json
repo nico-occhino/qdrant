@@ -127,6 +127,94 @@
    "walltime_used": "02:46:35",
    "host": "turin25",
    "validation": "precision check passes for H5/H6/H6b/H7 at 1,000 queries (half-widths 1.58/0.23/0.24/0.06 pp); vacuum and Greedy fire as simulated; ledgers OK. Phase 3 prereg FROZEN (\u00a79c)."
+  },
+  {
+   "id": "25859938.pbs-m1.metacentrum.cz",
+   "mode": "phase3-primary",
+   "scenario": "heavy_r",
+   "commit": "f370a0ef097e",
+   "input_dir": "native-f370a0ef097e",
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
+   "submitted_utc": "2026-11-22",
+   "status": "submitted",
+   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze"
+  },
+  {
+   "id": "25859939.pbs-m1.metacentrum.cz",
+   "mode": "phase3-primary",
+   "scenario": "medium_r",
+   "commit": "f370a0ef097e",
+   "input_dir": "native-f370a0ef097e",
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
+   "submitted_utc": "2026-11-22",
+   "status": "submitted",
+   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze"
+  },
+  {
+   "id": "25859940.pbs-m1.metacentrum.cz",
+   "mode": "phase3-primary",
+   "scenario": "constant_r",
+   "commit": "f370a0ef097e",
+   "input_dir": "native-f370a0ef097e",
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
+   "submitted_utc": "2026-11-22",
+   "status": "submitted",
+   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze"
+  },
+  {
+   "id": "25859941.pbs-m1.metacentrum.cz",
+   "mode": "phase3-primary",
+   "scenario": "heavy_o",
+   "commit": "f370a0ef097e",
+   "input_dir": "native-f370a0ef097e",
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
+   "submitted_utc": "2026-11-22",
+   "status": "submitted",
+   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze"
+  },
+  {
+   "id": "25859942.pbs-m1.metacentrum.cz",
+   "mode": "phase3-primary",
+   "scenario": "medium_o",
+   "commit": "f370a0ef097e",
+   "input_dir": "native-f370a0ef097e",
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
+   "submitted_utc": "2026-11-22",
+   "status": "submitted",
+   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze"
+  },
+  {
+   "id": "25859943.pbs-m1.metacentrum.cz",
+   "mode": "phase3-primary",
+   "scenario": "constant_o",
+   "commit": "f370a0ef097e",
+   "input_dir": "native-f370a0ef097e",
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
+   "submitted_utc": "2026-11-22",
+   "status": "submitted",
+   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze"
+  },
+  {
+   "id": "25859944.pbs-m1.metacentrum.cz",
+   "mode": "phase3-primary",
+   "scenario": "shift",
+   "commit": "f370a0ef097e",
+   "input_dir": "native-f370a0ef097e",
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=24:00:00",
+   "submitted_utc": "2026-11-22",
+   "status": "submitted",
+   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze"
+  },
+  {
+   "id": "25859945.pbs-m1.metacentrum.cz",
+   "mode": "phase3-primary",
+   "scenario": "insert_only",
+   "commit": "f370a0ef097e",
+   "input_dir": "native-f370a0ef097e",
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=24:00:00",
+   "submitted_utc": "2026-11-22",
+   "status": "submitted",
+   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze"
   }
  ]
 }
