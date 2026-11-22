@@ -61,7 +61,7 @@ The three Shift scenarios share one ingestion per arm; only the query sets diffe
   published (synchronous drain, as in Phase 2).
 
 **Delete selection.**
-- Random: uniform over live IDs, PRNG `StdRng` seeded 20261121 + batch index.
+- Random: uniform over live IDs, drawn by `phase3_plan.py` with NumPy PCG64 seeded 20261121 + batch index (the plan, not the driver, fixes every delete; the driver checks the live-set SHA-256 per batch).
 - Oldest: smallest live insertion sequence numbers. Insertion order is ID order for
   uniform data.
 
