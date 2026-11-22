@@ -122,6 +122,9 @@ impl LocalShard {
         maintenance
             .greedy_rebuild
             .store(config.greedy_rebuild, std::sync::atomic::Ordering::Release);
+        maintenance
+            .vacuum_dead_permille
+            .store(config.vacuum_dead_permille, std::sync::atomic::Ordering::Release);
         maintenance.attach_search(search.clone());
         maintenance.native_enabled.store(true, Ordering::Release);
 

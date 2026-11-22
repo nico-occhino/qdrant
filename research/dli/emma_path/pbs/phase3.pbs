@@ -4,8 +4,9 @@
 #PBS -j oe
 #
 # Phase 3 (shift, deletes) and Part B (multi-level penalty): research/dli/emma_path/PHASE3_PREREGISTRATION.md.
-# Submit with: qsub -l walltime=HH:MM:SS -v MODE=preflight|primary,SCENARIO=<name>,IN=<input dir> phase3.pbs
-#   preflight: N = 100K, 3 batches, the arm pairs of the primary contrasts (SCENARIO ignored), budgets 1K/4K/16K.
+# Submit with: qsub -l walltime=HH:MM:SS -v MODE=preflight|preflight1m|primary,SCENARIO=<name>,IN=<input dir> phase3.pbs
+#   preflight:   N = 100K, 3 batches, pipeline check (job 25842074).
+#   preflight1m: N = 1M, other seed, batches 10 and 20 evaluated at 20K/50K/80K: noise at B* for the precision check.
 #   primary:   N = 1M, 20 batches (+ initial for uniform scenarios), one SCENARIO per job, arms per §3/§10.1.
 # Phases: verify -> build -> plan + gold (phase3_plan.py) -> per run: dli_phase3_workload -> analysis.
 set -euo pipefail
@@ -15,13 +16,18 @@ CORPUS=/storage/budejovice1/home/nico/lmi-metacentrum/results/sisap23-matched-fi
 CORPUS_SHA=f5868d6e002a6e73aea47491ee040a70a151406fe9e4552292428e2bfe0616e5
 EXPECTED_COMMIT=$(cat "$IN/native.commit")
 case "$MODE" in
-  preflight) N=100000;  BATCHES=3;  BUDGETS=1000,4000,16000; STATIC=2
+  preflight) N=100000;  BATCHES=3;  BUDGETS=1000,4000,16000; STATIC=2; EVAL=; SEED=20261121
              RUNS="shift:E1 shift:E1R constant_r:E1 constant_r:E1G constant_o:E1 constant_o:E1G" ;;
-  primary)   N=1000000; BATCHES=20; BUDGETS=1000,2000,3500,5000,7000,10000,14000,20000,28000,40000,56000; STATIC=5,10,15,20
+  # Precision check at the primary scale and B* (amendment after preflight 25842074): full
+  # 20-batch plans with a DIFFERENT seed from the primary runs, two evaluated batches.
+  preflight1m) N=1000000; BATCHES=20; BUDGETS=20000,50000,80000; STATIC=; EVAL=10,20; SEED=20261199
+             RUNS="shift:E1 shift:E1R constant_r:E1 constant_r:E1V medium_r:E1 medium_r:E1G medium_o:E1 medium_o:E1G" ;;
+  primary)   N=1000000; BATCHES=20; BUDGETS=1000,2000,3500,5000,7000,10000,14000,20000,28000,40000,50000,56000,80000
+             STATIC=5,10,15,20; EVAL=; SEED=20261121
              case "${SCENARIO:?}" in
                insert_only) RUNS="insert_only:E1 insert_only:E1R insert_only:E1C insert_only:E1C50" ;;
                shift)       RUNS="shift:E1 shift:E1R shift:E1C" ;;
-               heavy_r|medium_r|constant_r|heavy_o|medium_o|constant_o) RUNS="$SCENARIO:E1 $SCENARIO:E1G" ;;
+               heavy_r|medium_r|constant_r|heavy_o|medium_o|constant_o) RUNS="$SCENARIO:E1 $SCENARIO:E1G $SCENARIO:E1V" ;;
                *) echo "unknown SCENARIO $SCENARIO"; exit 2 ;;
              esac ;;
   *) echo "unknown MODE $MODE"; exit 2 ;;
@@ -107,18 +113,22 @@ phase=unit_tests
     collection_manager::dli_schedule::tests::level_model_policy_sizes_buckets_and_samples_per_level \
     collection_manager::dli_bucket_plan::tests::model_normalized_scales_by_member_bucket_count_and_code_variant_divides_by_arity \
     tests::lmi_lifecycle::dli_sisap_scaling_benchmark::greedy_rebuild_after_deletes_in_configured_collection \
+    tests::lmi_lifecycle::dli_sisap_scaling_benchmark::vacuum_rebuild_after_deletes_in_configured_collection \
+    collection_manager::dli_schedule::tests::vacuum_rewrites_the_deepest_level_above_the_dead_threshold \
+    collection_manager::dli_bucket_plan::tests::isotonic_fit_matches_hand_computed_pav \
+    collection_manager::dli_bucket_plan::tests::calibrated_selection_is_greedy_value_per_cost_with_whole_buckets \
     collection_manager::dli_schedule::tests::greedy_rebuild_follows_the_three_target_rules \
     collection_manager::dli_schedule::tests::consolidation_reproduces_the_planner_simulation \
     collection_manager::dli_schedule::tests::consolidation_boundary_fit_guard_and_shape \
     > "$OUT/unit-tests.log" 2>&1
-grep -q "test result: ok. 7 passed" "$OUT/unit-tests.log"
+grep -q "test result: ok. 11 passed" "$OUT/unit-tests.log"
 "$PY" -I "$SRC/test_analyze_phase3.py" >> "$OUT/unit-tests.log"
 
 phase=plan
 # One plan (inserts, deletes, live-set ledger, per-batch gold) per scenario, shared by its arms.
 for S in $(for r in $RUNS; do echo "${r%%:*}"; done | sort -u); do
   /usr/bin/time -v "$PY" -I "$SRC/phase3_plan.py" --corpus "$W/data/vectors.f16" --queries "$W/data/queries.f32" \
-      --rows "$N" --scenario "$S" --batches "$BATCHES" --out "$W/plans/$S" > "$OUT/plan-$S.log" 2>&1
+      --rows "$N" --scenario "$S" --batches "$BATCHES" --seed "$SEED" --out "$W/plans/$S" > "$OUT/plan-$S.log" 2>&1
   mkdir -p "$OUT/plans/$S"; cp "$W/plans/$S/plan.json" "$OUT/plans/$S/"
 done
 
@@ -129,6 +139,7 @@ for RUN in $RUNS; do
   case $ARM in
     E1)    BASE=E1;  VARIANT=none ;;
     E1G)   BASE=E1;  VARIANT=greedy ;;
+    E1V)   BASE=E1;  VARIANT=vacuum200 ;;
     E1R)   BASE=E1R; VARIANT=none ;;
     E1C)   BASE=E1;  VARIANT=consolidate250 ;;
     E1C50) BASE=E1;  VARIANT=consolidate500 ;;
@@ -145,6 +156,7 @@ for RUN in $RUNS; do
   (
     export DLI_ARM=$BASE DLI_P3_VARIANT=$VARIANT DLI_P3_PLAN="$W/plans/$S" DLI_P3_CORPUS="$W/data/vectors.f16"
     export DLI_P3_OUTPUT="$A" DLI_P3_SCRATCH="$R/scratch" DLI_P3_SETS=$SETS DLI_P3_STATIC_BATCHES=$STATIC
+    [[ -n "$EVAL" ]] && export DLI_P3_EVAL=$EVAL
     export DLI_FRONTIER_BUDGETS=$BUDGETS DLI_FRONTIER_POLICIES=$RUN_POLICIES DLI_BENCH_HEAD="$EXPECTED_COMMIT"
     [[ -n "$CALIB" ]] && export DLI_P3_CALIB_SET=$CALIB
     export QDRANT_DLI_BUILD_CPUS=$NCPUS DLI_BENCH_PUBLICATION_TIMEOUT_S=14400
@@ -159,7 +171,7 @@ done
 for S in $(for r in $RUNS; do echo "${r%%:*}"; done | sort -u); do ANALYSIS_ARGS+=(--plans "$S=$W/plans/$S"); done
 
 phase=analysis
-"$PY" -I "$SRC/analyze_phase3.py" $([[ $MODE == preflight ]] && echo --precision) "${ANALYSIS_ARGS[@]}" \
+"$PY" -I "$SRC/analyze_phase3.py" $([[ $MODE == preflight* ]] && echo --precision) "${ANALYSIS_ARGS[@]}" \
     --out "$OUT/analysis.json" > "$OUT/analysis.txt"
 
 phase=persist

@@ -417,6 +417,9 @@ pub struct DliExperimentalConfig {
     /// the historical No-Rebuild behaviour.
     #[serde(default)]
     pub greedy_rebuild: bool,
+    /// Vacuum rebuild when a level's dead fraction exceeds this permille (0 = off).
+    #[serde(default)]
+    pub vacuum_dead_permille: u16,
     pub buffer_capacity: usize,
     pub arity: usize,
     pub candidate_budget: usize,

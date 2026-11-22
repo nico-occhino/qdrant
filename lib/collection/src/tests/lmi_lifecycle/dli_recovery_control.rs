@@ -1636,6 +1636,7 @@ async fn dli_recovery_control_body() {
         maintenance_policy: Default::default(),
         level_model: Default::default(),
         greedy_rebuild: false,
+        vacuum_dead_permille: 0,
         buffer_capacity: 3,
         arity: 2,
         candidate_budget: 64,

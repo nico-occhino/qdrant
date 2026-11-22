@@ -185,6 +185,7 @@ fn collection_config(dli: bool) -> CollectionConfigInternal {
             },
             level_model,
             greedy_rebuild: std::env::var("DLI_GREEDY_REBUILD").as_deref() == Ok("1"),
+            vacuum_dead_permille: 0,
             buffer_capacity,
             arity,
             candidate_budget: std::env::var("DLI_BENCH_BUDGET")
@@ -2285,6 +2286,160 @@ async fn greedy_rebuild_after_deletes_in_configured_collection() {
     }
 }
 
+/// Phase 3 arm E1V: vacuum rebuild through the native optimizer after 50% random deletes
+/// (b = 40, a = 4). After maintenance settles, no learned level is more than 20% dead,
+/// vacuumed destinations hold no deleted points, and full-budget learned search equals
+/// exact search over live points with no exact fallback.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn vacuum_rebuild_after_deletes_in_configured_collection() {
+    let _scope = common::ambient::test_guard();
+    use rand::seq::SliceRandom;
+    use rand::{RngExt, SeedableRng};
+    use crate::collection_manager::dli_bucket_plan::RoutingPolicy;
+    use crate::collection_manager::dli_schedule::{LevelBuckets, LevelModelPolicy};
+    const B: usize = 40;
+    const A: usize = 4;
+    const BATCHES: usize = 12;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(20261122);
+    let centers: Vec<Vec<f32>> = (0..8)
+        .map(|_| (0..DIMENSIONS).map(|_| rng.random_range(-1.0f32..1.0)).collect())
+        .collect();
+    let rows: Vec<Vec<f32>> = (0..B * BATCHES)
+        .map(|i| {
+            centers[i % centers.len()]
+                .iter()
+                .map(|c| c + rng.random_range(-0.3f32..0.3))
+                .collect()
+        })
+        .collect();
+    let queries: Vec<Vec<f32>> = (0..6)
+        .map(|i| centers[i].iter().map(|c| c + rng.random_range(-0.3f32..0.3)).collect())
+        .collect();
+    let stored = |v: &[f32]| -> Vec<f32> {
+        let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        v.iter().map(|x| f16::from_f32(x / norm).to_f32()).collect()
+    };
+    for oldest in [false] {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = collection_config(true);
+        let dli = config.dli_experimental.as_mut().unwrap();
+        dli.buffer_capacity = B;
+        dli.arity = A;
+        dli.candidate_budget = usize::MAX / 2;
+        dli.routing_policy = RoutingPolicy::ModelDrivenNormalizedCode;
+        dli.vacuum_dead_permille = 200;
+        dli.level_model = LevelModelPolicy {
+            buckets: LevelBuckets::ArityPower,
+            min_samples_per_bucket: 4,
+            reuse_target_router: true,
+        };
+        dli.model = LmiConfig {
+            n_buckets: A,
+            sample_size: 64,
+            hidden_dim: 8,
+            epochs: 2,
+            batch_size: 16,
+            routing_batch_size: 16,
+            kmeans_iterations: 3,
+            nprobe: 1,
+            seed: 5,
+            reuse_router: None,
+        };
+        let collection = create_collection_with_config("vacuum", root.path(), config).await;
+        let local = replica(&collection).await;
+        for batch in 0..BATCHES {
+            let points = (batch * B..(batch + 1) * B)
+                .map(|row| PointStructPersisted {
+                    id: ((row + 1) as u64).into(),
+                    vector: VectorStructPersisted::Single(rows[row].clone()),
+                    payload: None,
+                })
+                .collect();
+            apply_points(&collection, points).await;
+            wait_for_dli_publications(&local, batch + 1).await;
+        }
+        // Delete 70% of the points: the oldest IDs, or a seeded random subset.
+        let mut ids: Vec<u64> = (1..=(B * BATCHES) as u64).collect();
+        if !oldest {
+            ids.shuffle(&mut rand::rngs::StdRng::seed_from_u64(7));
+        }
+        let deleted: HashSet<u64> = ids[..B * BATCHES / 2].iter().copied().collect();
+        let before_events = local.local_dli_publication_events_for_test().await.unwrap().len();
+        apply_delete(&collection, deleted.iter().copied().collect()).await;
+        let rebuilds = settle_dli_maintenance(&local, Duration::from_secs(120)).await;
+        let events = local.local_dli_publication_events_for_test().await.unwrap();
+        let rebuilt: HashSet<uuid::Uuid> =
+            events[before_events..].iter().map(|e| e.destination_uuid).collect();
+        assert_eq!(rebuilt.len(), rebuilds);
+
+        // Fixed point: no learned level above 20% dead; vacuumed destinations hold none.
+        let holder = replica(&collection).await.local_segments_for_test().await.unwrap();
+        let mut worst = 0f64;
+        for (_, member) in holder.read().iter_original() {
+            let segment = member.read();
+            let (live, dead) = (segment.available_point_count(), segment.deleted_point_count());
+            if !segment.is_appendable() && live + dead > 0 {
+                worst = worst.max(dead as f64 / (live + dead) as f64);
+            }
+            if rebuilt.contains(&segment.uuid) {
+                assert_eq!(dead, 0, "vacuum kept dead points");
+            }
+        }
+        assert!(worst <= 0.2, "a learned level is {worst:.2} dead after vacuum");
+        assert!(rebuilds >= 1, "50% random deletes must trigger a vacuum");
+        println!("VACUUM_TEST rebuilds={rebuilds} worst_dead={worst:.3}");
+
+        let corpus: Vec<(u64, Vec<f32>)> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, v)| ((i + 1) as u64, stored(v)))
+            .filter(|(id, _)| !deleted.contains(id))
+            .collect();
+        let (learned_before, fallback_before) =
+            local.local_dli_search_counts_for_test().await.unwrap();
+        for query in &queries {
+            let result = collection
+                .search(
+                    CoreSearchRequest {
+                        query: QueryEnum::Nearest(NamedQuery::default_dense(query.clone())),
+                        filter: None,
+                        params: None,
+                        limit: 10,
+                        offset: 0,
+                        with_payload: None,
+                        with_vector: None,
+                        score_threshold: None,
+                    },
+                    None,
+                    None,
+                    &ShardSelectorInternal::All,
+                    None,
+                )
+                .await
+                .unwrap();
+            let norm = query.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let mut exact: Vec<f32> = corpus
+                .iter()
+                .map(|(_, v)| v.iter().zip(query).map(|(a, b)| a * b / norm).sum())
+                .collect();
+            exact.sort_by(|a, b| b.total_cmp(a));
+            assert_eq!(result.len(), 10);
+            for (hit, oracle) in result.iter().zip(&exact) {
+                assert!((hit.score - oracle).abs() < 2e-3, "{} vs {oracle}", hit.score);
+                let id = match hit.id {
+                    segment::types::ExtendedPointId::NumId(n) => n,
+                    other => panic!("unexpected id {other:?}"),
+                };
+                assert!(!deleted.contains(&id), "deleted point {id} returned");
+            }
+        }
+        let (learned, fallback) = local.local_dli_search_counts_for_test().await.unwrap();
+        assert_eq!(learned - learned_before, queries.len() as u64, "learned routing");
+        assert_eq!(fallback - fallback_before, 0, "exact fallbacks");
+        collection.stop_gracefully().await;
+    }
+}
+
 fn env_list(name: &str) -> Option<Vec<String>> {
     std::env::var(name)
         .ok()
@@ -2337,7 +2492,7 @@ fn copy_dir(from: &Path, to: &Path) {
 /// set against the plan's ledger, and replays the selection frontier on a flushed copy of the
 /// shard. Environment:
 /// * `DLI_P3_PLAN` (plan dir), `DLI_P3_CORPUS` (Float16 rows), `DLI_P3_OUTPUT`, `DLI_P3_SCRATCH`;
-/// * `DLI_ARM` = E1 | E1R and `DLI_P3_VARIANT` = none | greedy | consolidate250 | consolidate500;
+/// * `DLI_ARM` = E1 | E1R and `DLI_P3_VARIANT` = none | greedy | vacuum200 | consolidate250 | consolidate500;
 /// * `DLI_P3_CALIB_SET` (plan set fitted per batch for the `calibrated` policy, E1L),
 /// * `DLI_P3_EVAL` (batch indices, default all), `DLI_P3_STATIC_BATCHES` (default 5,10,15,20),
 ///   `DLI_P3_SETS` (set names, default every set of the batch), `DLI_FRONTIER_BUDGETS`,
@@ -2364,6 +2519,7 @@ async fn dli_phase3_workload() {
         match variant.as_str() {
             "none" => {}
             "greedy" => dli.greedy_rebuild = true,
+            "vacuum200" => dli.vacuum_dead_permille = 200,
             "consolidate250" => {
                 dli.maintenance_policy = MaintenancePolicy::GeometricConsolidating { rho_permille: 250 }
             }

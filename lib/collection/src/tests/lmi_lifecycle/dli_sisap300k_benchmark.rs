@@ -88,6 +88,7 @@ fn collection_config(dli: bool) -> CollectionConfigInternal {
             },
             level_model: Default::default(),
             greedy_rebuild: false,
+        vacuum_dead_permille: 0,
             buffer_capacity: DLI_BUFFER_CAPACITY,
             arity: 2,
             candidate_budget: 2_000,

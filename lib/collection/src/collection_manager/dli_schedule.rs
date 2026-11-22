@@ -285,6 +285,46 @@ impl HierarchyConfig {
         self.level_capacity(level - 1)
     }
 
+    /// Vacuum rebuild (Phase 3 arm E1V, Qdrant-specific): Qdrant deletes are soft, so a
+    /// level keeps its deleted points, and their postings keep consuming routing budget,
+    /// until the level is rewritten. The deepest learned level whose dead fraction
+    /// (physical − live) / physical exceeds `dead_permille / 1000` is rewritten in place
+    /// (target = that level, no sources, buffer untouched), which drops its dead points;
+    /// the target's router is reused. Mirrors Qdrant's vacuum optimizer
+    /// (`deleted_threshold`, default 0.2).
+    pub fn plan_vacuum(
+        self,
+        live: &[usize],
+        physical: &[usize],
+        dead_permille: u16,
+    ) -> Result<Option<CompactionPlan>, ScheduleError> {
+        self.validate()?;
+        if live.len() != physical.len() {
+            return Err(ScheduleError::OccupancyOverflow);
+        }
+        for level in (1..=live.len()).rev() {
+            let (n, p) = (live[level - 1], physical[level - 1]);
+            if n > p {
+                return Err(ScheduleError::OccupancyOverflow);
+            }
+            if p == 0 || n == 0 {
+                continue;
+            }
+            // (p − n) / p > dead_permille / 1000, in integers.
+            if ((p - n) as u128) * 1000 > u128::from(dead_permille) * p as u128 {
+                return Ok(Some(CompactionPlan {
+                    target_level: level,
+                    source_levels: Vec::new(),
+                    buffer_points: 0,
+                    target_existing_points: n,
+                    output_points: n,
+                    target_capacity: self.level_capacity(level)?,
+                }));
+            }
+        }
+        Ok(None)
+    }
+
     /// Greedy underutilisation rebuild (Sommerová §3.4.2, Algorithm 11), planned from
     /// **live** occupancies after deletes. `levels[0]` is learned level 1. The deepest
     /// underutilised level is handled first, since it holds the oldest data. Level 1 is
@@ -676,5 +716,26 @@ mod tests {
         assert_eq!(rebuild(&[5]), None);
         // Over-capacity input is rejected.
         assert!(c.plan_rebuild(&[101]).is_err());
+    }
+
+    #[test]
+    fn vacuum_rewrites_the_deepest_level_above_the_dead_threshold() {
+        let c = HierarchyConfig { policy: MaintenancePolicy::Geometric, buffer_capacity: 10, arity: 10 };
+        let plan = |live: &[usize], physical: &[usize]| {
+            c.plan_vacuum(live, physical, 200)
+                .unwrap()
+                .map(|p| (p.target_level, p.source_levels, p.buffer_points, p.output_points))
+        };
+        // Exactly 20% dead is not above the threshold; one more dead point is.
+        assert_eq!(plan(&[80], &[100]), None);
+        assert_eq!(plan(&[79], &[100]), Some((1, vec![], 0, 79)));
+        // Deepest qualifying level first; levels without deletes are left alone.
+        assert_eq!(plan(&[10, 500, 4_000], &[50, 900, 4_000]), Some((2, vec![], 0, 500)));
+        assert_eq!(plan(&[10, 500, 4_000], &[50, 900, 5_100]), Some((3, vec![], 0, 4_000)));
+        // Empty and fully deleted levels are skipped (a fully deleted level has nothing to keep).
+        assert_eq!(plan(&[0, 0], &[0, 30]), None);
+        // live > physical or mismatched lengths are rejected.
+        assert!(c.plan_vacuum(&[5], &[4], 200).is_err());
+        assert!(c.plan_vacuum(&[5], &[], 200).is_err());
     }
 }

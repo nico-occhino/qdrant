@@ -106,6 +106,7 @@ as in Phase 2.
 | **E1** | reuse target router (her code) | train from scratch | none (No Rebuild) | all scenarios |
 | **E1G** | reuse target router | train from scratch | **Greedy** (her §3.4.2) | delete scenarios |
 | **E1R** | retrain from scratch | train from scratch | none | Insert-only, Shift |
+| **E1V** (added §9b) | reuse target router | train from scratch | **vacuum**: rewrite a level in place when its dead fraction > 0.2 | delete scenarios |
 
 Everything else is E1 from Phase 1: b = 5,000, a = 10, aⁱ buckets, hidden 128, 10 epochs,
 25 k-means iterations, sample min(n, max(100K, 40·B)), routing `mdn_code`.
@@ -143,7 +144,7 @@ Not replicated, and why:
 
 ## 5. Hypotheses and decision rules (scale N = 1M, test queries)
 
-Primary budget B* = 0.5% of N = 5,000 candidates, the same 0.5% she used (50K at 10M).
+Primary budget ~~B* = 0.5% of N = 5,000 candidates~~ **B* = 10·b = 50,000 candidates (superseded, §9b)**; 10·b is her buffer-to-budget ratio (50K = 10·b at 10M).
 "Mean recall" is the mean over batches 1–20 of mean R@30 at B*. CIs are 95% paired query
 bootstraps:
 - 10,000 resamples, seed 20261121;
@@ -172,7 +173,7 @@ effect.
 
   Her analogue is 8.4 pp (Table 4.6, No Retrain vs From Scratch). Reported with it: the
   same Δ in Insert-only, and the ratio of training seconds E1R / E1.
-- **H6, primary (random deletes).** In Constant-R, consider Δ = E1G − E1 mean recall.
+- **H6, primary (random deletes).** *Superseded by §9b (H6 = E1V − E1 in Constant-R; her Greedy moves to H6b in Medium-R).* In Constant-R, consider Δ = E1G − E1 mean recall.
   - **Supported** if Δ ≥ 1.0 pp and the 95% CI lower bound > 0.
   - **Inconclusive** if the half-width > 1.0 pp.
   - **Not supported** otherwise.
@@ -180,7 +181,7 @@ effect.
   Her difference is 0.5 pp (Table 4.5); we expect more, because Qdrant's dead postings
   consume budget. Reported with it: E1's dead-postings share at batch 20, and rewritten
   points E1G / E1.
-- **H7 (oldest deletes, temporal advantage), equivalence by TOST.** In Constant-O, consider
+- **H7 (oldest deletes, temporal advantage), equivalence by TOST.** *Superseded by §9b (scenario Medium-O).* In Constant-O, consider
   Δ = E1G − E1 mean recall, with margin M = 1.0 pp.
   - **Supported (equivalent)** if the whole **90%** CI of Δ lies inside ±1.0 pp. That is
     two one-sided tests at 5% each.
@@ -281,8 +282,41 @@ Also accepted:
 - **Original-idea boundary:** drift-triggered retraining is not an arm; it gets its own
   preregistration after Phase 3.
 
-Remaining before freezing: implement and test M1–M9 (§7) and M10–M12 (§10.6), run the preflight, apply the
-precision check, then change the status line to FROZEN.
+Remaining before freezing: see §9b. (Original: implement and test M1–M9 (§7) and M10–M12 (§10.6), run the preflight, apply the
+precision check, then change the status line to FROZEN.)
+
+
+## 9b. Revisions after preflight 25842074 (author decisions 2026-11-22, before any primary data)
+
+The 100K preflight ([PHASE3_PREFLIGHT.md](PHASE3_PREFLIGHT.md)) ran the whole pipeline correctly and
+exposed two design flaws. Its recall values were not interpreted. The author chose these revisions:
+
+1. **Primary budget B\* = 10·b = 50,000** (was 0.5% of N = 5,000). At 0.5% of N the Plain buffer (up to
+   b = 5,000) can exhaust B* by itself. The preflight showed it: per-query SD was 0 at B* in every
+   contrast, although the Shift arms differed at larger budgets. 10·b keeps the buffer at most 10% of the
+   budget, as in Sommerová's 10M setup. The primary budget grid adds 50K and 80K.
+2. **New arm E1V (vacuum).** Her Greedy rule triggers on *live* occupancy. Qdrant deletes are soft, so a
+   level keeps its dead postings, and they keep consuming budget (≈ 75% of selected postings at the
+   preflight's 16K budget in Constant-R). Greedy never sees this: a 1M planner simulation gives 1 Greedy
+   rebuild in Constant-R and 0 in Constant-O. E1V rewrites the deepest learned level whose dead fraction
+   exceeds 0.2 (Qdrant's vacuum `deleted_threshold` default) in place, reusing its router
+   (`HierarchyConfig::plan_vacuum`; `DliExperimentalConfig.vacuum_dead_permille`; tests
+   `vacuum_rewrites_the_deepest_level_above_the_dead_threshold`,
+   `vacuum_rebuild_after_deletes_in_configured_collection`). All delete scenarios run E1, E1G and E1V.
+3. **Primary delete hypotheses**, with thresholds and decision rules as in §5:
+   - **H6 (Qdrant soft deletes):** Constant-R, Δ = E1V − E1 ≥ 1.0 pp at B*, CI lower bound > 0. Its
+     dead postings are the largest (live ≈ 10% of N).
+   - **H6b (her Greedy, where it fires):** Medium-R, Δ = E1G − E1 ≥ 1.0 pp (4 rebuilds in the simulation).
+   - **H7 (temporal advantage, TOST ±1 pp, 90% CI):** Medium-O, E1G − E1 (1 rebuild in the
+     simulation). Constant-O would be equivalent by construction (0 rebuilds) and is descriptive only.
+   - **Multiplicity:** the primary Part A family is now H5, H6, H6b, H7; the Bonferroni sensitivity uses
+     4 decisions.
+4. **Precision check at the primary scale.** A second preflight (`MODE=preflight1m`) uses N = 1M, full
+   20-batch plans with a **different seed** (20261199, never used for primary data), batches 10 and
+   20, budgets 20K/50K/80K, and the arm pairs of H5, H6, H6b and H7. It estimates the per-query SD at
+   B*. The §5 rule then sets the query count before any primary run. Recall values are not interpreted.
+
+Remaining before freezing: preflight1m, then the precision check, then FROZEN.
 
 ---
 

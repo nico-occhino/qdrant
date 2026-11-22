@@ -160,14 +160,18 @@ impl shard::optimize::OptimizationStrategy for DliOptimizationStrategy {
         if seen.len() != roles.len() {
             return Err(fail());
         }
-        // A rebuild plan (no buffer points) is re-derived by the rebuild planner.
-        let actual = if expected.buffer_points == 0 {
-            hierarchy.plan_rebuild(&counts)
+        // A vacuum plan (no buffer, no sources) is stale if its target's live count
+        // changed; a rebuild plan (no buffer points) is re-derived by the rebuild planner.
+        let actual = if expected.buffer_points == 0 && expected.source_levels.is_empty() {
+            if counts.get(expected.target_level - 1) != Some(&expected.target_existing_points) {
+                return Err(fail());
+            }
+            expected.clone()
+        } else if expected.buffer_points == 0 {
+            hierarchy.plan_rebuild(&counts).map_err(|_| fail())?.ok_or_else(fail)?
         } else {
-            hierarchy.plan(buffer, &counts)
-        }
-        .map_err(|_| fail())?
-        .ok_or_else(fail)?;
+            hierarchy.plan(buffer, &counts).map_err(|_| fail())?.ok_or_else(fail)?
+        };
         if actual.target_level != expected.target_level
             || actual.source_levels != expected.source_levels
             || (actual.buffer_points == 0) != (expected.buffer_points == 0)
@@ -365,6 +369,8 @@ pub struct DliMaintenance {
     pub level_model: Mutex<super::dli_schedule::LevelModelPolicy>,
     /// Plan a Greedy underutilisation rebuild when no compaction is due.
     pub greedy_rebuild: AtomicBool,
+    /// Vacuum rebuild threshold in permille of dead points per level; 0 disables.
+    pub vacuum_dead_permille: std::sync::atomic::AtomicU16,
     pub published: AtomicUsize,
     pub published_uuids: Mutex<Vec<Uuid>>,
     pub publication_events: Mutex<Vec<DliPublicationEvent>>,
@@ -569,6 +575,7 @@ impl DliMaintenance {
             destination_on_disk: AtomicBool::new(true),
             level_model: Mutex::new(Default::default()),
             greedy_rebuild: AtomicBool::new(false),
+            vacuum_dead_permille: std::sync::atomic::AtomicU16::new(0),
             published: AtomicUsize::new(0),
             published_uuids: Mutex::new(Vec::new()),
             publication_events: Mutex::new(Vec::new()),
@@ -683,6 +690,7 @@ impl DliMaintenance {
             .collect();
         let roles_snapshot = self.members.read().clone();
         let mut counts = vec![];
+        let mut physical: Vec<usize> = vec![];
         let mut buffer = 0usize;
         let mut fingerprints = vec![];
         let mut roles = vec![];
@@ -706,13 +714,17 @@ impl DliMaintenance {
             } else {
                 counts.resize(counts.len().max(level), 0);
                 counts[level - 1] += count;
+                physical.resize(physical.len().max(level), 0);
+                physical[level - 1] += count + guard.deleted_point_count();
             }
             fingerprints.push((guard.uuid, guard.version(), count));
             roles.push(level);
         }
         fingerprints.sort_unstable();
         let rebuild = self.greedy_rebuild.load(Ordering::Acquire);
-        let Ok(Some(plan)) = next_plan(self.hierarchy, rebuild, buffer, &counts) else {
+        let vacuum = self.vacuum_dead_permille.load(Ordering::Acquire);
+        physical.resize(counts.len(), 0);
+        let Ok(Some(plan)) = next_plan(self.hierarchy, rebuild, vacuum, buffer, &counts, &physical) else {
             self.running.store(false, Ordering::Release);
             return;
         };
@@ -1063,19 +1075,29 @@ fn build_cpus() -> usize {
     }
 }
 
-/// The next maintenance job: a buffer compaction when due, otherwise (when enabled) a
-/// Greedy underutilisation rebuild planned from live counts.
+/// The next maintenance job: a buffer compaction when due; otherwise, when enabled, a
+/// vacuum rewrite of a level above the dead threshold, then a Greedy underutilisation
+/// rebuild planned from live counts.
 pub fn next_plan(
     hierarchy: HierarchyConfig,
     greedy_rebuild: bool,
+    vacuum_dead_permille: u16,
     buffer: usize,
     counts: &[usize],
+    physical: &[usize],
 ) -> Result<Option<CompactionPlan>, super::dli_schedule::ScheduleError> {
-    match hierarchy.plan(buffer, counts)? {
-        Some(plan) => Ok(Some(plan)),
-        None if greedy_rebuild => hierarchy.plan_rebuild(counts),
-        None => Ok(None),
+    if let Some(plan) = hierarchy.plan(buffer, counts)? {
+        return Ok(Some(plan));
     }
+    if vacuum_dead_permille > 0
+        && let Some(plan) = hierarchy.plan_vacuum(counts, physical, vacuum_dead_permille)?
+    {
+        return Ok(Some(plan));
+    }
+    if greedy_rebuild {
+        return hierarchy.plan_rebuild(counts);
+    }
+    Ok(None)
 }
 
 /// Members of a job: the target, its sources, and the buffer only when the plan drains it

@@ -10,7 +10,8 @@ Arms are labelled as in the preregistration: E1, E1G, E1R, E1C, E1C50 (and polic
 run, e.g. E1L = E1 run with policy `calibrated`). A contrast names "ARM[:policy]".
 
 Estimands:
-* Part A: mean over batches of mean R@30 at B* = 0.5% of N (budget on the grid), test set;
+* Part A: mean over batches of mean R@30 at B* = 10·b (the run's buffer capacity; 50K at
+  b = 5K, Sommerová's buffer-to-budget ratio; amended after preflight 25842074), test set;
   paired query bootstrap within each batch, 10,000 resamples, seed 20261121.
 * Part B: ratio of the batch-mean work at mean R@30 = 0.90 (linear interpolation between
   bracketing budgets, never extrapolating), over batches where both arms reach the target;
@@ -25,6 +26,11 @@ import numpy as np
 
 RESAMPLES = 10_000
 TARGET = 0.90
+# (label, scenario, set, arm, baseline) of the Part A primary contrasts.
+PRIMARY = [("H5", "shift", "mq", "E1R", "E1"),
+           ("H6", "constant_r", "test", "E1V", "E1"),
+           ("H6b", "medium_r", "test", "E1G", "E1"),
+           ("H7", "medium_o", "test", "E1G", "E1")]
 
 
 def load_run(directory, policy, set_name):
@@ -139,11 +145,12 @@ def main():
         directory = runs.get((scenario, arm))
         return None if directory is None else load_run(directory, policy, set_name)
 
-    def bstar(scenario, data):
-        n = plans[scenario]["rows"]
+    def bstar(scenario, arm, data):
+        summary = json.load(open(Path(runs[(scenario, arm)]) / "summary.json"))
         grid = sorted(next(iter(data.values())).keys())
-        target = 0.005 * n
-        return min(grid, key=lambda g: (abs(g - target), g))
+        target = 10 * summary["buffer_capacity"]
+        assert target in grid, f"B* = {target} must be on the budget grid {grid}"
+        return target
 
     result = {"hypotheses": {}, "descriptive": {}}
 
@@ -152,12 +159,13 @@ def main():
         if not A or not B:
             result["hypotheses"][label] = {"status": "missing runs"}
             return
-        budget = bstar(scenario, A)
+        budget = bstar(scenario, arm_a, A)
         point, boots, batches = mean_recall_diff(A, B, budget, np.random.default_rng(seed))
         point, boots = point * 100, boots * 100
         entry = {"scenario": scenario, "set": set_name, "contrast": f"{arm_a} - {arm_b}", "budget": budget,
                  "batches": batches, "delta_pp": point, "ci95": ci(boots, 0.95), "ci90": ci(boots, 0.90),
-                 "bonferroni_ci": ci(boots, 1 - 0.05 / 3) if not equivalence else ci(boots, 1 - 2 * 0.05 / 3),
+                 # Four primary Part A decisions (H5, H6, H6b, H7).
+                 "bonferroni_ci": ci(boots, 1 - 0.05 / 4) if not equivalence else ci(boots, 1 - 2 * 0.05 / 4),
                  "threshold_pp": threshold}
         if equivalence:
             lo, hi = entry["ci90"]
@@ -191,13 +199,11 @@ def main():
 
     if a.precision:
         # §5 precision check: per-query SD of each primary contrast at B*, projected half-width.
-        for label, scenario, set_name, x, y in [("H5", "shift", "mq", "E1R", "E1"),
-                                                ("H6", "constant_r", "test", "E1G", "E1"),
-                                                ("H7", "constant_o", "test", "E1G", "E1")]:
+        for label, scenario, set_name, x, y in PRIMARY:
             A, B = get(scenario, x, set_name), get(scenario, y, set_name)
             if not A or not B:
                 continue
-            budget = bstar(scenario, A)
+            budget = bstar(scenario, x, A)
             sds = [float((A[t][budget][0] - B[t][budget][0]).std(ddof=1) * 100) for t in sorted(set(A) & set(B))]
             n = len(next(iter(A.values()))[budget][0])
             sd = float(np.mean(sds))
@@ -207,8 +213,11 @@ def main():
     else:
         part_a("H5", "shift", "mq", "E1R", "E1", 2.0)
         part_a("H5_insert_only", "insert_only", "test", "E1R", "E1", 2.0)
-        part_a("H6", "constant_r", "test", "E1G", "E1", 1.0)
-        part_a("H7", "constant_o", "test", "E1G", "E1", 1.0, equivalence=True)
+        # Amended after preflight 25842074 (§9): H6 = vacuum (Qdrant soft deletes) where dead
+        # postings are largest; H6b = her Greedy where it fires; H7 = oldest deletes in Medium-O.
+        part_a("H6", "constant_r", "test", "E1V", "E1", 1.0)
+        part_a("H6b", "medium_r", "test", "E1G", "E1", 1.0)
+        part_a("H7", "medium_o", "test", "E1G", "E1", 1.0, equivalence=True)
         part_a("H12", "shift", "mq", "E1C", "E1", 0.0)
         if "outcome" in result["hypotheses"].get("H12", {}):
             result["hypotheses"]["H12"]["outcome"] = "descriptive"

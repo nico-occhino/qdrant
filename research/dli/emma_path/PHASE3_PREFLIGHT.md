@@ -55,4 +55,8 @@ triggers on the **dead fraction** of a level can: Qdrant's own vacuum optimizer 
 
 ## Decisions needed before freezing
 
-See the session record of 2026-11-22. They are recorded as author decisions in PHASE3_PREREGISTRATION.md §9.
+Recorded as author decisions in [PHASE3_PREREGISTRATION.md](PHASE3_PREREGISTRATION.md) §9b (2026-11-22):
+- B* = 10·b = 50K;
+- the new vacuum arm E1V (dead fraction > 0.2);
+- H6 = E1V vs E1 in Constant-R, H6b = Greedy in Medium-R, H7 in Medium-O;
+- a 1M precision preflight with a different seed.
