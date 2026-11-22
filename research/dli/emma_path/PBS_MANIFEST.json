@@ -112,6 +112,17 @@
    "walltime_used": "00:58:42",
    "host": "elmu1-25",
    "validation": "pipeline pass (tests, ledger checks every batch, publications, replay, analysis). Design flaws found: B*=0.5%N is buffer-dominated (SD 0 at B*); Greedy rebuild never fires in Constant scenarios (and only once at 1M Constant-R). See PHASE3_PREFLIGHT.md."
+  },
+  {
+   "id": "25857840.pbs-m1.metacentrum.cz",
+   "mode": "phase3-preflight1m",
+   "commit": "c42fde1ee",
+   "input_dir": "native-c42fde1eeeb3",
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=06:00:00",
+   "submitted_utc": "2026-11-22",
+   "status": "submitted",
+   "runs": "shift E1/E1R, constant_r E1/E1V, medium_r E1/E1G, medium_o E1/E1G; N=1M, seed 20261199, eval batches 10,20, budgets 20K/50K/80K",
+   "note": "precision check at B*=50K (\u00a79b.4); recall values not interpreted"
   }
  ]
 }
