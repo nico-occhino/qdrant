@@ -30,6 +30,7 @@ use segment::index::VectorIndexEnum;
 use segment::segment::Segment;
 use segment::segment_constructor::load_segment;
 use segment::segment_constructor::segment_builder::SegmentBuilder;
+use segment::index::lmi_index::LmiConfig;
 use segment::types::{Distance, ExtendedPointId, HnswGlobalConfig, Indexes};
 use uuid::Uuid;
 
@@ -40,13 +41,13 @@ use crate::collection_manager::dli_native_route::{
 
 const TOP: usize = 30;
 
-struct QuerySet {
+pub(super) struct QuerySet {
     label: String,
     queries: Vec<Vec<f32>>,
     gold: Vec<Vec<u64>>,
 }
 
-fn read_set(label: &str, queries: &Path, gold: &Path) -> QuerySet {
+pub(super) fn read_set(label: &str, queries: &Path, gold: &Path) -> QuerySet {
     let q = fs_err::read(queries).unwrap();
     let floats: Vec<f32> = q
         .chunks_exact(4)
@@ -317,6 +318,7 @@ fn build_static_reference(
     root: &Path,
     sources: &[(usize, &Segment)],
     template: &Segment,
+    explicit_model: Option<LmiConfig>,
 ) -> Segment {
     let staging = tempfile::tempdir_in(root).unwrap();
     let mut config = template.config().clone();
@@ -326,8 +328,8 @@ fn build_static_reference(
     };
     // Optional explicit model (e.g. bucket count matched to the DLI topology); a
     // template's reused-router identity never applies to a fresh static build.
-    if let Ok(json) = std::env::var("DLI_FRONTIER_STATIC_MODEL") {
-        model = serde_json::from_str(&json).expect("DLI_FRONTIER_STATIC_MODEL is an LmiConfig");
+    if let Some(explicit) = explicit_model {
+        model = explicit;
     }
     model.reuse_router = None;
     model.check().unwrap();
@@ -352,8 +354,6 @@ fn dli_65k_selection_frontier() {
     let _scope = common::ambient::test_guard();
     let segments_dir = PathBuf::from(std::env::var("DLI_FRONTIER_SEGMENTS").unwrap());
     let output = PathBuf::from(std::env::var("DLI_FRONTIER_OUTPUT").unwrap());
-    assert!(!output.join("rows.jsonl").exists(), "refusing to overwrite");
-    fs_err::create_dir_all(&output).unwrap();
     // label:queries.f32:gold_ids.u64 entries separated by ';'
     let sets: Vec<QuerySet> = std::env::var("DLI_FRONTIER_SETS")
         .unwrap()
@@ -376,6 +376,40 @@ fn dli_65k_selection_frontier() {
     // Optional cap on queries per set (validation of the harness at scale).
     let query_cap: usize = std::env::var("DLI_FRONTIER_MAX_QUERIES")
         .map_or(usize::MAX, |v| v.parse().unwrap());
+    let static_model = std::env::var("DLI_FRONTIER_STATIC_MODEL").ok().map(|json| {
+        serde_json::from_str(&json).expect("DLI_FRONTIER_STATIC_MODEL is an LmiConfig")
+    });
+    run_frontier(&FrontierRun {
+        segments_dir: &segments_dir,
+        output: &output,
+        sets: &sets,
+        budgets: &budgets,
+        policy_filter: policy_filter.as_ref(),
+        query_cap,
+        static_reference: std::env::var_os("DLI_FRONTIER_STATIC").is_some(),
+        static_model,
+    });
+}
+
+/// One frontier replay over a frozen DLI shard directory (`dli_hierarchy.json` +
+/// `segments/`). Used by the 65K/10M jobs and, per batch, by the Phase 3 driver.
+pub(super) struct FrontierRun<'a> {
+    pub segments_dir: &'a Path,
+    pub output: &'a Path,
+    pub sets: &'a [QuerySet],
+    pub budgets: &'a [usize],
+    pub policy_filter: Option<&'a HashSet<String>>,
+    pub query_cap: usize,
+    pub static_reference: bool,
+    /// Explicit static-reference model; `None` uses the first learned member's model.
+    pub static_model: Option<LmiConfig>,
+}
+
+pub(super) fn run_frontier(run: &FrontierRun) {
+    let FrontierRun { segments_dir, output, sets, budgets, policy_filter, query_cap, .. } = *run;
+    let budgets = budgets.to_vec();
+    assert!(!output.join("rows.jsonl").exists(), "refusing to overwrite");
+    fs_err::create_dir_all(output).unwrap();
     let descriptor: serde_json::Value =
         serde_json::from_slice(&fs_err::read(segments_dir.join("dli_hierarchy.json")).unwrap())
             .unwrap();
@@ -403,10 +437,10 @@ fn dli_65k_selection_frontier() {
         .map(|(_, s)| s.available_point_count())
         .sum();
 
-    let static_ref = std::env::var_os("DLI_FRONTIER_STATIC").map(|_| {
+    let static_ref = run.static_reference.then(|| {
         let started = std::time::Instant::now();
         let template = members.iter().find(|(l, _)| *l > 0).unwrap().1;
-        let built = build_static_reference(&output, &members, template);
+        let built = build_static_reference(output, &members, template, run.static_model);
         let secs = started.elapsed().as_secs_f64();
         println!("STATIC_REFERENCE_BUILT seconds={secs:.1} points={}", built.available_point_count());
         (built, secs)
@@ -431,7 +465,7 @@ fn dli_65k_selection_frontier() {
     });
     fs_err::write(output.join("topology.json"), serde_json::to_vec_pretty(&topology).unwrap()).unwrap();
 
-    for set in &sets {
+    for set in sets {
         for (qi, (query, gold)) in set.queries.iter().zip(&set.gold).enumerate().take(query_cap) {
             let owners: Vec<Owner> = gold.iter().map(|id| locate(&members, &index, *id)).collect();
             let rankings: Vec<Option<Vec<usize>>> = members
@@ -512,7 +546,7 @@ fn dli_65k_selection_frontier() {
             for &budget in &budgets {
                 for (name, policy) in policies()
                     .into_iter()
-                    .filter(|(name, _)| policy_filter.as_ref().is_none_or(|f| f.contains(*name)))
+                    .filter(|(name, _)| policy_filter.is_none_or(|f| f.contains(*name)))
                 {
                     let evaluated = match policy {
                         Some(policy) => run_route(&members, query, arity, budget, policy),
@@ -522,7 +556,7 @@ fn dli_65k_selection_frontier() {
                 }
                 if let Some((static_segment, _)) = static_ref
                     .as_ref()
-                    .filter(|_| policy_filter.as_ref().is_none_or(|f| f.contains("static_flat")))
+                    .filter(|_| policy_filter.is_none_or(|f| f.contains("static_flat")))
                 {
                     let single = [(1usize, static_segment)];
                     let evaluated = run_route(&single, query, arity, budget, RoutingPolicy::SlotWeighted);

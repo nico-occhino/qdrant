@@ -2131,7 +2131,6 @@ async fn greedy_rebuild_after_deletes_in_configured_collection() {
     let _scope = common::ambient::test_guard();
     use rand::seq::SliceRandom;
     use rand::{RngExt, SeedableRng};
-    use segment::entry::SegmentEntry as _;
     use crate::collection_manager::dli_bucket_plan::RoutingPolicy;
     use crate::collection_manager::dli_schedule::{
         HierarchyConfig, LevelBuckets, LevelModelPolicy, MaintenancePolicy,
@@ -2284,4 +2283,218 @@ async fn greedy_rebuild_after_deletes_in_configured_collection() {
         assert_eq!(fallback - fallback_before, 0, "exact fallbacks");
         collection.stop_gracefully().await;
     }
+}
+
+fn env_list(name: &str) -> Option<Vec<String>> {
+    std::env::var(name)
+        .ok()
+        .map(|v| v.split(',').filter(|s| !s.is_empty()).map(str::to_owned).collect())
+}
+
+/// Sorted live point ids of the local shard (all segments) and their SHA-256 over
+/// little-endian u32, the digest `phase3_plan.py` records per batch.
+async fn live_id_digest(collection: &Collection) -> (usize, String) {
+    use sha2::{Digest, Sha256};
+    let holder = replica(collection).await.local_segments_for_test().await.unwrap();
+    let mut ids: Vec<u32> = Vec::new();
+    let mut available = 0usize;
+    for (_, member) in holder.read().iter_original() {
+        let segment = member.read();
+        available += segment.available_point_count();
+        for id in segment.iter_points() {
+            match id {
+                segment::types::ExtendedPointId::NumId(n) => ids.push(u32::try_from(n).unwrap()),
+                other => panic!("unexpected id {other:?}"),
+            }
+        }
+    }
+    ids.sort_unstable();
+    assert_eq!(ids.len(), available, "iterated ids differ from available counts");
+    let before = ids.len();
+    ids.dedup();
+    assert_eq!(ids.len(), before, "a point is live in two segments");
+    let bytes: Vec<u8> = ids.iter().flat_map(|i| i.to_le_bytes()).collect();
+    let hex: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    (ids.len(), hex)
+}
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
+/// Phase 3 workload driver (PHASE3_PREREGISTRATION.md §2–§7, Part B §10). Executes a plan
+/// written by `research/dli/emma_path/phase3_plan.py`: per batch, inserts (in chunks of the
+/// buffer capacity), then deletes, then drives maintenance to a fixed point, checks the live
+/// set against the plan's ledger, and replays the selection frontier on a flushed copy of the
+/// shard. Environment:
+/// * `DLI_P3_PLAN` (plan dir), `DLI_P3_CORPUS` (Float16 rows), `DLI_P3_OUTPUT`, `DLI_P3_SCRATCH`;
+/// * `DLI_ARM` = E1 | E1R and `DLI_P3_VARIANT` = none | greedy | consolidate250 | consolidate500;
+/// * `DLI_P3_EVAL` (batch indices, default all), `DLI_P3_STATIC_BATCHES` (default 5,10,15,20),
+///   `DLI_P3_SETS` (set names, default every set of the batch), `DLI_FRONTIER_BUDGETS`,
+///   `DLI_FRONTIER_POLICIES`, `DLI_FRONTIER_MAX_QUERIES`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "Phase 3 workload driver; requires DLI_P3_PLAN, DLI_P3_CORPUS, DLI_P3_OUTPUT, DLI_P3_SCRATCH"]
+async fn dli_phase3_workload() {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use super::dli_selection_frontier::{FrontierRun, read_set, run_frontier};
+    use crate::collection_manager::dli_schedule::MaintenancePolicy;
+    let _scope = common::ambient::test_guard();
+    let plan_dir = PathBuf::from(std::env::var("DLI_P3_PLAN").unwrap());
+    let output = PathBuf::from(std::env::var("DLI_P3_OUTPUT").unwrap());
+    let scratch = PathBuf::from(std::env::var("DLI_P3_SCRATCH").unwrap());
+    assert!(!output.join("summary.json").exists(), "refusing to overwrite");
+    std::fs::create_dir_all(&output).unwrap();
+    let plan: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(plan_dir.join("plan.json")).unwrap()).unwrap();
+    let variant = std::env::var("DLI_P3_VARIANT").unwrap_or_else(|_| "none".into());
+    let (buffer_capacity, arity, base_model, _, _) = arm_config();
+    let mut config = collection_config(true);
+    {
+        let dli = config.dli_experimental.as_mut().unwrap();
+        match variant.as_str() {
+            "none" => {}
+            "greedy" => dli.greedy_rebuild = true,
+            "consolidate250" => {
+                dli.maintenance_policy = MaintenancePolicy::GeometricConsolidating { rho_permille: 250 }
+            }
+            "consolidate500" => {
+                dli.maintenance_policy = MaintenancePolicy::GeometricConsolidating { rho_permille: 500 }
+            }
+            other => panic!("unknown DLI_P3_VARIANT {other}"),
+        }
+    }
+    let arm_label = format!("{:?}/{variant}", arm());
+    let eval: Option<HashSet<usize>> =
+        env_list("DLI_P3_EVAL").map(|v| v.iter().map(|s| s.parse().unwrap()).collect());
+    let static_batches: HashSet<usize> = env_list("DLI_P3_STATIC_BATCHES")
+        .unwrap_or_else(|| ["5", "10", "15", "20"].map(String::from).to_vec())
+        .iter()
+        .map(|s| s.parse().unwrap())
+        .collect();
+    let set_filter: Option<HashSet<String>> = env_list("DLI_P3_SETS").map(|v| v.into_iter().collect());
+    let budgets: Vec<usize> = env_list("DLI_FRONTIER_BUDGETS")
+        .expect("DLI_FRONTIER_BUDGETS")
+        .iter()
+        .map(|s| s.parse().unwrap())
+        .collect();
+    let policies: Option<HashSet<String>> =
+        env_list("DLI_FRONTIER_POLICIES").map(|v| v.into_iter().collect());
+    let query_cap = std::env::var("DLI_FRONTIER_MAX_QUERIES").map_or(usize::MAX, |v| v.parse().unwrap());
+
+    let root = tempfile::tempdir_in(&scratch).unwrap();
+    let collection = create_collection_with_config("phase3", root.path(), config).await;
+    let local = replica(&collection).await;
+    let mut corpus = std::fs::File::open(std::env::var("DLI_P3_CORPUS").unwrap()).unwrap();
+    let mut read_rows = |ids: &[u32]| -> Vec<PointStructPersisted> {
+        ids.iter()
+            .map(|&id| {
+                let row = id as usize - 1;
+                let mut bytes = vec![0u8; DIMENSIONS * 2];
+                corpus.seek(SeekFrom::Start((row * DIMENSIONS * 2) as u64)).unwrap();
+                corpus.read_exact(&mut bytes).unwrap();
+                point_from_row(0, id as u64, &bytes)
+            })
+            .collect()
+    };
+    let read_u32 = |path: PathBuf| -> Vec<u32> {
+        std::fs::read(path)
+            .unwrap()
+            .chunks_exact(4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect()
+    };
+    let mut log = std::fs::File::create(output.join("batches.jsonl")).unwrap();
+    let started = Instant::now();
+    let batches = plan["batches"].as_array().unwrap();
+    for batch in batches {
+        let index = batch["index"].as_u64().unwrap() as usize;
+        let dir = plan_dir.join(format!("batch_{index:02}"));
+        let batch_started = Instant::now();
+        let events_before = local.local_dli_publication_events_for_test().await.unwrap().len();
+        let inserts = read_u32(dir.join("insert.u32"));
+        for chunk in inserts.chunks(buffer_capacity) {
+            apply_points(&collection, read_rows(chunk)).await;
+            settle_dli_maintenance(&local, Duration::from_secs(4 * 3600)).await;
+        }
+        let deletes = read_u32(dir.join("delete.u32"));
+        for chunk in deletes.chunks(10_000) {
+            apply_delete(&collection, chunk.iter().map(|&i| i as u64).collect()).await;
+            settle_dli_maintenance(&local, Duration::from_secs(4 * 3600)).await;
+        }
+        let ingest_seconds = batch_started.elapsed().as_secs_f64();
+        let (live, digest) = live_id_digest(&collection).await;
+        assert_eq!(live as u64, batch["live_count"].as_u64().unwrap(), "batch {index} live count");
+        assert_eq!(digest, batch["live_sha256"].as_str().unwrap(), "batch {index} live set");
+        let events = local.local_dli_publication_events_for_test().await.unwrap();
+        let members = learned_members(&collection, root.path()).await;
+        let mut record = serde_json::json!({
+            "batch": index, "arm": arm_label, "live": live, "live_sha256": digest,
+            "ingest_seconds": ingest_seconds, "elapsed_seconds": started.elapsed().as_secs_f64(),
+            "publications": &events[events_before..],
+            "levels": members.iter().map(|(l, (_, fp, b, n))| serde_json::json!({
+                "level": l, "live": n, "buckets": b, "router": format!("{fp:016x}")})).collect::<Vec<_>>(),
+        });
+        if eval.as_ref().is_none_or(|e| e.contains(&index)) {
+            local.force_flush_local_for_test().await;
+            let copy = scratch.join(format!("frozen-{index:02}"));
+            copy_dir(&root.path().join("storage/0"), &copy);
+            let sets: Vec<_> = batch["sets"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(name, _)| set_filter.as_ref().is_none_or(|f| f.contains(*name)))
+                .map(|(name, s)| {
+                    read_set(
+                        name,
+                        &plan_dir.join(s["queries"].as_str().unwrap()),
+                        &plan_dir.join(s["gold"].as_str().unwrap()),
+                    )
+                })
+                .collect();
+            let static_model = static_batches.contains(&index).then(|| {
+                // Matched bucket total with the arm's model rule (Phase 1 §2, Amendment 1.5).
+                let b: usize = members.keys().map(|&l| arity.pow(l as u32)).sum();
+                let mut model = base_model;
+                model.n_buckets = b.max(1);
+                model.sample_size = b.max(live.min(100_000.max(40 * b)).min(1_000_000));
+                model.nprobe = 1;
+                model
+            });
+            let frontier_started = Instant::now();
+            run_frontier(&FrontierRun {
+                segments_dir: &copy,
+                output: &output.join(format!("batch_{index:02}")),
+                sets: &sets,
+                budgets: &budgets,
+                policy_filter: policies.as_ref(),
+                query_cap,
+                static_reference: static_model.is_some(),
+                static_model,
+            });
+            std::fs::remove_dir_all(&copy).unwrap();
+            record["frontier_seconds"] = frontier_started.elapsed().as_secs_f64().into();
+        }
+        writeln!(log, "{record}").unwrap();
+        println!("PHASE3_BATCH {record}");
+    }
+    let diagnostics = local.local_dli_diagnostics_for_test().await.unwrap();
+    assert!(diagnostics.4.is_empty(), "maintenance errors: {diagnostics:?}");
+    let summary = serde_json::json!({
+        "arm": arm_label, "scenario": plan["scenario"], "rows": plan["rows"],
+        "buffer_capacity": buffer_capacity, "arity": arity, "model": base_model,
+        "publications": local.local_dli_publication_events_for_test().await.unwrap(),
+        "diagnostics": format!("{diagnostics:?}"), "seconds": started.elapsed().as_secs_f64(),
+        "source_head": std::env::var("DLI_BENCH_HEAD").ok(),
+    });
+    std::fs::write(output.join("summary.json"), serde_json::to_vec_pretty(&summary).unwrap()).unwrap();
+    collection.stop_gracefully().await;
 }
