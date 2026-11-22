@@ -94,12 +94,17 @@ E1 training seconds by level size:
    finer partitions this cuts work by 72%, so H1 holds with a wide margin. Two causes are
    confounded in this number: the buffer and the finer buckets. The arms differ in both by
    design (Sommerová's invariant couples them).
-2. **A multi-level penalty remains, and it is large.** With the same total of 11,100 buckets
-   and the same model rule, one static LMI needs 34K, while E1's three levels need 82K. The
-   data sits in two large levels (4.4M and 5.5M). A query's true neighbours are split across
-   them, so each level's router must succeed independently, and each errs on its own.
-   This is a **hypothesis about the mechanism**, not a tested claim. The per-level miss
-   attribution in `rows.jsonl` can test it, as Phase 3 descriptive analysis or a separate note.
+2. **A multi-level penalty remains, and it is large. It is structural.** With the same
+   total of 11,100 buckets and the same model rule, one static LMI needs 34K, while E1's
+   three levels need 82K. *Corrected 2026-11-22:* an earlier version of this point guessed
+   that the routers of two large levels err independently. The oracle-cost decomposition in
+   [MULTILEVEL_DIAGNOSIS.md](MULTILEVEL_DIAGNOSIS.md) (exploratory, post hoc) rejects that:
+   - with perfect routing, E1's buckets need **2.44×** the static work (29.5K vs 12.1K);
+   - E1 selects as efficiently as the static index (realized / oracle 2.77 vs 2.82).
+
+   The cause is L3: nearly full, with 4.4M points in 1,000 buckets of about 4,444 points,
+   against 912 per static bucket. Almost every query needs it. Sommerová's invariant makes a
+   full level's buckets about b = 5K, which at 10M is about 5× coarser than the static index.
 3. **Partition granularity dominates the model choice.** The static LMI with 11,100 buckets
    (small model: 128 hidden, 10 epochs) needs 34K. The static LMI with 548 buckets (large
    model: 512 hidden, 30 epochs) needs 165K, 4.9× more. This is consistent with the Phase 2
@@ -130,5 +135,6 @@ E1 training seconds by level size:
 
 Phase 3 (shift and deletes), preregistered in
 [PHASE3_PREREGISTRATION.md](PHASE3_PREREGISTRATION.md) (draft, author decisions recorded).
-Point 2 above, the multi-level penalty, is a candidate for the "original idea" stage. One
-example is reducing the number of co-resident large levels, or level-aware budget allocation.
+Point 2 above is addressed by Phase 3 Part B (§10 of the Phase 3 preregistration):
+consolidation of co-resident large levels (E1C), which attacks the structural cause, and
+calibrated level-aware allocation (E1L), whose gain the diagnosis expects to be modest.
