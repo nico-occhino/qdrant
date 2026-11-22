@@ -281,5 +281,107 @@ Also accepted:
 - **Original-idea boundary:** drift-triggered retraining is not an arm; it gets its own
   preregistration after Phase 3.
 
-Remaining before freezing: implement and test M1–M9 (§7), run the preflight, apply the
+Remaining before freezing: implement and test M1–M9 (§7) and M10–M12 (§10.6), run the preflight, apply the
 precision check, then change the status line to FROZEN.
+
+---
+
+## 10. Part B — the multi-level penalty (added 2026-11-22, before any Phase 3 data)
+
+Motivation: [MULTILEVEL_DIAGNOSIS.md](MULTILEVEL_DIAGNOSIS.md), which is exploratory and
+post hoc on test rows 9000–9255 at 10M.
+- At 10M, E1 needs 2.4× the work of a matched static LMI.
+- Oracle costs show the gap is **structural**: E1's oracle is 2.44× the static oracle, while
+  selection efficiency is equal.
+- It is caused by the coarse buckets of a nearly full co-resident level (L3: 4,444 vectors
+  per bucket against 912 in the static index).
+
+The author asked to test two interventions:
+- **consolidation of co-resident large levels**, which attacks structure;
+- **level-aware budget allocation**, which attacks selection.
+
+### 10.1 Arms
+
+| Arm | Structure | Selection | Ingestions |
+|---|---|---|---|
+| E1 | Bentley–Saxe, aⁱ buckets, reuse (Part A) | `mdn_code` | shared with Part A |
+| **E1C** | E1 + **consolidation ρ = 0.25** | `mdn_code` | new: Insert-only and Shift-M |
+| **E1L** | E1 topology | **calibrated level-aware allocation** | none (replay on E1) |
+| **E1CL** | E1C topology | calibrated level-aware allocation | none (replay on E1C) |
+| E1C ρ = 0.5 (sensitivity) | consolidation ρ = 0.5 | `mdn_code` | new: Insert-only only, descriptive |
+
+**Consolidation rule (E1C).**
+- Let D be the deepest non-empty level.
+- When a Bentley–Saxe compaction would leave a level i < D holding more than ρ·live(D)
+  points, all levels 0..i are instead merged into D, provided the result fits within
+  D's capacity b·a^D.
+- The merge reuses D's router, so no training happens, under the same fail-closed reuse
+  checks as Part A. Otherwise the compaction proceeds as in E1.
+- ρ = 0.25 was chosen from the arithmetic simulation's bucket-cost proxy
+  (`consolidation_sim.py`) before any E1C data exists. It is fixed from now on.
+
+**Calibrated level-aware allocation (E1L).**
+- *Model:* for each level ℓ, a monotone map g_ℓ from the router probability P of a bucket
+  to the expected number of the query's true top-30 neighbours in that bucket.
+  - It is fitted by isotonic regression (pool-adjacent-violators) on calibration
+    queries, over all (query, bucket) pairs in the top 64 buckets of that level.
+  - The Plain buffer gets value 30·|Plain| / N (its expected share under exchangeability)
+    and cost |Plain|.
+- *Selection:* buckets from all levels are taken in decreasing g_ℓ(P) / live size, which
+  is the greedy solution of the fractional knapsack, whole buckets only, until the budget
+  is met. This generalises `density` (P / size) by making P comparable across levels.
+- *Refitting:* the maps are refitted at each evaluated snapshot, using that snapshot's
+  calibration gold.
+- *Calibration queries:* rows 1000–2999 (2,000), disjoint from every test and validation set.
+
+### 10.2 Queries for Part B
+
+Confirmatory test queries are **rows 8000–8999** (1,000). The diagnosis did not use them,
+and neither does Part A. Using rows 9000–9255 again would test the idea on the data that
+suggested it.
+
+### 10.3 Estimand
+
+Insert-only, 1M, uniform data; evaluation after each of the 20 batches; budget grid §6.
+- For each batch t and arm, compute W_t, the work at mean R@30 = 0.90, by linear
+  interpolation between bracketing budgets (Amendment 1).
+- The estimand is the ratio of the means over batches of W_t, where every compared arm
+  reaches the target in that batch. Batches where an arm does not reach it are counted
+  and reported.
+- CIs: paired query bootstrap within batches, 10,000 resamples, seed 20261122.
+
+### 10.4 Hypotheses
+
+- **H9 (consolidation, primary).** E1C vs E1 (`mdn_code`): mean-work ratio ≤ 0.80, i.e. at
+  least 20% less work, with the 95% CI upper bound < 1.
+  - *Inconclusive* if the CI width exceeds 0.20.
+  - Reported with it: write amplification E1C / E1 (predicted ≈ 1.0), training seconds,
+    and per-batch ratios, to show the snapshot dependence the simulation predicts.
+- **H10 (level-aware allocation, primary).** E1L vs E1 on the same E1 topologies: ratio
+  ≤ 0.90 (at least 10% less work), with the CI upper bound < 1. *Inconclusive* if the CI
+  width exceeds 0.10. The diagnosis predicts a modest gain.
+- **H11 (descriptive).** Each batch reports:
+  - E1CL, and the static-final reference at batches 5, 10, 15 and 20;
+  - the oracle-cost decomposition (structure × selection) for every arm;
+  - E1C ρ = 0.5.
+- **H12 (descriptive, the cost of adaptivity).** In Shift-M, E1C − E1 mean recall at B*
+  (Part A estimand). Consolidation routes most data through one older router, so it is
+  expected to lose under shift. The size of that loss is the trade-off reported against
+  H9's gain.
+
+### 10.5 10M confirmation
+
+If H9 is supported at 1M, E1C is run at 10M insert-only, under the same gates as §6.
+- One final snapshot, so it is reported as a single-snapshot result, with the snapshot
+  caveat.
+- Test rows 8000–8999 (official gold).
+- Its W@0.90 is compared with E1 from job 25827532, which is evaluated afresh on rows
+  8000–8999 by replaying its retained frontier inputs where available, or by rerunning E1.
+
+### 10.6 Implementation required (in addition to §7)
+
+| # | Component | Test that proves it |
+|---|---|---|
+| M10 | Consolidation rule in `dli_schedule.rs` (pure planner) | unit: the ρ boundary, the fit guard, temporal order, population conservation; replay of `consolidation_sim.py`'s final levels for N = 1M and 10.12M |
+| M11 | Calibrated allocation: isotonic fit per level and fractional-knapsack selection (`dli_bucket_plan.rs`), fitted in the replay harness | unit: PAV against a hand-computed example; the selection equals brute force on small inputs; whole-bucket budget semantics; the Plain value rule |
+| M12 | Calibration and Part-B query sets with live-set gold at every evaluated batch | M7 extension; disjointness check across all query sets |

@@ -38,6 +38,7 @@ their tracks:
 11. [Part X: filtered search (19 November)](#part-x-filtered-search-19-november)
 12. [Part XI: nearest-neighbour-supervised routing (19–20 November)](#part-xi-nearest-neighbour-supervised-routing-1920-november)
 13. [Part XII: repository consolidation and upstream sync (20 November)](#part-xii-repository-consolidation-and-upstream-sync-20-november)
+13b. [Part XIII: the Emma path, Sommerová-faithful DLI (20–22 November)](#part-xiii-the-emma-path-sommerová-faithful-dli-in-native-qdrant-2022-november)
 14. [Cross-cutting lessons](#14-cross-cutting-lessons)
 15. [Register of negative results and dead ends](#15-register-of-negative-results-and-dead-ends)
 16. [Documentation audit: sources, gaps and inconsistencies](#16-documentation-audit)
@@ -660,6 +661,119 @@ that existed only as uncommitted files, and about 200 GB of build directories.
 
 ---
 
+## Part XIII: the Emma path, Sommerová-faithful DLI in native Qdrant (20–22 November)
+
+**Why.** H-10M (Part VIII) left one diagnosis: the DLI lost to static LMI because of the indivisible Plain buffer
+(120,191 points, priority 1.0). Emma Sommerová's design avoids that by construction. Her code and her
+`bs_10_5k.yml` configuration give level *i* exactly aⁱ buckets and capacity b·aⁱ, so a bucket holds about b points
+and scoring the whole buffer costs about one bucket. Our DLI had broken that invariant: 548 buckets on every level,
+b = 250K, a = 2. Reading her source (`Emma_DLI.zip`) showed three facts the thesis text does not state:
+1. A compaction into a non-empty level **never retrains**; the level's existing router routes the new points.
+2. Her MDN normalisation multiplies by `arity**level_idx` with a 0-based index (P·aⁱ⁻¹, not P·aⁱ).
+3. Her model is 128 hidden, 10 epochs, a sample of min(n, max(100K, 40·k)), and Faiss's default 25 k-means
+   iterations.
+
+**Theory: Bentley–Saxe amortisation.**
+- A static structure is made dynamic by keeping geometrically growing static pieces.
+- An insert triggers a rebuild of size 2ʲ only every 2ʲ inserts, so with arity a each point is rewritten
+  O(log_a N) times (amortised).
+- Reuse changes what a rewrite costs (no training), not how often it happens. Our 10M run measured exactly that:
+  write amplification 14.4 with reuse, against a planner prediction of 14.4.
+
+**Engineering (Phase 1, commits `7614f34f8`, `2cf5abbd5`):**
+- `LmiConfig.reuse_router`: a router fingerprint (FNV-1a over layer shapes and f32 bits). A build that names a
+  fingerprint takes that router from its source segments, skips sampling, k-means and MLP training, and
+  **fails closed** if the router is absent.
+- `LevelModelPolicy` with aⁱ buckets and a 40·B sample floor.
+- Target-router reuse in DLI maintenance.
+- `mdn` / `mdn_code` routing.
+- Harness arms G0 (old design), E1 (her design) and E1R (her design without reuse).
+- Every default reproduces the old behaviour, and serialised configs stay byte-identical.
+- Tests: router reuse keeps assignments byte-for-byte and survives reopen; a configured collection with b = 40,
+  a = 4 keeps the router 15/15 times with reuse and retrains 15/15 times without; full-budget search equals exact.
+
+**Statistics.** Everything was preregistered before any job (`research/dli/emma_path/PREREGISTRATION.md`):
+- H1, the primary: E1 needs ≥ 30% less work than G0 at test R@30 = 0.90;
+- H2: Plain is ≤ 10% of E1's work;
+- H3: E1 trains less than G0;
+- H4: E1 against a matched static index, descriptive.
+
+The CIs come from a paired query bootstrap, 10,000 resamples. Amendment 1 corrected "log-linear" to the linear
+interpolation H-10M actually used, before any data existed.
+
+**Stages.**
+- **Preflight** (100K): the first attempt failed fast because G0 has no learned level below its 250K buffer; the
+  second passed. The gold tool reproduced the official SISAP23 top-30 for every validation and test row.
+- **Pilot** (300K, job 25813227): gate passed.
+  - E1 needed 61% less work than G0, mostly because of G0's 50K buffer at that scale.
+  - Router reuse cut training 16× (11 s vs 173 s) and ingestion 4.9×, at about 13% more work than retraining.
+  - G0 showed 10/100 exact fallbacks. Not a defect: under `slot` routing with one learned level, the 50K buffer
+    outranks weak buckets and alone exceeds the budget, so the plan holds no learned bucket.
+
+**The 10M incident chain** (each failure produced no estimand data, and each fix was documented as an amendment
+before any result existed):
+
+| Job | Failure | Root cause | Fix and lesson |
+|---|---|---|---|
+| 25814270 | G0's first post-ingestion query hit the 60 s search timeout | Cold on-disk segments on a slow node (EPYC 7351, 16M major page faults), as in October | Explicit 1,800 s timeout; the new arm runs first. **Order expensive work so a failure costs least** |
+| 25820728 | E1 publication 1100 exceeded the harness's 30 min publication wait | The first fresh level 4 (10,000 buckets). The pilot projection itself predicted 45 min for it; only the total had been checked | Configurable wait (4 h); the gate now compares the wait with the **longest** projected step. **Check the max, not only the sum** |
+| 25823237 | The same build ran for 2 h and was killed | Native DLI builds had a hard-coded 1-CPU permit (`ResourceBudget::new(1, 1)`); single-threaded k-means at 10,000 centroids (31 MB, out of cache). The per-FLOP rate fitted on 100-bucket levels did not transfer | `QDRANT_DLI_BUILD_CPUS` (16). Results unchanged, proved by the existing bit-identical parallel k-means test. **A cost model fitted on small cases extrapolates badly when the working set leaves cache** |
+| 25827532 | completed (4:24, 167 GB peak; 128 GB would have run out of memory) | — | — |
+
+**Result (10M, job 25827532, `research/dli/emma_path/RESULTS_10M.md`):**
+- G0 reproduced H-10M **exactly** at all 7 shared budgets, recall and work.
+- **H1 supported:** 72.4% less work [67.5, 77.8] (82K vs 296K).
+- **H2 supported:** Plain is 0.2%.
+- **H3 not supported:** 1,543 s vs 1,522 s. One fresh 10,000-bucket build accounts for 1,337 s; the other 2,023
+  builds took about 200 s in total.
+- **H4:** E1 needs **2.4×** the work of a static LMI with the same 11,100 buckets.
+
+**Diagnosis of the remaining penalty (exploratory, `MULTILEVEL_DIAGNOSIS.md`).** The oracle cost, the smallest
+whole-bucket work that contains the true top-30, separates structure from selection.
+- **E1's penalty is structural:** its oracle is 2.44× the static oracle, while its selection is as efficient as
+  static's.
+- **G0's penalty had been selection** (the buffer): its oracle was equal to static's.
+- The structural cost comes from a nearly full co-resident level, L3: 4.4M points in 1,000 buckets of about 4,444
+  points, against 912 in the static index. Sommerová's invariant makes a full level's buckets about b = 5K.
+- An arithmetic simulation predicts that merging such a level into the deepest one (ρ = 0.25) reaches static
+  granularity **with no extra write amplification** at 10M.
+- The gain depends on the snapshot (none at 3M or 20M). So the fair estimand averages over the ingestion cycle.
+
+**Phase 3 preregistration (draft, `PHASE3_PREREGISTRATION.md`):**
+- **Part A** follows her scenarios:
+  - distribution shift (10 k-means clusters inserted in nearest-chain order; IDS, OOD and drifting MQ queries);
+  - deletes (three insert:delete ratios × random or oldest-first), with her Greedy underutilisation rebuild
+    against No Rebuild.
+- **The Qdrant-specific question:** soft-deleted postings stay in buckets and still **consume routing budget**,
+  whereas her code hard-deletes.
+- **Part B** tests the two answers to the multi-level penalty, on queries the diagnosis never touched:
+  consolidation (E1C) and calibrated level-aware allocation (E1L).
+- **Thresholds come from a power analysis on pilot data.**
+  - The per-query SD of recall differences is 13–24 pp, so 256 queries resolve about ±3 pp.
+  - Hence: 1,000 test queries; H5 at 2 pp; H6 at 1 pp; H7 as a TOST equivalence test at ±1 pp (±0.5 pp would need
+    about 4,000 queries).
+  - Each result has an explicit *inconclusive* outcome.
+  - 1 pp of recall was translated into about 8% of work so the thresholds have a practical meaning.
+
+**Lessons.**
+- **Read the reference code, not only the thesis.** Two of the three facts that mattered (no retraining on non-empty
+  levels, 0-based normalisation) are only in her source.
+- **Oracle decomposition before intervention.** Without it, the remaining penalty would have been attributed to the
+  routers, and the fix would have been a better router. The data say partitions.
+- **A cost-model projection is only as good as its validity range.** Fitted on 100-bucket levels, it under-predicted
+  a 10,000-bucket build several times over.
+- **Snapshot dependence is a methodological trap for any hierarchical index.** One N can favour or punish a design.
+
+**Other tracks in this period.**
+- **PostgreSQL** (separate repository `nico-occhino/postgresql-learned-indexes`): baseline 02 (2 November). It is a
+  reproducible synthetic 10,000-vector cosine run comparing exact search, pgvector IVFFlat and HNSW, with exact
+  ground truth. No learned PostgreSQL index exists yet.
+- **Thesis:** the LaTeX repository has Chapter 1 drafted and Chapters 2–9 as skeletons. The submission target is
+  10 March 2027.
+- **Interview study guide** on testing, using this project's tests as examples (`~/worktrees/TESTING_INTERVIEW_GUIDE.md`).
+
+---
+
 ## 14. Cross-cutting lessons
 
 ### Scientific method
@@ -697,6 +811,9 @@ that existed only as uncommitted files, and about 200 GB of build directories.
 7. **Storage locality dominates at scale.** Cold NFS (§VI) and Cold DLI members (§VIII) dwarfed algorithmic differences.
 8. **Floating-point non-associativity is real:** different reduction orders flip near-ties, and Float16 storage
    creates exact ties.
+9. **Hidden resource caps.** A hard-coded 1-CPU permit made every DLI build single-threaded for weeks without
+   failing anything; it surfaced only when one build became large. Read the permits, not just the job request.
+10. **Validate a projection's maximum step, not only its total** (the 45-minute publication against a 30-minute wait).
 
 ### Process
 1. **Coding agents** (Codex, then Claude Code) did most implementation and documentation. That needed explicit rules:
@@ -727,6 +844,9 @@ that existed only as uncommitted files, and about 200 GB of build directories.
 | 19 Nov | Cost-model filter probing | Recall 0.66 at $s = 0.01$ | Cost-only planning is unsafe |
 | 19 Nov | Filter-probing adoption | Criterion not met | B0 stays default |
 | 20 Nov | Neighbour-supervised routing | −1.1% candidates; gate failed | Stopped per rule |
+| 21 Nov | E1 trains less than G0 at 10M (H3) | Not supported: 1,543 s vs 1,522 s; one 10,000-bucket build = 1,337 s | Snapshot-dependent; reuse saves training except where a fresh level is born |
+| 22 Nov | Her invariant closes the gap to static LMI | No: E1 needs 2.4× the matched static work; the penalty is structural (coarse buckets of a full co-resident level) | Motivates consolidation (Phase 3 Part B) |
+| 21 Nov | ±0.5 pp equivalence margin for Phase 3 | Infeasible at the observed per-query noise (≈ 4,000 queries needed) | Margin widened to ±1 pp with TOST |
 | Sep–Oct | L2P prototype routing; statistical router | Discussed, not implemented | A statistical router stays the natural control for any future router |
 
 ---
@@ -784,6 +904,7 @@ that existed only as uncommitted files, and about 200 GB of build directories.
 | Static ablation | `main` (`exp/2026-11-19-static-tier3b`) | `research/lmi/` | `research-admin/experiments/2026-11-18-static-lmi-ivf/` |
 | Filtering | `main` (`exp/2026-11-19-filter-probing-300k`) | `research/lmi/filtering/` | `research-admin/experiments/2026-11-19-lmi-adaptive-filtering/` |
 | Supervised routing | `main` (`exp/2026-11-20-supervised-routing`) | `research/lmi/supervised_routing/` | `research-admin/experiments/2026-11-19-static-supervised-routing/` |
+| Emma path (DLI) | branch `research/dli-emma-path-20261120` | `research/dli/emma_path/` | MetaCentrum `dli-emma-path-20261120/results/`; Windows `C:\Users\nicoo\Workspace\Research-Results\2026-11-20-dli-emma-path\`; staging `research-admin/experiments/2026-11-20-dli-emma-path/` |
 
 ### External-disk backup (20 November)
 
@@ -811,3 +932,14 @@ you can see what an archive holds without connecting the disk.
 **Next priorities** (agreed 19–20 November): Tier 3B synthesis into the thesis; thesis writing; DLI replication
 against Sommerová's reported results; CLI; and finally external API tests across Plain, HNSW, LMI, DLI and CLI with
 filtering, against one `main` build.
+
+
+**Next priorities (updated 22 November).** The thesis is submitted on 10 March 2027, and the author writes it; agents
+advise.
+- Phase 3 (shift and deletes) plus Part B (multi-level penalty): tooling M1–M12, preflight, freeze, 1M, then 10M
+  confirmation.
+- CLI (Jakubík) implemented in Qdrant.
+- The PostgreSQL learned index in its own repository.
+- An original contribution, chosen once the full picture exists.
+- Thesis chapters in order of evidence stability: 5 (static LMI), 2–3 (background), 6 (DLI), 8 (evaluation),
+  9 (conclusions).
