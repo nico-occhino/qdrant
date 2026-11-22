@@ -89,9 +89,14 @@
    "input_dir": "native-1bdd6c024b3d",
    "resources": "select=1:ncpus=16:mem=192gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
    "submitted_utc": "2026-11-21",
-   "status": "submitted",
+   "status": "complete",
    "arms": "E1 G0",
-   "note": "Amendment 4: 16-CPU DLI build permit; inputs copied from native-411e4b10546e and re-verified; source.bundle sha256 cf1bbd8b\u2026"
+   "note": "Amendment 4: 16-CPU DLI build permit; inputs copied from native-411e4b10546e and re-verified; source.bundle sha256 cf1bbd8b\u2026",
+   "exit": 0,
+   "walltime_used": "04:24:03",
+   "host": "alfrid3",
+   "peak_mem": "167 GB",
+   "validation": "H1 supported (72.4% [67.5,77.8]); H2 supported (Plain 0.21%); H3 not supported (1,543 s vs 1,522 s; one 10,000-bucket build = 1,337 s); H4 E1 needs +140% vs matched static. G0 reproduces H-10M exactly at all shared budgets. 100/100 learned, 0 fallbacks both arms. See RESULTS_10M.md."
   }
  ]
 }
