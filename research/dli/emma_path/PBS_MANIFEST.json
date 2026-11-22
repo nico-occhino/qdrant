@@ -97,6 +97,17 @@
    "host": "alfrid3",
    "peak_mem": "167 GB",
    "validation": "H1 supported (72.4% [67.5,77.8]); H2 supported (Plain 0.21%); H3 not supported (1,543 s vs 1,522 s; one 10,000-bucket build = 1,337 s); H4 E1 needs +140% vs matched static. G0 reproduces H-10M exactly at all shared budgets. 100/100 learned, 0 fallbacks both arms. See RESULTS_10M.md."
+  },
+  {
+   "id": "25842074.pbs-m1.metacentrum.cz",
+   "mode": "phase3-preflight",
+   "commit": "f5b8e3235c8b",
+   "input_dir": "native-f5b8e3235c8b",
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=04:00:00",
+   "submitted_utc": "2026-11-22",
+   "status": "submitted",
+   "runs": "shift E1/E1R, constant_r E1/E1G, constant_o E1/E1G; N=100K, 3 batches",
+   "note": "pipeline check and per-query noise for the \u00a75 precision check; recall values not interpreted"
   }
  ]
 }
