@@ -36,7 +36,7 @@ Further conditions:
 | **Calibrated allocation** (E1L) | H10, insert-only: work 0.929 [0.921, 0.936] | yes | none decided | **include**. Its cost is a per-level calibration panel and isotonic fit, which is reported |
 | Greedy rebuild (E1G) | H6b: +0.11 pp [0.08, 0.15]; H7: equivalent | yes (H6b, tiny) | none | **superseded by vacuum** for the same function (delete handling): vacuum's effect is 10× larger and the two are alternatives |
 | Always retrain (E1R) | H5: +11.44 pp under shift, +0.54 pp insert-only | yes | none in recall, but 3.6–3.9× training | **excluded as a component.** It is the upper-bound reference arm. The thesis's candidate original contribution, an imbalance-triggered retraining rule, is tested separately as its own arm |
-| Allocation `mdn_code` vs `proportional` | policy replay (pending) | — | — | decided by that study's frozen recommendation rule. its interaction with calibrated allocation follows the frozen tie-break below |
+| Allocation `mdn_code` vs `proportional` | policy replay (pending) | — | — | decided by that study's frozen recommendation rule; its interaction with calibrated allocation follows the frozen tie-break below |
 
 **DLI-best as of now:** E1 + vacuum (> 0.2 dead) + consolidation (ρ = 0.25) + calibrated allocation. The allocation
 policy can change only through the frozen tie-break below.
