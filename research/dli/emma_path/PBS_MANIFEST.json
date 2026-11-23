@@ -214,8 +214,10 @@
    "input_dir": "native-f370a0ef097e",
    "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=24:00:00",
    "submitted_utc": "2026-11-22",
-   "status": "submitted",
-   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze"
+   "status": "COMPLETED (gates: ledger OK)",
+   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze",
+   "exit": 0,
+   "validation": "H5 supported +11.44 pp [11.20,11.68]; H12 E1C-E1 +3.32 pp (descriptive); see RESULTS_PHASE3_SHIFT.md"
   },
   {
    "id": "25859945.pbs-m1.metacentrum.cz",

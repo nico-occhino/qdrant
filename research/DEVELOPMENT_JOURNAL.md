@@ -820,8 +820,15 @@ The collection DLI suite went from 46 to 51 tests.
 - **H6b not supported.** Sommerová's Greedy rebuild gains +0.11 pp in Medium-R [0.08, 0.15].
 - **H7 supported: equivalent.** Oldest-first deletes make the rebuild irrelevant: +0.04 pp, within ±1 pp.
 - **Caveat.** At B* = 50K, recall is 0.96–0.99, which compresses effects near the ceiling.
-- **Still running.** Shift (H5) and Insert-only (Part B: consolidation and calibrated allocation), jobs 25859944 and
-  25859945.
+- **Shift (H5, job 25859944; `RESULTS_PHASE3_SHIFT.md`): supported, with a large effect.**
+  - Retraining instead of reusing routers gains **+11.4 pp** R@30 [11.2, 11.7] on the drifting MQ panel, against
+    Sommerová's 8.4 pp.
+  - Mid-stream, E1 drops to 0.618 against 0.883 for E1R.
+  - Retraining costs 3.9× the training time.
+  - Consolidation (E1C) *helps* under shift, by +3.3 pp. That contradicts the preregistered expectation and is reported
+    as found.
+  - This is the strongest motivation yet for drift-triggered retraining.
+- **Still running.** Insert-only (Part B: consolidation and calibrated allocation), job 25859945.
 
 **PostgreSQL 10M temporal quality** (PostgreSQL repository, job 25859979; `docs/research/DLI_10M_QUALITY_RESULTS.md`):
 - **The multi-level penalty reproduces in an independent implementation.** PostgreSQL E1 needs **2.35×** the work of
