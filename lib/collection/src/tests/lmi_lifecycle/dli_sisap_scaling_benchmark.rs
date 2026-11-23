@@ -2535,31 +2535,14 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
-/// Phase 3 workload driver (PHASE3_PREREGISTRATION.md §2–§7, Part B §10). Executes a plan
-/// written by `research/dli/emma_path/phase3_plan.py`: per batch, inserts (in chunks of the
-/// buffer capacity), then deletes, then drives maintenance to a fixed point, checks the live
-/// set against the plan's ledger, and replays the selection frontier on a flushed copy of the
-/// shard. Environment:
-/// * `DLI_P3_PLAN` (plan dir), `DLI_P3_CORPUS` (Float16 rows), `DLI_P3_OUTPUT`, `DLI_P3_SCRATCH`;
-/// * `DLI_ARM` = E1 | E1R and `DLI_P3_VARIANT` = none | greedy | vacuum200 | consolidate250 | consolidate500;
-/// * `DLI_P3_CALIB_SET` (plan set fitted per batch for the `calibrated` policy, E1L),
-/// * `DLI_P3_EVAL` (batch indices, default all), `DLI_P3_STATIC_BATCHES` (default 5,10,15,20),
-///   `DLI_P3_SETS` (set names, default every set of the batch), `DLI_FRONTIER_BUDGETS`,
-///   `DLI_FRONTIER_POLICIES`, `DLI_FRONTIER_MAX_QUERIES`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "Phase 3 workload driver; requires DLI_P3_PLAN, DLI_P3_CORPUS, DLI_P3_OUTPUT, DLI_P3_SCRATCH"]
-async fn dli_phase3_workload() {
-    use std::io::{Read, Seek, SeekFrom, Write};
-    use super::dli_selection_frontier::{FrontierRun, read_set, run_frontier};
+/// Collection configuration of one arm of `research/dli/static_qdrant_vs_dli/` (and of the
+/// Phase 3 DLI variants), shared by the trajectory driver and the service driver.
+/// Returns (config, static_system, static_model, arm_label, buffer_capacity, arity, base_model).
+/// `DLI_P3_STATIC_SERVE_NPROBE` sets the static model's serving nprobe (default 1; the replay
+/// sweeps nprobe itself); the DLI serving budget is `DLI_BENCH_BUDGET` (collection_config).
+#[allow(clippy::type_complexity)]
+fn p3_setup() -> (CollectionConfigInternal, bool, Option<LmiConfig>, String, usize, usize, LmiConfig) {
     use crate::collection_manager::dli_schedule::MaintenancePolicy;
-    let _scope = common::ambient::test_guard();
-    let plan_dir = PathBuf::from(std::env::var("DLI_P3_PLAN").unwrap());
-    let output = PathBuf::from(std::env::var("DLI_P3_OUTPUT").unwrap());
-    let scratch = PathBuf::from(std::env::var("DLI_P3_SCRATCH").unwrap());
-    assert!(!output.join("summary.json").exists(), "refusing to overwrite");
-    std::fs::create_dir_all(&output).unwrap();
-    let plan: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(plan_dir.join("plan.json")).unwrap()).unwrap();
     let variant = std::env::var("DLI_P3_VARIANT").unwrap_or_else(|_| "none".into());
     let (buffer_capacity, arity, base_model, _, _) = arm_config();
     // DLI_P3_SYSTEM = dli (default) | static. `static` is arm S of
@@ -2580,7 +2563,7 @@ async fn dli_phase3_workload() {
         let mut model = base_model;
         model.n_buckets = buckets;
         model.sample_size = buckets.max(100_000.max(40 * buckets).min(1_000_000));
-        model.nprobe = 1;
+        model.nprobe = std::env::var("DLI_P3_STATIC_SERVE_NPROBE").map_or(1, |v| v.parse().expect("DLI_P3_STATIC_SERVE_NPROBE"));
         model.reuse_router = None;
         model
     });
@@ -2614,6 +2597,34 @@ async fn dli_phase3_workload() {
     } else {
         format!("{:?}/{variant}", arm())
     };
+    (config, static_system, static_model, arm_label, buffer_capacity, arity, base_model)
+}
+
+/// Phase 3 workload driver (PHASE3_PREREGISTRATION.md §2–§7, Part B §10). Executes a plan
+/// written by `research/dli/emma_path/phase3_plan.py`: per batch, inserts (in chunks of the
+/// buffer capacity), then deletes, then drives maintenance to a fixed point, checks the live
+/// set against the plan's ledger, and replays the selection frontier on a flushed copy of the
+/// shard. Environment:
+/// * `DLI_P3_PLAN` (plan dir), `DLI_P3_CORPUS` (Float16 rows), `DLI_P3_OUTPUT`, `DLI_P3_SCRATCH`;
+/// * `DLI_ARM` = E1 | E1R and `DLI_P3_VARIANT` = none | greedy | vacuum200 | consolidate250 | consolidate500;
+/// * `DLI_P3_CALIB_SET` (plan set fitted per batch for the `calibrated` policy, E1L),
+/// * `DLI_P3_EVAL` (batch indices, default all), `DLI_P3_STATIC_BATCHES` (default 5,10,15,20),
+///   `DLI_P3_SETS` (set names, default every set of the batch), `DLI_FRONTIER_BUDGETS`,
+///   `DLI_FRONTIER_POLICIES`, `DLI_FRONTIER_MAX_QUERIES`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "Phase 3 workload driver; requires DLI_P3_PLAN, DLI_P3_CORPUS, DLI_P3_OUTPUT, DLI_P3_SCRATCH"]
+async fn dli_phase3_workload() {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use super::dli_selection_frontier::{FrontierRun, read_set, run_frontier};
+    let _scope = common::ambient::test_guard();
+    let plan_dir = PathBuf::from(std::env::var("DLI_P3_PLAN").unwrap());
+    let output = PathBuf::from(std::env::var("DLI_P3_OUTPUT").unwrap());
+    let scratch = PathBuf::from(std::env::var("DLI_P3_SCRATCH").unwrap());
+    assert!(!output.join("summary.json").exists(), "refusing to overwrite");
+    std::fs::create_dir_all(&output).unwrap();
+    let plan: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(plan_dir.join("plan.json")).unwrap()).unwrap();
+    let (config, static_system, static_model, arm_label, buffer_capacity, arity, base_model) = p3_setup();
     let static_nprobes: Vec<usize> = if static_system {
         env_list("DLI_P3_STATIC_NPROBES").expect("DLI_P3_STATIC_NPROBES").iter().map(|s| s.parse().unwrap()).collect()
     } else {
@@ -2783,4 +2794,318 @@ async fn dli_phase3_workload() {
     });
     std::fs::write(output.join("summary.json"), serde_json::to_vec_pretty(&summary).unwrap()).unwrap();
     collection.stop_gracefully().await;
+}
+
+/// Process and cgroup counters for the service phase. CPU is in clock ticks of
+/// `/proc/self/stat` (user, system; `CLK_TCK` is recorded as 100, the Linux default);
+/// I/O from `/proc/self/io`; memory from `/proc/self/status` and cgroup v2 files.
+fn service_counters() -> serde_json::Value {
+    let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
+    let fields: Vec<u64> = stat
+        .rsplit_once(')')
+        .map(|(_, t)| t.split_whitespace().map(|f| f.parse().unwrap_or(0)).collect())
+        .unwrap_or_default();
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let kib = |key: &str| {
+        status.lines().find_map(|l| l.strip_prefix(key)).and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok())
+    };
+    let io = std::fs::read_to_string("/proc/self/io").unwrap_or_default();
+    let io_field = |key: &str| io.lines().find_map(|l| l.strip_prefix(key)).and_then(|v| v.trim().parse::<u64>().ok());
+    let cgroup = std::fs::read_to_string("/proc/self/cgroup")
+        .ok()
+        .and_then(|c| c.lines().find_map(|l| l.strip_prefix("0::").map(str::to_owned)));
+    let cg = |file: &str| {
+        cgroup.as_ref().and_then(|p| std::fs::read_to_string(format!("/sys/fs/cgroup{p}/{file}")).ok()).and_then(|v| v.trim().parse::<u64>().ok())
+    };
+    serde_json::json!({
+        "utime_ticks": fields.get(11), "stime_ticks": fields.get(12), "clk_tck": 100,
+        "rss_kib": kib("VmRSS:"), "hwm_kib": kib("VmHWM:"),
+        "read_bytes": io_field("read_bytes:"), "write_bytes": io_field("write_bytes:"),
+        "cgroup_memory_current": cg("memory.current"), "cgroup_memory_peak": cg("memory.peak"),
+    })
+}
+
+fn percentiles(mut v: Vec<f64>) -> serde_json::Value {
+    if v.is_empty() {
+        return serde_json::json!(null);
+    }
+    v.sort_by(f64::total_cmp);
+    let q = |p: f64| v[((p * (v.len() - 1) as f64).round() as usize).min(v.len() - 1)];
+    serde_json::json!({"n": v.len(), "p50": q(0.5), "p95": q(0.95), "p99": q(0.99), "max": v[v.len() - 1],
+        "mean": v.iter().sum::<f64>() / v.len() as f64})
+}
+
+/// Concurrent-service phase of `research/dli/static_qdrant_vs_dli/` (DESIGN.md §6, H4).
+/// Same plan and arm configuration as `dli_phase3_workload` (`p3_setup`), but through the
+/// live `Collection::search` path while the batch is written at a fixed rate and maintenance
+/// (DLI) or the ordinary optimizers (static) run in the background — no synchronous drain.
+///
+/// Per batch:
+/// * writer: inserts then deletes in chunks of `DLI_SVC_CHUNK` at `DLI_SVC_WRITE_RATE`
+///   points/s (sleep-paced, never faster);
+/// * readers: open-loop arrivals at `DLI_SVC_QPS` with at most `DLI_SVC_INFLIGHT` requests
+///   in flight (arrivals beyond the cap are counted as dropped), per-request timeout
+///   `DLI_SVC_TIMEOUT_MS`, from the writer's start until maintenance has settled;
+/// * after settling: one sequential pass of the panel (settled latency and recall against
+///   the plan's gold for this batch), and the live-set ledger check;
+/// * correctness: any returned id whose deletion completed before the request started is a
+///   violation (counted, and the run fails at the end if any occurred).
+///
+/// Serving operating point: `DLI_BENCH_BUDGET` (DLI) or `DLI_P3_STATIC_SERVE_NPROBE` (static).
+/// Query panel: `DLI_SVC_SET` from the plan (validation in pilots). No request-path tracing
+/// is enabled; `DLI_QUERY_EVENTS` must be unset.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "static-vs-DLI service phase; requires DLI_P3_PLAN, DLI_P3_CORPUS, DLI_P3_OUTPUT, DLI_P3_SCRATCH, DLI_SVC_*"]
+async fn dli_service_workload() {
+    use std::collections::HashMap;
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+    use common::ambient::AmbientFutureExt as _;
+    use super::dli_selection_frontier::read_set;
+    /// Releases one in-flight slot even if the request task panics.
+    struct Slot(Arc<AtomicUsize>);
+    impl Drop for Slot {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+    let _scope = common::ambient::test_guard();
+    assert!(std::env::var_os("DLI_QUERY_EVENTS").is_none(), "no request-path tracing in the service phase");
+    let env = |n: &str| std::env::var(n).unwrap_or_else(|_| panic!("{n} required"));
+    let num = |n: &str| -> f64 { env(n).parse().expect(n) };
+    let plan_dir = PathBuf::from(env("DLI_P3_PLAN"));
+    let output = PathBuf::from(env("DLI_P3_OUTPUT"));
+    let scratch = PathBuf::from(env("DLI_P3_SCRATCH"));
+    assert!(!output.join("service-summary.json").exists(), "refusing to overwrite");
+    std::fs::create_dir_all(&output).unwrap();
+    let plan: serde_json::Value = serde_json::from_slice(&std::fs::read(plan_dir.join("plan.json")).unwrap()).unwrap();
+    let (config, static_system, static_model, arm_label, _buffer_capacity, _, _) = p3_setup();
+    let (qps, inflight_cap, timeout_ms) = (num("DLI_SVC_QPS"), num("DLI_SVC_INFLIGHT") as usize, num("DLI_SVC_TIMEOUT_MS"));
+    let (write_rate, chunk) = (num("DLI_SVC_WRITE_RATE"), num("DLI_SVC_CHUNK") as usize);
+    let warmup = std::env::var("DLI_SVC_WARMUP").map_or(20, |v| v.parse().unwrap());
+    let set_name = env("DLI_SVC_SET");
+    let max_batches = std::env::var("DLI_P3_MAX_BATCHES").map_or(usize::MAX, |v| v.parse().unwrap());
+
+    let root = tempfile::tempdir_in(&scratch).unwrap();
+    let collection = Arc::new(create_collection_with_config("service", root.path(), config).await);
+    let local = replica(&collection).await;
+    let mut corpus = std::fs::File::open(env("DLI_P3_CORPUS")).unwrap();
+    let mut read_rows = |ids: &[u32]| -> Vec<PointStructPersisted> {
+        ids.iter()
+            .map(|&id| {
+                let mut bytes = vec![0u8; DIMENSIONS * 2];
+                corpus.seek(SeekFrom::Start(((id as usize - 1) * DIMENSIONS * 2) as u64)).unwrap();
+                corpus.read_exact(&mut bytes).unwrap();
+                point_from_row(0, id as u64, &bytes)
+            })
+            .collect()
+    };
+    let read_u32 = |path: PathBuf| -> Vec<u32> {
+        std::fs::read(path).unwrap().chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
+    };
+    let request = |query: &Vec<f32>| CoreSearchRequest {
+        query: QueryEnum::Nearest(NamedQuery::default_dense(query.clone())),
+        filter: None, params: None, limit: 30, offset: 0, with_payload: None, with_vector: None, score_threshold: None,
+    };
+    let id_of = |p: &segment::types::ScoredPoint| match p.id {
+        segment::types::ExtendedPointId::NumId(n) => n,
+        other => panic!("unexpected id {other:?}"),
+    };
+    // Deletion generation: id -> generation after which it must never be returned.
+    let deleted: Arc<parking_lot::RwLock<HashMap<u64, u64>>> = Default::default();
+    let generation = Arc::new(AtomicU64::new(0));
+    let mut total_violations = 0u64;
+    let mut log = std::fs::File::create(output.join("service-batches.jsonl")).unwrap();
+    for batch in plan["batches"].as_array().unwrap().iter().take(max_batches) {
+        let index = batch["index"].as_u64().unwrap() as usize;
+        let dir = plan_dir.join(format!("batch_{index:02}"));
+        let spec = &batch["sets"][&set_name];
+        let panel = Arc::new(read_set(&set_name, &plan_dir.join(spec["queries"].as_str().unwrap()), &plan_dir.join(spec["gold"].as_str().unwrap())));
+        let queries: Arc<Vec<Vec<f32>>> = Arc::new(panel.queries.clone());
+        for q in queries.iter().cycle().take(warmup) {
+            let _ = collection.search(request(q), None, None, &ShardSelectorInternal::All, Some(Duration::from_millis(timeout_ms as u64))).await;
+        }
+        let counts_before = local.local_dli_search_counts_for_test().await;
+        let counters_before = service_counters();
+
+        // Readers: open-loop arrivals until `stop`.
+        let stop = Arc::new(AtomicBool::new(false));
+        let inflight = Arc::new(AtomicUsize::new(0));
+        let results: Arc<parking_lot::Mutex<Vec<(f64, &'static str)>>> = Default::default();
+        let violations = Arc::new(AtomicU64::new(0));
+        let dropped = Arc::new(AtomicU64::new(0));
+        let reader = {
+            let (collection, stop, inflight, results, violations, dropped, deleted, generation, queries) = (
+                collection.clone(), stop.clone(), inflight.clone(), results.clone(), violations.clone(),
+                dropped.clone(), deleted.clone(), generation.clone(), queries.clone());
+            tokio::spawn(async move {
+                let period = Duration::from_secs_f64(1.0 / qps);
+                let mut next = tokio::time::Instant::now();
+                let mut i = 0usize;
+                let mut tasks = Vec::new();
+                while !stop.load(Ordering::Acquire) {
+                    tokio::time::sleep_until(next).await;
+                    next += period;
+                    if inflight.load(Ordering::Acquire) >= inflight_cap {
+                        dropped.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                    inflight.fetch_add(1, Ordering::AcqRel);
+                    let q = queries[i % queries.len()].clone();
+                    i += 1;
+                    let (collection, inflight, results, violations, deleted, generation) = (
+                        collection.clone(), inflight.clone(), results.clone(), violations.clone(), deleted.clone(), generation.clone());
+                    tasks.push(tokio::spawn(async move {
+                        let _slot = Slot(inflight);
+                        let start_gen = generation.load(Ordering::Acquire);
+                        let started = Instant::now();
+                        let outcome = collection
+                            .search(
+                                CoreSearchRequest {
+                                    query: QueryEnum::Nearest(NamedQuery::default_dense(q)),
+                                    filter: None, params: None, limit: 30, offset: 0,
+                                    with_payload: None, with_vector: None, score_threshold: None,
+                                },
+                                None, None, &ShardSelectorInternal::All,
+                                Some(Duration::from_millis(timeout_ms as u64)),
+                            )
+                            .await;
+                        let ms = started.elapsed().as_secs_f64() * 1000.0;
+                        let kind = match &outcome {
+                            Ok(hits) => {
+                                let map = deleted.read();
+                                for hit in hits {
+                                    let id = match hit.id {
+                                        segment::types::ExtendedPointId::NumId(n) => n,
+                                        _ => continue,
+                                    };
+                                    if map.get(&id).is_some_and(|&g| g <= start_gen) {
+                                        violations.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                }
+                                "ok"
+                            }
+                            Err(e) if e.to_string().contains("imed out") => "timeout",
+                            Err(_) => "error",
+                        };
+                        results.lock().push((ms, kind));
+                    }.in_current_ambient()));
+                }
+                for t in tasks {
+                    let _ = t.await;
+                }
+            }.in_current_ambient())
+        };
+
+        // Backlog sampler (1 s).
+        let sampler = {
+            let (collection, local, stop) = (collection.clone(), local.clone(), stop.clone());
+            tokio::spawn(async move {
+                let (mut max_backlog, mut busy_seconds) = (0usize, 0usize);
+                while !stop.load(Ordering::Acquire) {
+                    if static_system {
+                        let info = collection.info(&ShardSelectorInternal::All).await.unwrap();
+                        if info.status != crate::operations::types::CollectionStatus::Green {
+                            busy_seconds += 1;
+                        }
+                    } else if let Some(d) = local.local_dli_diagnostics_for_test().await {
+                        max_backlog = max_backlog.max(d.0.saturating_sub(d.1) + usize::from(d.3));
+                        busy_seconds += usize::from(d.3 || d.0 > d.1);
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+                (max_backlog, busy_seconds)
+            }.in_current_ambient())
+        };
+
+        // Writer: paced inserts, then paced deletes.
+        let window_started = Instant::now();
+        let pace = |done: usize, started: Instant| {
+            let due = Duration::from_secs_f64(done as f64 / write_rate);
+            due.saturating_sub(started.elapsed())
+        };
+        let inserts = read_u32(dir.join("insert.u32"));
+        let mut written = 0usize;
+        for part in inserts.chunks(chunk) {
+            apply_points(&collection, read_rows(part)).await;
+            written += part.len();
+            tokio::time::sleep(pace(written, window_started)).await;
+        }
+        for part in read_u32(dir.join("delete.u32")).chunks(chunk) {
+            apply_delete(&collection, part.iter().map(|&i| i as u64).collect()).await;
+            let g = generation.fetch_add(1, Ordering::AcqRel) + 1;
+            {
+                let mut map = deleted.write();
+                for &i in part {
+                    map.insert(i as u64, g);
+                }
+            }
+            written += part.len();
+            tokio::time::sleep(pace(written, window_started)).await;
+        }
+        let writes_seconds = window_started.elapsed().as_secs_f64();
+        let settle_seconds = if static_system {
+            settle_static_optimizers(&collection, Duration::from_secs(4 * 3600)).await
+        } else {
+            let s = Instant::now();
+            settle_dli_maintenance(&local, Duration::from_secs(4 * 3600)).await;
+            s.elapsed().as_secs_f64()
+        };
+        let window_seconds = window_started.elapsed().as_secs_f64();
+        stop.store(true, Ordering::Release);
+        reader.await.unwrap();
+        let (max_backlog, busy_seconds) = sampler.await.unwrap();
+        let window: Vec<(f64, &str)> = std::mem::take(&mut *results.lock());
+        let ok: Vec<f64> = window.iter().filter(|r| r.1 == "ok").map(|r| r.0).collect();
+        let batch_violations = violations.load(Ordering::Relaxed);
+        total_violations += batch_violations;
+
+        // Settled pass: sequential, recall against this batch's gold.
+        let mut settled_ms = Vec::new();
+        let mut recall30 = 0usize;
+        for (q, gold) in panel.queries.iter().zip(&panel.gold) {
+            let started = Instant::now();
+            let hits = collection
+                .search(request(q), None, None, &ShardSelectorInternal::All, Some(Duration::from_millis(timeout_ms as u64)))
+                .await
+                .expect("settled request must succeed");
+            settled_ms.push(started.elapsed().as_secs_f64() * 1000.0);
+            let ids: Vec<u64> = hits.iter().map(id_of).collect();
+            recall30 += gold[..30].iter().filter(|g| ids.contains(g)).count();
+        }
+        let (live, digest) = live_id_digest(&collection).await;
+        assert_eq!(live as u64, batch["live_count"].as_u64().unwrap(), "batch {index} live count");
+        assert_eq!(digest, batch["live_sha256"].as_str().unwrap(), "batch {index} live set");
+        let counts_after = local.local_dli_search_counts_for_test().await;
+        let record = serde_json::json!({
+            "batch": index, "arm": arm_label, "live": live, "set": set_name,
+            "load": {"qps_target": qps, "inflight_cap": inflight_cap, "timeout_ms": timeout_ms,
+                     "write_rate_points_s": write_rate, "chunk": chunk},
+            "window": {"seconds": window_seconds, "writes_seconds": writes_seconds, "settle_seconds": settle_seconds,
+                       "issued": window.len(), "ok": ok.len(),
+                       "timeouts": window.iter().filter(|r| r.1 == "timeout").count(),
+                       "errors": window.iter().filter(|r| r.1 == "error").count(),
+                       "dropped_at_cap": dropped.load(Ordering::Relaxed),
+                       "achieved_qps": ok.len() as f64 / window_seconds.max(1e-9),
+                       "latency_ms": percentiles(ok),
+                       "deleted_point_violations": batch_violations,
+                       "maintenance_busy_seconds": busy_seconds, "dli_max_backlog": max_backlog},
+            "settled": {"latency_ms": percentiles(settled_ms),
+                        "recall30": recall30 as f64 / (30 * panel.queries.len()) as f64},
+            "dli_learned_fallback_before_after": [counts_before, counts_after],
+            "counters_before": counters_before, "counters_after": service_counters(),
+            "segments": segment_topology(&collection).await,
+        });
+        writeln!(log, "{record}").unwrap();
+        println!("SERVICE_BATCH {record}");
+    }
+    let summary = serde_json::json!({"arm": arm_label, "system": if static_system { "static" } else { "dli" },
+        "static_model": static_model, "deleted_point_violations": total_violations,
+        "source_head": std::env::var("DLI_BENCH_HEAD").ok()});
+    std::fs::write(output.join("service-summary.json"), serde_json::to_vec_pretty(&summary).unwrap()).unwrap();
+    assert_eq!(total_violations, 0, "deleted points were returned");
+    match Arc::try_unwrap(collection) {
+        Ok(c) => c.stop_gracefully().await,
+        Err(_) => panic!("collection still shared"),
+    }
 }

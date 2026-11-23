@@ -43,8 +43,8 @@ const TOP: usize = 30;
 
 pub(super) struct QuerySet {
     label: String,
-    queries: Vec<Vec<f32>>,
-    gold: Vec<Vec<u64>>,
+    pub(super) queries: Vec<Vec<f32>>,
+    pub(super) gold: Vec<Vec<u64>>,
 }
 
 pub(super) fn read_set(label: &str, queries: &Path, gold: &Path) -> QuerySet {

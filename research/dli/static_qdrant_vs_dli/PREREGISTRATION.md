@@ -120,3 +120,13 @@ a **pre-data correction**.
 - **S\* = S1**, by the preregistered rule (§7). S4 is dropped from later runs.
 - **A second pilot** (`MODE=pilot2`, same seed 20261301, validation panels only, arms D, S1 and SG) checks gates 1–5
   with A1–A4 before freezing.
+- **A5. Concurrent-service phase (H4) specified** (DESIGN.md §6; `dli_service_workload`, `summarize_service.py`).
+  - **Load:** 20 QPS open-loop, 8 in flight, a 10 s timeout, writer 2,000 points/s in chunks of 1,000.
+  - **Operating points:** locked on pilot2 validation results (§5) before any service run.
+  - **H4 outcomes, descriptive per arm and workload:**
+    - median and worst per-batch p50/p95/p99/max latency;
+    - achieved QPS, timeouts and drops;
+    - DLI exact-fallback share;
+    - settled recall;
+    - CPU seconds and peak RSS.
+  - **Hard gate:** zero deleted-point violations.

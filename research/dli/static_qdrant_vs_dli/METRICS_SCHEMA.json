@@ -20,13 +20,34 @@
   "batch_XX/rows.jsonl": {
    "one_line_per": "(set, query, policy, budget)",
    "policy": "D: 'mdn_code' (budget = global candidate budget); S: 'static_nprobe' (budget = nprobe per segment)",
-   "fields": ["recall10", "recall30", "posting_entries", "unique_offsets", "dead_offsets", "original_scored",
-              "plain_scored", "scored_total", "widened (S)", "elapsed_ns (instrumented, not latency)"]
+   "fields": [
+    "recall10",
+    "recall30",
+    "posting_entries",
+    "unique_offsets",
+    "dead_offsets",
+    "original_scored",
+    "plain_scored",
+    "scored_total",
+    "widened (S)",
+    "elapsed_ns (instrumented, not latency)"
+   ]
   },
   "batch_XX/topology.json": "segments (S) or members (D) of the replayed snapshot",
   "native-events.jsonl": "every native optimizer job of both arms (QDRANT_OPTIMIZATION_EVENTS): sources, source_live_points, destination_points, job_wall_micros, native_phases",
   "build-events.jsonl": "every LMI build (QDRANT_LMI_BUILD_EVENTS): n_buckets, sample_count, teacher_mlp_seconds, reused_router, router_fingerprint, routing_postings_seconds",
-  "summary.json": "system, arm, model, static_model, publications (D), seconds, source_head"
+  "summary.json": "system, arm, model, static_model, publications (D), seconds, source_head",
+  "service-batches.jsonl": {
+   "one_line_per_batch": true,
+   "fields": {
+    "load": "fixed target: qps_target, inflight_cap, timeout_ms, write_rate_points_s, chunk",
+    "window": "writer start -> maintenance settled: seconds, writes_seconds, settle_seconds, issued, ok, timeouts, errors, dropped_at_cap, achieved_qps, latency_ms {n,p50,p95,p99,max,mean}, deleted_point_violations, maintenance_busy_seconds, dli_max_backlog",
+    "settled": "one sequential pass of the panel after settling: latency_ms, recall30 against the batch gold",
+    "dli_learned_fallback_before_after": "D: (learned_queries, exact_fallbacks) counters before and after the batch",
+    "counters_before/after": "utime/stime ticks (CLK_TCK 100), rss/hwm KiB, read/write bytes (/proc/self/io), cgroup memory.current/peak",
+    "segments": "topology after settling"
+   }
+  }
  },
  "derived": {
   "W_X(t)": "work (mean scored_total) at mean test R@30 = 0.90 by linear interpolation in mean-work order; null if not attained",
@@ -36,5 +57,7 @@
   "full_retrainings": "builds with reused_router = null",
   "router_reuses": "builds with reused_router != null"
  },
- "not_yet_collected": ["live-request latency/QPS under concurrent writes", "per-arm CPU-seconds, RSS, cgroup memory, I/O bytes per batch", "maximum maintenance stall", "router/selection/scoring time split for S"]
+ "not_yet_collected": [
+  "router/selection/scoring time split for S in the replay"
+ ]
 }

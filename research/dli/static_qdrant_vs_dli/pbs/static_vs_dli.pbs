@@ -30,6 +30,13 @@ case "$MODE" in
            DBUDGETS=1000,2000,3500,5000,7000,10000,14000,20000,28000,40000,56000,80000,113000,160000,226000,320000,2000000
            NPROBES=1,2,4,8,16,32,64,128,256,512,100000
            RUNS="D S1 SG" ;;
+  # Concurrent-service phase (H4, DESIGN.md §6). Operating points are locked from pilot2's
+  # validation results and passed in: SVC_D_BUDGET, SVC_S1_NPROBE, SVC_SG_NPROBE.
+  service) N=1000000; BATCHES=20; MAXB=6; SEED=20261301
+           RUNS="D S1 SG"
+           : "${SVC_D_BUDGET:?}" "${SVC_S1_NPROBE:?}" "${SVC_SG_NPROBE:?}"
+           SVC_QPS=${SVC_QPS:-20} SVC_INFLIGHT=${SVC_INFLIGHT:-8} SVC_TIMEOUT_MS=${SVC_TIMEOUT_MS:-10000}
+           SVC_WRITE_RATE=${SVC_WRITE_RATE:-2000} SVC_CHUNK=${SVC_CHUNK:-1000} ;;
   *) echo "unknown MODE $MODE"; exit 2 ;;
 esac
 if [[ $MODE == primary ]]; then
@@ -163,15 +170,29 @@ for ARM in $RUNS; do
       S4) export DLI_P3_SYSTEM=static DLI_P3_STATIC_SEGMENTS=4 DLI_P3_STATIC_BUCKETS=250 DLI_P3_STATIC_INDEXING_KB=20000 DLI_P3_STATIC_NPROBES=$NPROBES ;;
       SG) export DLI_P3_SYSTEM=static DLI_P3_STATIC_SEGMENTS=1 DLI_P3_STATIC_BUCKETS=$SG_BUCKETS DLI_P3_STATIC_INDEXING_KB=20000 DLI_P3_STATIC_NPROBES=$NPROBES ;;
     esac
-    /usr/bin/time -v "$BIN" --ignored --exact \
-      tests::lmi_lifecycle::dli_sisap_scaling_benchmark::dli_phase3_workload --nocapture > "$R/run.log" 2>&1
+    if [[ $MODE == service ]]; then
+      export DLI_SVC_QPS=$SVC_QPS DLI_SVC_INFLIGHT=$SVC_INFLIGHT DLI_SVC_TIMEOUT_MS=$SVC_TIMEOUT_MS
+      export DLI_SVC_WRITE_RATE=$SVC_WRITE_RATE DLI_SVC_CHUNK=$SVC_CHUNK DLI_SVC_SET=${ASET}
+      case $ARM in
+        D)  export DLI_BENCH_BUDGET=$SVC_D_BUDGET ;;
+        S1) export DLI_P3_STATIC_SERVE_NPROBE=$SVC_S1_NPROBE ;;
+        SG) export DLI_P3_STATIC_SERVE_NPROBE=$SVC_SG_NPROBE ;;
+      esac
+      unset DLI_QUERY_EVENTS
+      /usr/bin/time -v "$BIN" --ignored --exact \
+        tests::lmi_lifecycle::dli_sisap_scaling_benchmark::dli_service_workload --nocapture > "$R/run.log" 2>&1
+    else
+      /usr/bin/time -v "$BIN" --ignored --exact \
+        tests::lmi_lifecycle::dli_sisap_scaling_benchmark::dli_phase3_workload --nocapture > "$R/run.log" 2>&1
+    fi
   )
   cp "$R/run.log" "$R"/*.jsonl "$A/"
   rm -rf "$R"
 done
 
 phase=analysis
-for S in $(for r in $RUNS; do [[ $r == S* ]] && echo $r; done); do
+[[ $MODE == service ]] && RUNS_ANALYSIS="" || RUNS_ANALYSIS=1
+[[ -z $RUNS_ANALYSIS ]] || for S in $(for r in $RUNS; do [[ $r == S* ]] && echo $r; done); do
   "$PY" -I "$W/qdrant/research/dli/static_qdrant_vs_dli/analyze_static_vs_dli.py" \
       --pair "$SCENARIO-$S=$OUT/$S:$OUT/D" --set "$ASET" --out "$OUT/analysis-$S.json" > "$OUT/analysis-$S.txt"
 done

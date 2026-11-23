@@ -68,13 +68,37 @@ R = mean_t W_D(t) / mean_t W_S(t) over batches 1–20 where both arms attain, wi
   chooses the S configuration (S1 or S4) by the lower mean validation W(0.90) on W1, using the `calib` panel.
 - **The primary run** uses a different seed (20261121, as in Phase 3) and the test panels.
 
-## 6. Required before the primary run (not in the pilot)
+## 6. Concurrent-service phase (implemented 2026-11-23; `dli_service_workload`)
 
-1. A concurrent phase: a fixed-rate writer plus N readers through `collection.search` during insertion and background
-   optimization, recording achieved load, latency distribution, timeouts and backlog, at the validation-locked
-   operating point of each arm.
-2. Per-arm resource counters: process CPU-seconds, `/proc` I/O bytes and cgroup memory, sampled per batch.
-3. A router, selection and scoring time split for S in the replay.
+A separate run per arm, on the same plan and arm configuration (`p3_setup`), through the live `Collection::search`
+path:
+
+- **Writer.** It applies each batch (inserts, then deletes) at a fixed rate (`DLI_SVC_WRITE_RATE` points/s, in chunks
+  of `DLI_SVC_CHUNK`). There is **no synchronous drain**: DLI maintenance and Qdrant's optimizers run in the
+  background, as in service.
+- **Readers.** Open-loop arrivals at `DLI_SVC_QPS`, at most `DLI_SVC_INFLIGHT` in flight. Arrivals beyond the cap are
+  counted as dropped. Each request has a timeout of `DLI_SVC_TIMEOUT_MS`. They run from the writer's start until
+  maintenance has settled.
+- **Recorded per batch:**
+  - achieved QPS, latency percentiles, timeouts and errors;
+  - maintenance busy seconds and the DLI job backlog;
+  - DLI learned against exact-fallback request counts;
+  - process CPU, RSS, I/O bytes and cgroup memory (`/proc`);
+  - a settled sequential pass, with recall against the batch's gold.
+- **Correctness.** A request must never return a point whose deletion completed before the request started. Any
+  violation fails the run. The ledger is checked after every batch.
+- **Overhead.** No request-path tracing (`DLI_QUERY_EVENTS` must be unset). The counters are read once per batch.
+- **Operating points** are locked on validation from pilot2 (preregistration §5) and passed as
+  `SVC_D_BUDGET` / `SVC_S1_NPROBE` / `SVC_SG_NPROBE`.
+- **Pilot load:** 20 QPS, 8 in flight, a 10 s timeout, 2,000 points/s in chunks of 1,000 (`MODE=service` defaults).
+- **Summary:** `summarize_service.py`.
+
+**Local validation** (synthetic 20K, constant_r, 4 batches, 40 QPS):
+- both arms issued about 1,550 requests with 0 timeouts, 0 errors, 0 drops and 0 deleted-point violations;
+- the ledger matched after every batch;
+- D's exact-fallback counts rose during maintenance windows. The summariser reports them.
+
+Still missing: a router, selection and scoring time split for S in the replay.
 
 ## 7. Write amplification
 
