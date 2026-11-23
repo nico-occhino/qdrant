@@ -88,3 +88,35 @@ S4 is chosen, because it is closer to Qdrant's default multi-segment layout.
 - A primary job that fails a correctness gate (ledger, known-answer) is not analysed for H1. It is fixed, amended and
   rerun.
 - A primary result is never re-run in the hope of a different outcome.
+
+## Amendments before freezing (2026-11-23, after the pilot, before any test-panel data)
+
+The pilot (jobs 25863307–25863310, validation panels only, seed 20261301; [PILOT_RESULTS.md](PILOT_RESULTS.md)) ran
+the pipeline correctly. It exposed two flawed gate definitions and an uncontrolled confound. Each amendment below is
+a **pre-data correction**.
+
+- **A1. First-point rule.** When an arm's curve already meets mean R@30 = 0.90 at its first grid point, W is the work
+  at that point, flagged as an *upper bound*, instead of "not attained". The pilot case: S4's unindexed Plain
+  segments at shift batch 0 were exact search. Implemented in `analyze_static_vs_dli.py` (`interp_or_first`) and
+  tested.
+- **A2. Known-answer gate at full search.** Gate 3 is evaluated at an explicit full-search grid point: D budget
+  2,000,000 (≥ any live set at 1M), S nprobe 100,000 (= all buckets). The criterion is mean R@30 ≥ 0.995 in every
+  batch, reported as `known_answer_min` / `known_answer_pass`. The largest *tuning* grid point was never full search.
+- **A3. Extended D grid.** It adds 113K, 160K, 226K and 320K, because D did not reach 0.90 at 80K in shift batch 5.
+- **A4. Granularity-matched arm SG.**
+  - **Why.** The pilot could not separate *lifecycle* from *granularity*. S's fixed bucket count gave 100–325 points
+    per bucket, against D's about 5,000.
+  - **What SG is.** S\*'s topology (one target segment, ordinary optimizers) with B = round(L_max / b) buckets, where
+    L_max is the largest live count in the workload's plan and b = 5,000. A full segment then holds about b points
+    per bucket, D's invariant for a full level, and its buckets grow as it fills, like a DLI level.
+  - **Values at 1M:** insert-only 200, shift 183, constant_r and constant_o 20.
+  - **New hypothesis H1g**, with the same thresholds and CI as H1: R_g = mean_t W_D / mean_t W_SG.
+  - **How to read H1 and H1g together:**
+    - H1 holds but H1g does not: the S advantage comes from granularity.
+    - Both hold: the advantage comes from the lifecycle.
+    - H1g reversed (D better than SG): the hierarchy helps at matched granularity.
+  - **Multiplicity.** The primary family grows to 8 decisions (H1, H1g × 4 workloads). The Bonferroni sensitivity
+    check uses 99.375% CIs.
+- **S\* = S1**, by the preregistered rule (§7). S4 is dropped from later runs.
+- **A second pilot** (`MODE=pilot2`, same seed 20261301, validation panels only, arms D, S1 and SG) checks gates 1–5
+  with A1–A4 before freezing.

@@ -19,14 +19,33 @@ case "$MODE" in
            DBUDGETS=1000,2000,3500,5000,7000,10000,14000,20000,28000,40000,50000,56000,80000
            NPROBES=1,2,4,8,16,32,64,128,256
            RUNS="D S1 S4" ;;
-  *) echo "unknown MODE $MODE (primary is prepared after the pilot)"; exit 2 ;;
+  # Amendments A1-A3 (2026-11-23, before any test data): extended D grid, full-search points
+  # (D budget 2M >= any live set at 1M; S nprobe 100000 = all buckets), granularity-matched SG.
+  pilot2)  N=1000000; BATCHES=20; MAXB=6; SEED=20261301
+           DBUDGETS=1000,2000,3500,5000,7000,10000,14000,20000,28000,40000,56000,80000,113000,160000,226000,320000,2000000
+           NPROBES=1,2,4,8,16,32,64,128,256,512,100000
+           RUNS="D S1 SG" ;;
+  # PREPARED, not submitted without approval: test panels, seed 20261121, all 1 + 20 batches.
+  primary) N=1000000; BATCHES=20; MAXB=1000; SEED=20261121
+           DBUDGETS=1000,2000,3500,5000,7000,10000,14000,20000,28000,40000,56000,80000,113000,160000,226000,320000,2000000
+           NPROBES=1,2,4,8,16,32,64,128,256,512,100000
+           RUNS="D S1 SG" ;;
+  *) echo "unknown MODE $MODE"; exit 2 ;;
 esac
-case "${SCENARIO:?}" in
-  insert_only)           SETS=val,calib; ASET=calib ;;
-  shift)                 SETS=mq_val,ids_val,ood_val; ASET=mq_val ;;
-  constant_r|constant_o) SETS=val; ASET=val ;;
-  *) echo "unknown SCENARIO $SCENARIO"; exit 2 ;;
-esac
+if [[ $MODE == primary ]]; then
+  case "${SCENARIO:?}" in
+    insert_only|constant_r|constant_o) SETS=test,val; ASET=test ;;
+    shift) SETS=mq,mq_val,ids,ids_val,ood,ood_val; ASET=mq ;;
+    *) echo "unknown SCENARIO $SCENARIO"; exit 2 ;;
+  esac
+else
+  case "${SCENARIO:?}" in
+    insert_only)           SETS=val,calib; ASET=calib ;;
+    shift)                 SETS=mq_val,ids_val,ood_val; ASET=mq_val ;;
+    constant_r|constant_o) SETS=val; ASET=val ;;
+    *) echo "unknown SCENARIO $SCENARIO"; exit 2 ;;
+  esac
+fi
 OUT="$CAMPAIGN/results/static-vs-dli-$MODE-$SCENARIO-$PBS_JOBID"
 mkdir -p "$CAMPAIGN/results"; mkdir "$OUT"              # never reuse a result directory
 exec > >(tee "$OUT/job.log") 2>&1
@@ -124,6 +143,11 @@ phase=plan
     --rows "$N" --scenario "$SCENARIO" --batches "$BATCHES" --seed "$SEED" --out "$W/plan" > "$OUT/plan.log" 2>&1
 mkdir -p "$OUT/plan"; cp "$W/plan/plan.json" "$OUT/plan/"
 
+# SG (A3): one target segment with B = round(L_max / b) buckets, L_max = the largest live count
+# in the whole plan, b = 5,000, so a full segment has about b points per bucket (D's invariant).
+SG_BUCKETS=$("$PY" -I -c "
+import json,sys; p=json.load(open(sys.argv[1])); print(max(10, round(max(b['live_count'] for b in p['batches'])/5000)))" "$W/plan/plan.json")
+echo "SG_BUCKETS=$SG_BUCKETS" | tee "$OUT/sg-buckets.txt"
 export QDRANT_LMI_SAMPLE_BUDGET_BYTES=2000000000
 for ARM in $RUNS; do
   phase=run-$ARM
@@ -137,6 +161,7 @@ for ARM in $RUNS; do
       D)  export DLI_P3_SYSTEM=dli DLI_P3_VARIANT=none DLI_FRONTIER_BUDGETS=$DBUDGETS DLI_FRONTIER_POLICIES=mdn_code ;;
       S1) export DLI_P3_SYSTEM=static DLI_P3_STATIC_SEGMENTS=1 DLI_P3_STATIC_BUCKETS=1000 DLI_P3_STATIC_INDEXING_KB=20000 DLI_P3_STATIC_NPROBES=$NPROBES ;;
       S4) export DLI_P3_SYSTEM=static DLI_P3_STATIC_SEGMENTS=4 DLI_P3_STATIC_BUCKETS=250 DLI_P3_STATIC_INDEXING_KB=20000 DLI_P3_STATIC_NPROBES=$NPROBES ;;
+      SG) export DLI_P3_SYSTEM=static DLI_P3_STATIC_SEGMENTS=1 DLI_P3_STATIC_BUCKETS=$SG_BUCKETS DLI_P3_STATIC_INDEXING_KB=20000 DLI_P3_STATIC_NPROBES=$NPROBES ;;
     esac
     /usr/bin/time -v "$BIN" --ignored --exact \
       tests::lmi_lifecycle::dli_sisap_scaling_benchmark::dli_phase3_workload --nocapture > "$R/run.log" 2>&1
@@ -146,7 +171,7 @@ for ARM in $RUNS; do
 done
 
 phase=analysis
-for S in S1 S4; do
+for S in $(for r in $RUNS; do [[ $r == S* ]] && echo $r; done); do
   "$PY" -I "$W/qdrant/research/dli/static_qdrant_vs_dli/analyze_static_vs_dli.py" \
       --pair "$SCENARIO-$S=$OUT/$S:$OUT/D" --set "$ASET" --out "$OUT/analysis-$S.json" > "$OUT/analysis-$S.txt"
 done

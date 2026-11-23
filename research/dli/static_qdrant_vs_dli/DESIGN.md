@@ -24,6 +24,12 @@ compare two independently built final indexes. Negative results are kept.
     - **S4**: `default_segment_number = 4`, 250 buckets.
   - Both use `indexing_threshold = 20,000 KB`, the harness default.
   - Which S configuration is primary is chosen **on validation queries only** (§5). S as a family is not tuned on test.
+    The pilot chose **S\* = S1**.
+- **SG (granularity-matched static).** Added by Amendment A4 of the preregistration.
+  - S1's topology, with B = round(L_max / 5,000) buckets: 200 for insert-only, 183 for shift, 20 for constant_r and
+    constant_o at 1M.
+  - A full segment therefore has D's bucket size of about b points.
+  - SG isolates the lifecycle from partition granularity.
 
 ## 2. Workloads (plans from `emma_path/phase3_plan.py`, one plan per workload shared by both arms)
 

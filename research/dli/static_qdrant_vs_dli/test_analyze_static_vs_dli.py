@@ -42,4 +42,16 @@ with tempfile.TemporaryDirectory() as tmp:
     out2 = A.analyze_pair(s, d2, "test", resamples=500)
     assert out2["not_attained_D"] == [2] and out2["per_batch"][2]["W_D"] is None, out2
     assert out2["attained_both"] == 3 and out2["status"] == "descriptive (attainment below 80%)", out2
+    # A1: a curve already at target on its first grid point gives W = work(first point).
+    s3 = write(root, "s3", "static_nprobe", 1.0, cap_batch=None)
+    rows = (s3 / "batch_00" / "rows.jsonl").read_text().splitlines()
+    import json as _j
+    fixed = []
+    for line in rows:
+        r = _j.loads(line); r["recall30"] = 30.0; fixed.append(_j.dumps(r))
+    (s3 / "batch_00" / "rows.jsonl").write_text("\n".join(fixed) + "\n")
+    out3 = A.analyze_pair(s3, d, "test", resamples=200)
+    assert out3["per_batch"][0]["S_upper_bound"] and out3["per_batch"][0]["W_S"] == 1000.0, out3["per_batch"][0]
+    # A2: the fixture's largest point is not full recall (max 0.75 + 0.30 capped at 1.0 -> mean < 0.995).
+    assert out["known_answer_pass"] is False and out["known_answer_min"]["S"] < 0.995
     print("analyze_static_vs_dli known-answer test: OK", out["ratio_D_over_S"], out["ci95"])

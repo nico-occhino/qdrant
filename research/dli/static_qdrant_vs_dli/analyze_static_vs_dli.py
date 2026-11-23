@@ -29,6 +29,17 @@ _spec.loader.exec_module(p3)
 SEED = 20261123
 TARGET = 0.90
 MIN_ATTAINED_SHARE = 0.8
+FULL_SEARCH_RECALL = 0.995
+
+
+def interp_or_first(recall, work, target=TARGET):
+    """p3.interp_work, except that a curve whose first grid point already meets the target
+    returns the work at that point (an upper bound on W), per amendment A1 (2026-11-23)."""
+    recall, work = np.atleast_2d(recall), np.atleast_2d(work)
+    out = p3.interp_work(recall, work, target)
+    first = (recall[:, 0] >= target) & np.isnan(out)
+    out[first] = work[first, 0]
+    return out, first
 
 
 def curve(run, t):
@@ -43,26 +54,33 @@ def analyze_pair(s_dir, d_dir, set_name, resamples=p3.RESAMPLES, seed=SEED):
     batches = sorted(set(S) & set(D))
     rng = np.random.default_rng(seed)
     per_batch, ws_pt, wd_pt, ws_bs, wd_bs = {}, [], [], [], []
+    known_answer = {"S": {}, "D": {}}
     for t in batches:
         rs, ws = curve(S, t)
         rd, wd = curve(D, t)
         assert rs.shape[1] == rd.shape[1], "both arms must answer the same queries"
-        ps = p3.interp_work(rs.mean(axis=1), ws.mean(axis=1))[0]
-        pd = p3.interp_work(rd.mean(axis=1), wd.mean(axis=1))[0]
+        # Known-answer gate (A2): mean R@30 at the full-search (largest) grid point.
+        known_answer["S"][t] = float(rs[-1].mean())
+        known_answer["D"][t] = float(rd[-1].mean())
+        (ps,), (s_first,) = interp_or_first(rs.mean(axis=1), ws.mean(axis=1))
+        (pd,), (d_first,) = interp_or_first(rd.mean(axis=1), wd.mean(axis=1))
         per_batch[t] = {"W_S": None if np.isnan(ps) else float(ps), "W_D": None if np.isnan(pd) else float(pd),
-                        "ratio": None if np.isnan(ps) or np.isnan(pd) else float(pd / ps)}
+                        "ratio": None if np.isnan(ps) or np.isnan(pd) else float(pd / ps),
+                        "S_upper_bound": bool(s_first), "D_upper_bound": bool(d_first)}
         if np.isnan(ps) or np.isnan(pd):
             continue
         idx = rng.integers(0, rs.shape[1], size=(resamples, rs.shape[1]))
-        ws_bs.append(p3.interp_work(rs[:, idx].mean(axis=2).T, ws[:, idx].mean(axis=2).T))
-        wd_bs.append(p3.interp_work(rd[:, idx].mean(axis=2).T, wd[:, idx].mean(axis=2).T))
+        ws_bs.append(interp_or_first(rs[:, idx].mean(axis=2).T, ws[:, idx].mean(axis=2).T)[0])
+        wd_bs.append(interp_or_first(rd[:, idx].mean(axis=2).T, wd[:, idx].mean(axis=2).T)[0])
         ws_pt.append(ps)
         wd_pt.append(pd)
     attained = len(ws_pt)
     out = {"set": set_name, "batches": batches, "attained_both": attained,
            "attained_share": attained / len(batches) if batches else 0.0, "per_batch": per_batch,
            "not_attained_S": [t for t in batches if per_batch[t]["W_S"] is None],
-           "not_attained_D": [t for t in batches if per_batch[t]["W_D"] is None]}
+           "not_attained_D": [t for t in batches if per_batch[t]["W_D"] is None],
+           "known_answer_min": {arm: (min(v.values()) if v else None) for arm, v in known_answer.items()},
+           "known_answer_pass": all(x >= FULL_SEARCH_RECALL for v in known_answer.values() for x in v.values())}
     if attained == 0:
         out["status"] = "target not attained"
         return out

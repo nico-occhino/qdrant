@@ -87,3 +87,5 @@ it would not scale to 10M: a single segment of up to 2.7M points, retrained abou
    sized so that a full segment has about b = 5,000 points per bucket, as D's levels do. Without it, a primary result
    "S beats D" cannot say whether the hierarchy or the bucket size is responsible.
 3. The concurrent-service phase (H4) is still not implemented (DESIGN.md §6).
+
+**Decision (author, 2026-11-23):** add the granularity-matched arm SG (PREREGISTRATION.md, Amendment A4), and amend the gates (A1–A3).
