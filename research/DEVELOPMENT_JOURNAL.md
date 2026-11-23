@@ -902,6 +902,37 @@ request fewer CPUs or run replays (sets, arms) in parallel inside a job.
   `C:\Users\nicoo\Workspace\Learning stuff\Progress_Ladder\PROJECT_EXPLAINER.md`. It ranks 14 audit findings and
   lists code–documentation disagreements.
 
+### 23 November (afternoon): one query behind the known-answer failure, a corrected policy contrast, a handoff index
+
+**The Shift known-answer failure in pilot2 is one query, not a systematic gap.** This comes from the stored rows of
+job 25875196 (`D|S1|SG/batch_*/rows.jsonl`):
+- At full search, each arm scores exactly the live set: 45,811 up to 274,868 vectors.
+- Every full-search miss is shared by D, S1 and SG, query by query, with one exception: `mq_val` query 15. D loses 5,
+  1 and 2 of its gold points at batches 3, 4 and 5. In every case the point's bucket was scored, but the point was
+  ranked out of the top 30 (`miss_selected_but_lost`); nothing went unscored.
+- Without query 15, D's worst batch is about 0.999.
+- **Hypothesis, being tested:** Shift queries are held-out corpus rows, and LAION has exact duplicate images, so a
+  group of identical scores may straddle rank 30. Gold breaks such ties by smaller ID; D may break them differently.
+- **The check:** the pilot2 plan is being regenerated locally from the verified corpus, and its file hashes will be
+  compared with the job's `plan.json`. A diagnostic then reports, for every miss, the float64 margin at ranks 30/31,
+  the exact-duplicate group and a Qdrant-like f16 re-scoring. The 0.995 threshold is not changed either way.
+
+**Emma's "mdn versus proportional" is already a clean allocation contrast.**
+- `proportional` (`dli_selection_frontier.rs::run_proportional`) splits the learned budget across levels in proportion
+  to each level's live population, and inside a level it takes buckets in probability order. `mdn_code` multiplies
+  every bucket of a level by one constant, so its order inside a level is the same.
+- The two therefore differ only in how the budget is allocated *across* levels, plus the always-scored buffer, which is
+  negligible in E1.
+- An external review proposed a 2×2 with the reserved-per-level policy because "reserved fills in slot order". That is
+  true of `select_reserved`, but it is not the policy Emma named. Reserved+MDN stays an optional extra arm.
+- **The replay is cheap.** The Phase 3 driver takes `DLI_FRONTIER_POLICIES`, so the job is one E1 ingestion (about
+  4 minutes at 1M) replayed under both policies on identical frozen snapshots.
+- **Only the 10M point estimate exists so far:** proportional needed 74,819 against 81,580 for `mdn_code`, 8.3% less
+  work. It is a single replay with no CI on the difference.
+
+**A handoff index for other agents:** `research/AGENT_HANDOFF.md` (this branch). It lists reading order, branches,
+code, documents, jobs, remote and local evidence, open items and safety rules.
+
 ---
 
 ## 14. Cross-cutting lessons
@@ -1048,6 +1079,7 @@ request fewer CPUs or run replays (sets, arms) in parallel inside a job.
 | Filtering | `main` (`exp/2026-11-19-filter-probing-300k`) | `research/lmi/filtering/` | `research-admin/experiments/2026-11-19-lmi-adaptive-filtering/` |
 | Supervised routing | `main` (`exp/2026-11-20-supervised-routing`) | `research/lmi/supervised_routing/` | `research-admin/experiments/2026-11-19-static-supervised-routing/` |
 | Emma path (DLI) | branch `research/dli-emma-path-20261120` | `research/dli/emma_path/` | MetaCentrum `dli-emma-path-20261120/results/`; Windows `C:\Users\nicoo\Workspace\Research-Results\2026-11-20-dli-emma-path\`; staging `research-admin/experiments/2026-11-20-dli-emma-path/` |
+| Static-vs-DLI | branch `research/static-vs-dli-20261122` | `research/dli/static_qdrant_vs_dli/` | MetaCentrum `dli-emma-path-20261120/results/static-vs-dli-*`; Windows `C:\Users\nicoo\Workspace\Research-Results\2026-11-22-static-vs-dli\`; staging `research-admin/experiments/2026-11-22-static-vs-dli/` |
 
 ### External-disk backup (20 November)
 
@@ -1077,10 +1109,16 @@ against Sommerová's reported results; CLI; and finally external API tests acros
 filtering, against one `main` build.
 
 
-**Next priorities (updated 23 November).**
-- Phase 3 Shift (H5) and Insert-only (Part B) results.
-- Static-vs-DLI: amend the draft gates, decide on the granularity-matched S arm, build the concurrent-service phase,
-  freeze, then the 1M primary run.
-- Test the multi-level mechanism directly: per-level miss attribution and consolidation (Part B E1C).
-- PostgreSQL: the buffer-page leak, `amcostestimate`, filtering.
-- CLI; the original contribution; thesis chapters 5, 2–3, 6, 8, 9.
+**Next priorities (updated 23 November, afternoon).** Start from `research/AGENT_HANDOFF.md`.
+1. Phase 3 Insert-only, Part B (job 25859945): H9, H10 and H5_insert_only. Report E1C50 as incomplete if it is cut
+   off.
+2. Pilot2 Shift known-answer diagnosis: a tie or a bug, decided before the static-vs-DLI preregistration is frozen.
+3. `mdn_code` versus proportional replay on identical frozen snapshots: SISAP shift and uniform first, then other
+   datasets (Emma's suggestion).
+4. Static-vs-DLI:
+   - the adaptive static arm (B = ⌈n/g⌉ at build time, keeping S1 as the deployable baseline);
+   - the service pilot;
+   - freezing the preregistration, then the 1M primary run.
+5. Explain *why* retraining helps under shift: corpus assignment against query ranking against bucket balance.
+   Drift-triggered selective retraining is a candidate original contribution, after 1–4.
+6. PostgreSQL: the buffer-page leak, `amcostestimate`, filtering. Then the CLI, and thesis chapters 5, 2–3, 6, 8, 9.
