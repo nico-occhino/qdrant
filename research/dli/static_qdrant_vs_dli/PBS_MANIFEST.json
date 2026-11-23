@@ -65,6 +65,58 @@
    "status": "COMPLETED (not ACCEPTED: gate definitions 3/4 need amendment; see PILOT_RESULTS.md)",
    "exit": 0,
    "walltime_used": "0:37:04"
+  },
+  {
+   "id": "25875195.pbs-m1.metacentrum.cz",
+   "mode": "pilot2",
+   "scenario": "insert_only",
+   "commit": "b5a2b1cd6",
+   "seed": 20261301,
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
+   "arms": "D (extended grid + full point), S1, SG",
+   "panels": "validation only",
+   "submitted_utc": "2026-11-23",
+   "status": "SUBMITTED",
+   "note": "amendments A1-A4; source bundle c42659df\u2026"
+  },
+  {
+   "id": "25875196.pbs-m1.metacentrum.cz",
+   "mode": "pilot2",
+   "scenario": "shift",
+   "commit": "b5a2b1cd6",
+   "seed": 20261301,
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
+   "arms": "D (extended grid + full point), S1, SG",
+   "panels": "validation only",
+   "submitted_utc": "2026-11-23",
+   "status": "SUBMITTED",
+   "note": "amendments A1-A4; source bundle c42659df\u2026"
+  },
+  {
+   "id": "25875197.pbs-m1.metacentrum.cz",
+   "mode": "pilot2",
+   "scenario": "constant_r",
+   "commit": "b5a2b1cd6",
+   "seed": 20261301,
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
+   "arms": "D (extended grid + full point), S1, SG",
+   "panels": "validation only",
+   "submitted_utc": "2026-11-23",
+   "status": "SUBMITTED",
+   "note": "amendments A1-A4; source bundle c42659df\u2026"
+  },
+  {
+   "id": "25875198.pbs-m1.metacentrum.cz",
+   "mode": "pilot2",
+   "scenario": "constant_o",
+   "commit": "b5a2b1cd6",
+   "seed": 20261301,
+   "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
+   "arms": "D (extended grid + full point), S1, SG",
+   "panels": "validation only",
+   "submitted_utc": "2026-11-23",
+   "status": "SUBMITTED",
+   "note": "amendments A1-A4; source bundle c42659df\u2026"
   }
  ],
  "staging": {
