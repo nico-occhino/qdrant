@@ -136,8 +136,10 @@
    "input_dir": "native-f370a0ef097e",
    "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
    "submitted_utc": "2026-11-22",
-   "status": "submitted",
-   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze"
+   "status": "COMPLETED (gates: ledger OK)",
+   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze",
+   "exit": 0,
+   "validation": "heavy_r 9:51:48; see RESULTS_PHASE3_DELETES.md"
   },
   {
    "id": "25859939.pbs-m1.metacentrum.cz",
@@ -147,8 +149,10 @@
    "input_dir": "native-f370a0ef097e",
    "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
    "submitted_utc": "2026-11-22",
-   "status": "submitted",
-   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze"
+   "status": "COMPLETED (gates: ledger OK)",
+   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze",
+   "exit": 0,
+   "validation": "medium_r 7:37:07 H6b not supported; see RESULTS_PHASE3_DELETES.md"
   },
   {
    "id": "25859940.pbs-m1.metacentrum.cz",
@@ -158,8 +162,10 @@
    "input_dir": "native-f370a0ef097e",
    "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
    "submitted_utc": "2026-11-22",
-   "status": "submitted",
-   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze"
+   "status": "COMPLETED (gates: ledger OK)",
+   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze",
+   "exit": 0,
+   "validation": "constant_r 4:09:32 H6 supported; see RESULTS_PHASE3_DELETES.md"
   },
   {
    "id": "25859941.pbs-m1.metacentrum.cz",
@@ -169,8 +175,10 @@
    "input_dir": "native-f370a0ef097e",
    "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
    "submitted_utc": "2026-11-22",
-   "status": "submitted",
-   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze"
+   "status": "COMPLETED (gates: ledger OK)",
+   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze",
+   "exit": 0,
+   "validation": "heavy_o 10:51:30; see RESULTS_PHASE3_DELETES.md"
   },
   {
    "id": "25859942.pbs-m1.metacentrum.cz",
@@ -180,8 +188,10 @@
    "input_dir": "native-f370a0ef097e",
    "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
    "submitted_utc": "2026-11-22",
-   "status": "submitted",
-   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze"
+   "status": "COMPLETED (gates: ledger OK)",
+   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze",
+   "exit": 0,
+   "validation": "medium_o 8:13:39 H7 equivalent; see RESULTS_PHASE3_DELETES.md"
   },
   {
    "id": "25859943.pbs-m1.metacentrum.cz",
@@ -191,8 +201,10 @@
    "input_dir": "native-f370a0ef097e",
    "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=12:00:00",
    "submitted_utc": "2026-11-22",
-   "status": "submitted",
-   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze"
+   "status": "COMPLETED (gates: ledger OK)",
+   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze",
+   "exit": 0,
+   "validation": "constant_o 3:21:02; see RESULTS_PHASE3_DELETES.md"
   },
   {
    "id": "25859944.pbs-m1.metacentrum.cz",
