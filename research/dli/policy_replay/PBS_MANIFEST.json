@@ -1,0 +1,24 @@
+{
+ "study": "research/dli/policy_replay (mdn_code vs proportional)",
+ "preregistration": "PREREGISTRATION.md, frozen at 3c0ae9b9a (2026-11-23)",
+ "staging": {"remote_input": "/storage/budejovice1/home/nico/lmi-metacentrum/dli-emma-path-20261120/native-3c0ae9b9ad43",
+             "superseded_unused_input": "native-466f12606ac7 (pre-freeze upload, never run)"},
+ "jobs": [
+  {"job": "25886307.pbs-m1.metacentrum.cz", "mode": "check", "scenario": "shift", "panel": "mq",
+   "commit": "3c0ae9b9ad43c2782a36ffa1a59baef602c283b2", "exit": 0, "walltime": "01:12:32",
+   "binary_sha256": "b1a7ad70d0ff67cc95f81b9eb9abd08989cf97272bd1cdf51770089d4ab32a2b",
+   "source_key": "2c16e4913ae0969c8d58aa4a (binary now cached)",
+   "result_dir": "results/policy-replay-check-shift-mq-25886307.pbs-m1.metacentrum.cz",
+   "checks": {
+     "plan_identical_to_phase3_primary": "205/205 files",
+     "ledger": "driver asserted, exit 0, batches 0-1",
+     "pairing": "both policies, same 1000+32 queries, 17 budgets, batches 0-1",
+     "S5_reproduction_vs_phase3_E1": "13,416/13,416 cells identical (recall and work) per batch",
+     "unit_tests": "analyze_phase3 and analyze_policy_replay known-answer tests OK",
+     "frontier_seconds": {"batch0": 123.5, "batch1": 196.6},
+     "projection": "about 4-5 h per primary job (20 batches); walltime 8 h"
+   },
+   "disclosure": "The check inspected batch 0-1 mean R@30 and work at B*=50K on the mq TEST panel while verifying pairing and reproduction. The preregistration was already frozen; no rule or threshold was or will be changed. Batches 0-1 remain part of the primary trajectory.",
+   "not_analysed_for_H": true}
+ ]
+}
