@@ -955,6 +955,19 @@ ledgers and topologies):
 commit. It is left there, because the check job runs from that commit, and it is documented in `729c7fdd5`. Commit
 explicit paths when two sessions share the tree.
 
+**Phase 3 Part B decided** (job 25859945; insert-only, 1M; `research/dli/emma_path/RESULTS_PHASE3_PARTB.md`). The
+author cancelled the job after E1C completed, because E1C50 could not finish within the walltime; the analysis was
+run offline with the frozen script.
+- **H9 not supported:** consolidation needs 16% less work, ratio 0.841 [0.831, 0.852]. The gain is real but below the
+  preregistered 20%. It depends strongly on the snapshot, ranging from 0.46 to 1.73 per batch.
+- **H10 not supported:** calibrated allocation needs 7% less work, 0.929 [0.921, 0.936], against a 10% bar.
+- **The combination E1CL (descriptive): 0.799.**
+- **H5 on insert-only: +0.54 pp.** Router reuse is almost free without drift, against 11.4 pp under shift.
+- **The 10M E1C confirmation is not triggered.**
+
+**Policy replay** (`mdn_code` against `proportional`): check job 25886307 passed. Its `mdn_code` rows reproduce Phase 3
+E1 bit-for-bit (13,416 of 13,416 cells). Primary jobs 25888669–25888673 have been submitted.
+
 **A handoff index for other agents:** `research/AGENT_HANDOFF.md` (this branch). It lists reading order, branches,
 code, documents, jobs, remote and local evidence, open items and safety rules.
 

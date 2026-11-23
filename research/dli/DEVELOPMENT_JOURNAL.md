@@ -559,3 +559,12 @@ The fourth attempt completed (exit 0, 4:24, 167 GB peak; 16 build CPUs after Ame
 - **Policy replay:** the preregistration is frozen at `3c0ae9b9a`; check job 25886307 has been submitted.
 - **Phase 3 job audit** by a parallel session, verified and corrected: `PHASE3_PRIMARY_JOB_AUDIT_2026-11-23.md` on the
   policy-replay branch.
+
+**2026-11-23 (evening) — Phase 3 Part B decided.**
+- **H9 not supported:** E1C/E1 work = 0.841 [0.831, 0.852], a real 16% gain below the 20% bar, strongly
+  snapshot-dependent.
+- **H10 not supported:** 0.929 [0.921, 0.936].
+- **E1CL (descriptive): 0.799.**
+- **H5 on insert-only: +0.54 pp.**
+- **E1C50 incomplete:** the job was cancelled after E1C.
+- **Report:** `emma_path/RESULTS_PHASE3_PARTB.md`.

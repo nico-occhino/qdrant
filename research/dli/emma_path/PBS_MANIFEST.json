@@ -227,8 +227,9 @@
    "input_dir": "native-f370a0ef097e",
    "resources": "select=1:ncpus=16:mem=128gb:scratch_ssd=250gb:cpu_vendor=amd, walltime=24:00:00",
    "submitted_utc": "2026-11-22",
-   "status": "submitted",
-   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze"
+   "status": "cancelled by the author after E1C completed (qdel at about 19:55 walltime, 2026-11-23); arms E1, E1R, E1C complete (21 batches each, summary.json present); E1C50 incomplete (0 batches); no in-job analysis, COMPLETE.json or SHA256SUMS",
+   "note": "frozen preregistration 6538a4483; compiled source, PBS, planner and analysis unchanged since freeze",
+   "validation": "offline analysis with analyze_phase3.py (c42fde1ee) on partb/test rows; H9 not supported (0.841 [0.831, 0.852]); H10 not supported (0.929 [0.921, 0.936]); H5_insert_only +0.54 pp [0.47, 0.60]; see RESULTS_PHASE3_PARTB.md"
   }
  ]
 }
