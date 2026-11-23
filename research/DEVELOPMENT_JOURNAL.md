@@ -853,6 +853,16 @@ The collection DLI suite went from 46 to 51 tests.
     grid point instead of full search, and D's grid was too short for Shift. Both must be amended before freezing.
 - **Proposed.** A granularity-matched S arm, so that a primary result can be attributed to the hierarchy rather than to
   bucket size.
+- **Pilot 2** (jobs 25875195–25875198; adds SG, a granularity-matched arm with B = round(L_max / 5,000); 
+  `PILOT2_RESULTS.md` on the study branch):
+  - **D/SG ratios:** insert-only 2.31, shift 2.33, constant_r **0.79** (D better), constant_o **0.96** (no difference).
+  - **SG is matched only at the peak live count.** During the trajectory its buckets are 2–18× finer than D's in the
+    growing workloads and 2–4× coarser in the constant ones.
+  - So **in every workload the arm with finer buckets needed less work**: granularity explains the whole S-versus-D
+    difference seen so far, and no lifecycle effect is separable yet.
+  - The known-answer gate fails on shift (full search R@30 0.994–0.997, probably near-duplicate ties; not yet
+    verified).
+  - **Next:** an adaptive, per-snapshot-matched static arm (a code change), or accept the "as configured" framing.
 
 **Resource lesson.** These jobs requested 16 CPUs but used 3–7% of them (MetaCentrum accounting). Ingestion and builds
 are short; the per-batch frontier replay, which is single-threaded, dominates the walltime. Future jobs should either
