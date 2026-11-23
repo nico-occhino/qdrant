@@ -76,8 +76,10 @@
    "arms": "D (extended grid + full point), S1, SG",
    "panels": "validation only",
    "submitted_utc": "2026-11-23",
-   "status": "SUBMITTED",
-   "note": "amendments A1-A4; source bundle c42659df\u2026"
+   "status": "COMPLETED (not ACCEPTED: gate 3 fails on W2; SG not per-snapshot matched; see PILOT2_RESULTS.md)",
+   "note": "amendments A1-A4; source bundle c42659df\u2026",
+   "exit": 0,
+   "walltime_used": "1:26:41"
   },
   {
    "id": "25875196.pbs-m1.metacentrum.cz",
@@ -89,8 +91,10 @@
    "arms": "D (extended grid + full point), S1, SG",
    "panels": "validation only",
    "submitted_utc": "2026-11-23",
-   "status": "SUBMITTED",
-   "note": "amendments A1-A4; source bundle c42659df\u2026"
+   "status": "COMPLETED (not ACCEPTED: gate 3 fails on W2; SG not per-snapshot matched; see PILOT2_RESULTS.md)",
+   "note": "amendments A1-A4; source bundle c42659df\u2026",
+   "exit": 0,
+   "walltime_used": "0:30:37"
   },
   {
    "id": "25875197.pbs-m1.metacentrum.cz",
@@ -102,8 +106,10 @@
    "arms": "D (extended grid + full point), S1, SG",
    "panels": "validation only",
    "submitted_utc": "2026-11-23",
-   "status": "SUBMITTED",
-   "note": "amendments A1-A4; source bundle c42659df\u2026"
+   "status": "COMPLETED (not ACCEPTED: gate 3 fails on W2; SG not per-snapshot matched; see PILOT2_RESULTS.md)",
+   "note": "amendments A1-A4; source bundle c42659df\u2026",
+   "exit": 0,
+   "walltime_used": "0:16:16"
   },
   {
    "id": "25875198.pbs-m1.metacentrum.cz",
@@ -115,8 +121,10 @@
    "arms": "D (extended grid + full point), S1, SG",
    "panels": "validation only",
    "submitted_utc": "2026-11-23",
-   "status": "SUBMITTED",
-   "note": "amendments A1-A4; source bundle c42659df\u2026"
+   "status": "COMPLETED (not ACCEPTED: gate 3 fails on W2; SG not per-snapshot matched; see PILOT2_RESULTS.md)",
+   "note": "amendments A1-A4; source bundle c42659df\u2026",
+   "exit": 0,
+   "walltime_used": "0:20:23"
   }
  ],
  "staging": {
