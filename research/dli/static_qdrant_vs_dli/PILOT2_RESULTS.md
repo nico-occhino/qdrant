@@ -89,3 +89,35 @@ D trains 4–18× less than the S arms and rewrites 1.8–3.2× more points.
    becomes: "Qdrant's ordinary lifecycle with a sensible fixed bucket count beats E1 on search work at 1M; at matched
    granularity the difference is within the granularity effect."
 3. Resolve the W2 known-answer failure (§3) before freezing.
+
+## Addendum (2026-11-23): the W2 known-answer failure is a tie artefact, not a search bug
+
+**Method.** The pilot2 Shift plan was regenerated locally from the verified corpus (sha256 `f5868d6e…`, first 1M rows)
+with the committed `phase3_plan.py`. All 205 file hashes match the job's `plan.json`. For every query that misses at
+full search, [`known_answer_diag.py`](known_answer_diag.py) recomputes the exact float64 ranking over that batch's live
+set and asserts it equals the stored gold. It then reports:
+- the score margin between ranks 30 and 31;
+- how many live rows are byte-identical to the rank-30 row;
+- whether a Qdrant-like scoring drops a gold point. That scoring normalises in f32 and stores the vector as f16, as
+  Qdrant does for Cosine.
+
+Output: [`derived/known_answer_shift_pilot2.json`](derived/known_answer_shift_pilot2.json).
+
+**Result.** There were 43 misses at full search, all on validation panels, batches 0–5.
+- **40 are shared by D, S1 and SG.** Each one loses a single point at rank 30, with a float64 margin of 1.5·10⁻⁶ to
+  2.7·10⁻⁴. The Qdrant-like re-scoring reproduces the swap in 39 of the 40. **Cause:** the stored vector is rounded
+  (normalised, then cast to f16), while gold scores the raw f16 row in float64. It is the same for every arm.
+- **3 are D-only.** All three are `mq_val` query 15, at batches 3, 4 and 5 (D loses 5, 1 and 2 points). Its rank-30
+  score is shared by **88, 169 and 230 byte-identical corpus rows**: a heavily duplicated LAION image. The
+  rank-30/31 margin is exactly 0.
+  - Gold breaks the tie by smaller ID. D's resolution breaks it differently. S's order happens to match the smaller
+    IDs.
+  - Any 30 of the tied rows are a correct answer, so D is not wrong.
+
+**Consequence for the gate.** Without query 15, D's minimum is 0.999, and both arms pass 0.995 in every batch.
+- The threshold stays at 0.995.
+- The gate's *scoring* must become tie-aware: a returned point counts as correct if its exact score equals the gold
+  rank-30 score. This needs the tie set, so the planner would emit every live row whose score equals gold rank 30,
+  and the driver would count against it.
+- This is a pre-freeze amendment for the author to approve. No test-panel data exist. Until it is implemented, the
+  gate is reported both ways: raw, and excluding exact ties at rank 30.
