@@ -538,3 +538,5 @@ The fourth attempt completed (exit 0, 4:24, 167 GB peak; 16 build CPUs after Ame
   thresholds, so 1,000 queries stay. Vacuum cut dead postings at B\* from about 0.34 to 0.10, and Greedy fired 1×/4×
   as simulated.
 - **Preregistration frozen** at `6538a4483`. Primary jobs not yet submitted.
+
+**2026-11-23 — Phase 3 deletes decided.** H6 supported (vacuum +1.20 pp [1.15, 1.24]), H6b not supported (Greedy +0.11 pp), H7 equivalent (+0.04 pp); see `emma_path/RESULTS_PHASE3_DELETES.md`. Shift and Insert-only are still running. The PostgreSQL E1 replicates the 2.4× multi-level penalty (2.35×). Its mechanism statement differs from this journal's oracle diagnosis; this is noted in MULTILEVEL_DIAGNOSIS.md. A new static-vs-DLI study is on branch `research/static-vs-dli-20261122`; its pilot shows the ordinary static lifecycle needing 1.9–8× less search work (validation panels).

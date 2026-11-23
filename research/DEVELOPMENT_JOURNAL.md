@@ -811,6 +811,53 @@ The collection DLI suite went from 46 to 51 tests.
 - No family-wise correction for four distinct questions, with a Bonferroni sensitivity check.
 - Unseen query rows (8000–8999) for the Part B hypotheses that the diagnosis suggested.
 
+### Phase 3 primary results, delete scenarios, and two parallel studies (22–23 November)
+
+**Phase 3 deletes** (jobs 25859938–25859943, 1M, 1 + 20 batches, test rows 9000–9999; frozen rules;
+`research/dli/emma_path/RESULTS_PHASE3_DELETES.md`):
+- **H6 supported.** The vacuum arm E1V gains **+1.20 pp** R@30 at B* in Constant-R [1.15, 1.24]. The dead-posting share
+  at B* falls from 0.31 to 0.07, at the cost of 41 extra publications.
+- **H6b not supported.** Sommerová's Greedy rebuild gains +0.11 pp in Medium-R [0.08, 0.15].
+- **H7 supported: equivalent.** Oldest-first deletes make the rebuild irrelevant: +0.04 pp, within ±1 pp.
+- **Caveat.** At B* = 50K, recall is 0.96–0.99, which compresses effects near the ceiling.
+- **Still running.** Shift (H5) and Insert-only (Part B: consolidation and calibrated allocation), jobs 25859944 and
+  25859945.
+
+**PostgreSQL 10M temporal quality** (PostgreSQL repository, job 25859979; `docs/research/DLI_10M_QUALITY_RESULTS.md`):
+- **The multi-level penalty reproduces in an independent implementation.** PostgreSQL E1 needs **2.35×** the work of
+  the matched static LMI at R@30 = 0.90 [1.88, 3.19], against Qdrant's 2.40× [2.03, 2.79].
+- PostgreSQL E1 / Qdrant E1 work = 0.979 [0.802, 1.300]. That is inconclusive for equivalence, as its power note
+  anticipated.
+- Recall differs from Qdrant by at most about one point at every budget.
+- **A disagreement on the mechanism.** That document attributes the penalty to "several independently routed levels
+  under one global budget". The oracle-cost decomposition (`research/dli/emma_path/MULTILEVEL_DIAGNOSIS.md`) found that
+  E1 *selects* as efficiently as static (realized/oracle 2.77 against 2.82), and that the penalty is **structural**: a
+  nearly full level of about 4,400-point buckets against 912 in the static index. The two explanations are not
+  equivalent. The PostgreSQL result confirms the *size* of the penalty, not its cause.
+
+**Static Qdrant LMI lifecycle against the DLI** (new study, branch `research/static-vs-dli-20261122`;
+`research/dli/static_qdrant_vs_dli/`):
+- **The question.** Does the temporal hierarchy beat Qdrant's ordinary optimizer, which already buffers in appendable
+  segments and rebuilds static LMIs?
+- **The arms.** Arm S runs Qdrant's normal merge, indexing and vacuum optimizers with one static-LMI config: S1 is one
+  segment with 1,000 buckets, S4 is four segments with 250 buckets. Arm D is E1. Both go through the same plan, the same
+  per-batch ledger and the same frozen-copy replay; S's replay mirrors native per-segment search.
+- **Pilot** (jobs 25863307–25863310; 1M; seed 20261301; 6 batches; validation panels only;
+  `research/dli/static_qdrant_vs_dli/PILOT_RESULTS.md`):
+  - S needed **1.9–8× less search work** than D at R@30 = 0.90 in every workload. W1 insert-only, 2,000 validation
+    queries: D/S1 = 4.25 [4.12, 4.39], D/S4 = 2.52 [2.46, 2.58].
+  - D trained 15–20× less (58 of 65 builds reused a router), but rewrote 2–4× more points.
+  - The likely cause is again **granularity**: S's fixed bucket count gives 100–325 points per bucket against D's
+    about 5,000. This is not yet separated from the lifecycle.
+  - Two gate definitions in the draft preregistration were flawed: the known-answer gate was applied at the largest
+    grid point instead of full search, and D's grid was too short for Shift. Both must be amended before freezing.
+- **Proposed.** A granularity-matched S arm, so that a primary result can be attributed to the hierarchy rather than to
+  bucket size.
+
+**Resource lesson.** These jobs requested 16 CPUs but used 3–7% of them (MetaCentrum accounting). Ingestion and builds
+are short; the per-batch frontier replay, which is single-threaded, dominates the walltime. Future jobs should either
+request fewer CPUs or run replays (sets, arms) in parallel inside a job.
+
 **Other tracks in this period.**
 - **PostgreSQL** (separate repository `nico-occhino/postgresql-learned-indexes`, branch `feature/native-dli`; working
   clone `~/work/postgresql-learned-indexes`):
@@ -885,6 +932,10 @@ The collection DLI suite went from 46 to 51 tests.
     never used for primary data.
 12. **Port a design rule only together with its assumptions.** Sommerová's live-count rebuild assumes hard deletes.
     Under Qdrant's soft deletes the relevant signal is the dead fraction.
+13. **Replication confirms a size, not a mechanism.** An independent engine reproduced the 2.4× multi-level penalty,
+    but its proposed cause conflicts with the oracle decomposition. Each claim needs its own test.
+14. **Match the resource request to the bottleneck.** A 16-CPU job whose walltime is a single-threaded replay wastes
+    about 90% of its allocation.
 
 ### Process
 1. **Coding agents** (Codex, then Claude Code) did most implementation and documentation. That needed explicit rules:
@@ -920,6 +971,8 @@ The collection DLI suite went from 46 to 51 tests.
 | 21 Nov | ±0.5 pp equivalence margin for Phase 3 | Infeasible at the observed per-query noise (≈ 4,000 queries needed) | Margin widened to ±1 pp with TOST |
 | 22 Nov | Phase 3 primary budget B* = 0.5% of N | Buffer-dominated: identical arms at B* in preflight 25842074 | B* = 10·b |
 | 22 Nov | Sommerová's Greedy rebuild as the Qdrant delete fix | Nearly inert (live-count trigger vs soft deletes) | Vacuum arm E1V added |
+| 23 Nov | Greedy rebuild at 1M (H6b) | +0.11 pp, not supported | Confirms the preflight diagnosis |
+| 23 Nov | DLI E1 against Qdrant's ordinary static-LMI lifecycle (pilot, validation) | S needs 1.9–8× less search work | Granularity-matched S arm proposed before the primary run |
 | Sep–Oct | L2P prototype routing; statistical router | Discussed, not implemented | A statistical router stays the natural control for any future router |
 
 ---
@@ -1007,10 +1060,10 @@ against Sommerová's reported results; CLI; and finally external API tests acros
 filtering, against one `main` build.
 
 
-**Next priorities (updated 22 November, evening).** The thesis is submitted on 10 March 2027, and the author writes it;
-agents advise.
-- Phase 3 primary jobs (8 scenarios at 1M), then analysis and conditional 10M confirmation.
-- The PostgreSQL 10M temporal quality job, to compare engines.
-- CLI implementation.
-- An original contribution: candidates are "reuse until drift", hierarchy cost models, and vacuum-aware rebuilds.
-- Thesis chapters in order of evidence stability: 5, 2–3, 6, 8, 9.
+**Next priorities (updated 23 November).**
+- Phase 3 Shift (H5) and Insert-only (Part B) results.
+- Static-vs-DLI: amend the draft gates, decide on the granularity-matched S arm, build the concurrent-service phase,
+  freeze, then the 1M primary run.
+- Test the multi-level mechanism directly: per-level miss attribution and consolidation (Part B E1C).
+- PostgreSQL: the buffer-page leak, `amcostestimate`, filtering.
+- CLI; the original contribution; thesis chapters 5, 2–3, 6, 8, 9.

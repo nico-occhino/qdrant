@@ -103,3 +103,17 @@ batch provides (Part B).
 - A third structural option was not simulated: more buckets per level than aⁱ (a target
   bucket size s < b). It multiplies the cost of training fresh levels, and the one
   10,000-bucket build already took 1,337 s with 16 CPUs.
+
+## Cross-engine replication (added 2026-11-23)
+
+The PostgreSQL implementation of E1, an independent engine with separately trained routers, measured **2.35×** the
+matched static work at R@30 = 0.90 [1.88, 3.19] (PostgreSQL repository, `docs/research/DLI_10M_QUALITY_RESULTS.md`,
+job 25859979). That confirms the **size** of the penalty measured here.
+
+Its interpretation, "several independently routed levels under one global budget", is a *selection* explanation.
+This note's oracle decomposition points to *structure* instead: equal selection efficiency (2.77 against 2.82), with
+an oracle cost 2.44× the static one. The replication does not decide between the two.
+
+Two direct tests would:
+1. per-level miss attribution in the frontier rows;
+2. the Phase 3 Part B consolidation arm (E1C), which changes structure but not selection.
