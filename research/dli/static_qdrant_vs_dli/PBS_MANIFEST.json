@@ -14,7 +14,9 @@
    "batches": "first 6 plan batches",
    "panels": "validation only",
    "submitted_utc": "2026-11-22",
-   "status": "SUBMITTED"
+   "status": "COMPLETED (not ACCEPTED: gate definitions 3/4 need amendment; see PILOT_RESULTS.md)",
+   "exit": 0,
+   "walltime_used": "1:54:56"
   },
   {
    "id": "25863308.pbs-m1.metacentrum.cz",
@@ -28,7 +30,9 @@
    "batches": "first 6 plan batches",
    "panels": "validation only",
    "submitted_utc": "2026-11-22",
-   "status": "SUBMITTED"
+   "status": "COMPLETED (not ACCEPTED: gate definitions 3/4 need amendment; see PILOT_RESULTS.md)",
+   "exit": 0,
+   "walltime_used": "1:26:45"
   },
   {
    "id": "25863309.pbs-m1.metacentrum.cz",
@@ -42,7 +46,9 @@
    "batches": "first 6 plan batches",
    "panels": "validation only",
    "submitted_utc": "2026-11-22",
-   "status": "SUBMITTED"
+   "status": "COMPLETED (not ACCEPTED: gate definitions 3/4 need amendment; see PILOT_RESULTS.md)",
+   "exit": 0,
+   "walltime_used": "0:38:47"
   },
   {
    "id": "25863310.pbs-m1.metacentrum.cz",
@@ -56,7 +62,9 @@
    "batches": "first 6 plan batches",
    "panels": "validation only",
    "submitted_utc": "2026-11-22",
-   "status": "SUBMITTED"
+   "status": "COMPLETED (not ACCEPTED: gate definitions 3/4 need amendment; see PILOT_RESULTS.md)",
+   "exit": 0,
+   "walltime_used": "0:37:04"
   }
  ],
  "staging": {
