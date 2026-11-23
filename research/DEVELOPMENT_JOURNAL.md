@@ -930,6 +930,31 @@ job 25875196 (`D|S1|SG/batch_*/rows.jsonl`):
 - **Only the 10M point estimate exists so far:** proportional needed 74,819 against 81,580 for `mdn_code`, 8.3% less
   work. It is a single replay with no CI on the difference.
 
+**Shift mechanism, corrected** (exploratory; `research/dli/emma_path/SHIFT_MECHANISM.md`, from the job 25859944
+ledgers and topologies):
+- **Router reuse loses recall through bucket imbalance.** E1's L2 router was trained at batch 1 on the first 50K
+  points and then routed up to 450K points of later clusters. Its largest bucket grew to 10–16× the mean, against
+  about 2× under E1R. At B\* = 50K the query buys a few oversized buckets: 4.1 against 10.0 at batch 9, 6.5 against
+  70.5 at batch 19.
+- **The gap tracks the imbalance** (r = 0.75 over 18 batches, descriptive) and is periodic in the Bentley–Saxe cycle:
+  it collapses at batch 11, when L2 is merged into a freshly trained L3.
+- **Consolidation's +3.3 pp is granularity, not freshness.** It all comes after batch 11 (+3.14 pp). E1C reuses
+  *older* routers than E1 (97% of its final data sit under the batch-11 router), but it puts the newest clusters into
+  1,000 buckets instead of 100. This corrects RESULTS_PHASE3_SHIFT.md point 3 and the explainer.
+- **Training is deterministic given the same data:** E1 and E1R produce byte-identical routers on identical point
+  sets, so the policy replay's reproduction check (S5) should be exact.
+- **A candidate drift trigger needs no queries:** retrain when a level's largest bucket over its mean bucket crosses
+  a threshold fitted on validation.
+
+**Policy replay** (`mdn_code` against `proportional`; branch `research/policy-replay-20261123`, pushed):
+- the preregistration is frozen at `3c0ae9b9a`;
+- check job 25886307 (shift, mq panel, 2 batches) has been submitted;
+- the five primary jobs await approval after the check.
+
+**Process slip.** `git commit -a` in `3c0ae9b9a` swept a parallel session's uncommitted journal entry into the freeze
+commit. It is left there, because the check job runs from that commit, and it is documented in `729c7fdd5`. Commit
+explicit paths when two sessions share the tree.
+
 **A handoff index for other agents:** `research/AGENT_HANDOFF.md` (this branch). It lists reading order, branches,
 code, documents, jobs, remote and local evidence, open items and safety rules.
 

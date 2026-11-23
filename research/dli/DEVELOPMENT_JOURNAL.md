@@ -550,3 +550,12 @@ The fourth attempt completed (exit 0, 4:24, 167 GB peak; 16 build CPUs after Ame
 - **`mdn_code` against `proportional`** differs only in cross-level budget allocation, because the order inside a level
   is the same. It is the contrast to replay for Emma. It is not the reserved policy.
 - **Handoff index:** `research/AGENT_HANDOFF.md`.
+
+**2026-11-23 (late) — shift mechanism corrected; policy replay frozen and its check job submitted.**
+- **Router reuse penalty = bucket imbalance.** The largest L2 bucket reaches 10–16× the mean under a reused router,
+  against about 2× under retraining; the gap tracks it (r = 0.75, descriptive).
+- **E1C's gain is granularity after batch 11, not router freshness.** Its routers are *older* than E1's.
+  `emma_path/SHIFT_MECHANISM.md` corrects RESULTS_PHASE3_SHIFT.md point 3.
+- **Policy replay:** the preregistration is frozen at `3c0ae9b9a`; check job 25886307 has been submitted.
+- **Phase 3 job audit** by a parallel session, verified and corrected: `PHASE3_PRIMARY_JOB_AUDIT_2026-11-23.md` on the
+  policy-replay branch.

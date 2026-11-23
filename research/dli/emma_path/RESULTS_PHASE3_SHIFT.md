@@ -42,17 +42,23 @@ Final topology:
 
 1. **Router reuse is the DLI's weak point under drift.**
    - **Why:** Sommerová's design routes new points into an occupied level with that level's *existing* router. Under
-     shift, the router was trained on earlier clusters, so it places the new cluster's points into buckets organised
-     for old data, and queries for the new data then probe the wrong buckets.
-   - **Size:** mid-stream, E1 loses 26.5 pp against E1R on MQ (0.618 against 0.883). Averaged over the stream it loses
+     shift, the router was trained on earlier clusters, so it packs the new clusters' points into a few oversized
+     buckets: the largest L2 bucket reaches 10–16× the mean, against about 2× with retraining. At a fixed budget,
+     the query then buys only a few huge buckets (corrected 2026-11-23, see
+     [SHIFT_MECHANISM.md](SHIFT_MECHANISM.md)). Whether a stale router also ranks buckets worse is not separated.
+   - **Size:** mid-stream, E1 loses 26.5 pp against E1R on MQ at batch 9 (0.618 against 0.883); the peak gap is +27.5 pp at batch 8. Averaged over the stream it loses
      11.4 pp, and 7.3 pp (IDS) to 8.5 pp (OOD) on the other panels.
 2. **The cost of the fix is training.** Always retraining costs 3.9× the training time (716 s against 185 s) and 3.2×
    the ingestion time, and writes the same number of points. Reuse's 16× training saving, measured under uniform
    data, is therefore paid for in recall as soon as the data drifts.
-3. **Consolidation helps under shift (H12 was expected to be negative).** E1C retrains more often, because merging
-   into a fresh deepest level trains a new router on a larger, more recent sample, and it ends with one large level.
-   It recovers 3.3 pp on average and 10.6 pp by the last batch. This contradicts the preregistered expectation, and
-   it is reported as found.
+3. **Consolidation helps under shift (H12 was expected to be negative).** It recovers 3.3 pp on average and 10.6 pp
+   by the last batch. This contradicts the preregistered expectation, and it is reported as found.
+   - **Corrected 2026-11-23.** This note first explained the gain by E1C "retraining more often" on a "more recent
+     sample". The ledgers show the opposite: E1C reuses 155 routers against E1's 159, and 97% of its final data sit
+     under an *older* router (batch 11) than E1's recent data (batch 12).
+   - **The real cause is granularity.** The gain is all after batch 11 (+3.14 of +3.32 pp), where consolidation moves
+     the newest clusters into the 1,000-bucket level instead of a 100-bucket one (see
+     [SHIFT_MECHANISM.md](SHIFT_MECHANISM.md)).
 4. **This motivates the planned original contribution:** retrain only when drift is detected ("reuse until drift").
    E1 and E1R bound such a method from below and above: 0.805 / 185 s and 0.919 / 716 s.
 
