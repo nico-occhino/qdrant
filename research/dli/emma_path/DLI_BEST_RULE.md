@@ -36,21 +36,21 @@ Further conditions:
 | **Calibrated allocation** (E1L) | H10, insert-only: work 0.929 [0.921, 0.936] | yes | none decided | **include**. Its cost is a per-level calibration panel and isotonic fit, which is reported |
 | Greedy rebuild (E1G) | H6b: +0.11 pp [0.08, 0.15]; H7: equivalent | yes (H6b, tiny) | none | **superseded by vacuum** for the same function (delete handling): vacuum's effect is 10× larger and the two are alternatives |
 | Always retrain (E1R) | H5: +11.44 pp under shift, +0.54 pp insert-only | yes | none in recall, but 3.6–3.9× training | **excluded as a component.** It is the upper-bound reference arm. The thesis's candidate original contribution, an imbalance-triggered retraining rule, is tested separately as its own arm |
-| Allocation `mdn_code` vs `proportional` | policy replay (pending) | — | — | decided by that study's frozen recommendation rule. **How it interacts with calibrated allocation: proposed by the agent, awaiting the author's confirmation** (see below) |
+| Allocation `mdn_code` vs `proportional` | policy replay (pending) | — | — | decided by that study's frozen recommendation rule. its interaction with calibrated allocation follows the frozen tie-break below |
 
-**DLI-best as of now:** E1 + vacuum (> 0.2 dead) + consolidation (ρ = 0.25) + calibrated allocation. One open point is
-the allocation policy, which depends on the policy-replay recommendation under the last row's rule.
+**DLI-best as of now:** E1 + vacuum (> 0.2 dead) + consolidation (ρ = 0.25) + calibrated allocation. The allocation
+policy can change only through the frozen tie-break below.
 
-## Open point: the allocation tie-break (proposed, not yet frozen)
+## Allocation tie-break (FROZEN 2026-11-23 15:52 UTC, author accepted, before any policy-replay result)
 
 The author accepted the rule above. One case it does not settle: if the policy replay recommends `proportional`
 over `mdn_code`, should DLI-best use calibrated or proportional allocation? No study compares calibrated allocation
 with proportional, and calibrated allocation was tested on insert-only only.
 
-**Proposal.** Calibrated allocation stays, because it has a supported contrast. If the policy replay recommends
+**Rule.** Calibrated allocation stays, because it has a supported contrast. If the policy replay recommends
 `proportional`, a calibrated-vs-proportional replay on the insert-only snapshots is run as a short, separately
-preregistered check before the final benchmark. This needs the author's confirmation **before** the policy-replay
-results are read.
+preregistered check before the final benchmark, and its frozen rule decides. The author accepted this while all
+five policy-replay jobs were still running (state R at 15:52 UTC).
 
 ## Notes
 

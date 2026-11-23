@@ -575,3 +575,4 @@ The fourth attempt completed (exit 0, 4:24, 167 GB peak; 16 build CPUs after Ame
 - **DLI-best now:** E1 + vacuum + consolidation ρ = 0.25 + calibrated allocation.
 - **Excluded as components:** Greedy (superseded by vacuum) and E1R (an upper-bound reference arm).
 - **Open:** the tie-break between calibrated and proportional allocation (a proposal awaits the author).
+- 2026-11-23 15:52: allocation tie-break frozen (author) in DLI_BEST_RULE.md.
