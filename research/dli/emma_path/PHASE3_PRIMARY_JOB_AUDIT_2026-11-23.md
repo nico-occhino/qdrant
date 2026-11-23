@@ -30,3 +30,23 @@ Commit `1a1e5253b` reports that all 205 regenerated Pilot 2 Shift plan files mat
 - [Insert-only PBS job](https://my.metacentrum.cz/jobs/25859945.pbs-m1.metacentrum.cz)
 - Remote archive root `/storage/budejovice1/home/nico/lmi-metacentrum/dli-emma-path-20261120/results`
 - Emma branch `research/dli-emma-path-20261120`, `emma_path/RESULTS_PHASE3_SHIFT.md` and frozen `emma_path/PHASE3_PREREGISTRATION.md`
+
+## Independent verification and corrections (2026-11-23, later)
+
+**Re-checked from the archive:**
+- `COMPLETE.json`, together with SHA-256 checks of `analysis.json`, `analysis.txt` and the three `batches.jsonl`.
+- 180 publications per arm, and the final levels.
+- Ingestion seconds and points written (8,604,392 / 8,604,392 / 8,974,621).
+- H5 Δ = 11.4425 pp [11.20, 11.68], Bonferroni [11.14, 11.75]; H12 Δ = 3.32 pp [3.15, 3.49].
+
+The numbers in this audit are correct. Three statements need correcting:
+
+1. **The largest E1R − E1 separation is at batch 8 (+27.5 pp), not batch 9 (+26.5 pp),** and E1's MQ minimum is at
+   batch 10 (0.590), not batch 9.
+2. **"Consolidation changes … router training opportunities" points the wrong way.** E1C trains only four more
+   routers than E1 (155 against 159 reuses). Its final 875K-point level-3 router was trained at batch 11, *earlier*
+   than E1's level-2 router (batch 12). Consolidation does not give E1C a newer router. See the mechanism note on the
+   Emma branch, `research/dli/emma_path/SHIFT_MECHANISM.md`.
+3. **The link to `RESULTS_PHASE3_SHIFT.md` resolves only on branch `research/dli-emma-path-20261120`,** which is
+   where the maintained journals also live. The journal entry for this audit was committed into the stale journal
+   copy on this branch, inside `3c0ae9b9a`.
