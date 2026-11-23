@@ -568,3 +568,10 @@ The fourth attempt completed (exit 0, 4:24, 167 GB peak; 16 build CPUs after Ame
 - **H5 on insert-only: +0.54 pp.**
 - **E1C50 incomplete:** the job was cancelled after E1C.
 - **Report:** `emma_path/RESULTS_PHASE3_PARTB.md`.
+
+**2026-11-23 15:50 UTC — DLI-best rule frozen** (author), before any policy-replay result (`emma_path/DLI_BEST_RULE.md`).
+- **The rule:** include a component if its preregistered CI shows a benefit and it shows no harm in any other decided
+  workload.
+- **DLI-best now:** E1 + vacuum + consolidation ρ = 0.25 + calibrated allocation.
+- **Excluded as components:** Greedy (superseded by vacuum) and E1R (an upper-bound reference arm).
+- **Open:** the tie-break between calibrated and proportional allocation (a proposal awaits the author).
