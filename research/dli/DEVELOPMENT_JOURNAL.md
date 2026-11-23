@@ -538,3 +538,17 @@ The fourth attempt completed (exit 0, 4:24, 167 GB peak; 16 build CPUs after Ame
   thresholds, so 1,000 queries stay. Vacuum cut dead postings at B\* from about 0.34 to 0.10, and Greedy fired 1×/4×
   as simulated.
 - **Preregistration frozen** at `6538a4483`. Primary jobs not yet submitted.
+
+## 2026-11-23 — Phase 3 primary archive audit
+
+Shift job `25859944` finished with PBS Exit 0. The archived analysis, plan and
+three 20-batch ledgers passed checksum verification. At B* = 50K,
+E1R gained 11.44 pp MQ Recall@30 over E1 (95% CI [11.20, 11.68], H5
+supported), at about 3.9× training time. E1C gained 3.32 pp (95% CI
+[3.15, 3.49], H12 descriptive). Insert-only job `25859945` was still
+running during this audit, with 15 E1C batch records and no aggregate result.
+
+The separate static-vs-DLI Pilot 2 diagnosis is recorded at `1a1e5253b`.
+Its D-only discrepancies were exact duplicate ties at the top-30 cutoff.
+Storage rounding explains most of the shared discrepancies in the reference
+rescore. See [the audit and evidence paths](emma_path/PHASE3_PRIMARY_JOB_AUDIT_2026-11-23.md).

@@ -1,8 +1,8 @@
 # Preregistration: `mdn_code` versus `proportional` budget allocation in the DLI (policy replay)
 
-**Status: DRAFT, 2026-11-23.** It freezes on the author's approval, before any job of this study runs. Later
-changes are dated amendments that say whether they came before or after data. This study does not change the frozen
-Phase 3 preregistration (`../emma_path/PHASE3_PREREGISTRATION.md`) or the static-vs-DLI draft.
+**Status: FROZEN, 2026-11-23**, on the author's acceptance of the decision rules (§2), before any job of this study
+ran. Later changes are dated amendments that say whether they came before or after data. This study does not change
+the frozen Phase 3 preregistration (`../emma_path/PHASE3_PREREGISTRATION.md`) or the static-vs-DLI draft.
 
 **Origin.** Sommerová suggested comparing her `mdn_code` priority with population-proportional allocation on
 different datasets and under distribution shift, and choosing the better one. This is **stage 1**: SISAP23
