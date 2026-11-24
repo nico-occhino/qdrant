@@ -968,6 +968,19 @@ run offline with the frozen script.
 **Policy replay** (`mdn_code` against `proportional`): check job 25886307 passed. Its `mdn_code` rows reproduce Phase 3
 E1 bit-for-bit (13,416 of 13,416 cells). Primary jobs 25888669–25888673 have been submitted.
 
+**Policy replay, interim (4 of 5 decisions;** `research/dli/policy_replay/RESULTS_POLICY_REPLAY.md` **on the
+policy-replay branch).** R is the work ratio, proportional over `mdn_code`, at R@30 = 0.90.
+- **Proportional better:**
+  - insert-only 0.908 [0.900, 0.915];
+  - constant-R 0.784 [0.776, 0.792];
+  - Shift `ids` 0.887 [0.874, 0.901].
+- **Equivalent:** Shift `mq` 1.023 [1.015, 1.031].
+- **Shift `ood`** failed at batch 18 on a harness copy race (exit 101) and is being rerun as 25908996. The
+  recommendation waits for it.
+- **Mechanism.** `mdn_code` over-spends on the smallest, newest level. Under drift, the misses sit in the stale,
+  imbalanced level 2, which no allocation fixes.
+- **Operations.** The zenon nodes are about twice as slow: two jobs needed `qextend` (by the author).
+
 **A handoff index for other agents:** `research/AGENT_HANDOFF.md` (this branch). It lists reading order, branches,
 code, documents, jobs, remote and local evidence, open items and safety rules.
 

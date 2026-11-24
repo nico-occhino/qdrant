@@ -576,3 +576,9 @@ The fourth attempt completed (exit 0, 4:24, 167 GB peak; 16 build CPUs after Ame
 - **Excluded as components:** Greedy (superseded by vacuum) and E1R (an upper-bound reference arm).
 - **Open:** the tie-break between calibrated and proportional allocation (a proposal awaits the author).
 - 2026-11-23 15:52: allocation tie-break frozen (author) in DLI_BEST_RULE.md.
+
+**2026-11-24 — policy replay interim.**
+- **Proportional is better** on insert-only (0.908), constant-R (0.784) and Shift `ids` (0.887). It is equivalent on
+  Shift `mq` (1.023).
+- **The Shift `ood` rerun is job 25908996.** The original failed on a copy race at batch 18.
+- **Report:** `policy_replay/RESULTS_POLICY_REPLAY.md` (policy-replay branch).
