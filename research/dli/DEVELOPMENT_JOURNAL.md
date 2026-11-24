@@ -582,3 +582,8 @@ The fourth attempt completed (exit 0, 4:24, 167 GB peak; 16 build CPUs after Ame
   Shift `mq` (1.023).
 - **The Shift `ood` rerun is job 25908996.** The original failed on a copy race at batch 18.
 - **Report:** `policy_replay/RESULTS_POLICY_REPLAY.md` (policy-replay branch).
+
+**2026-11-24 — policy replay final.**
+- **Shift `ood` (rerun 25908996): proportional better, 0.693.**
+- **Proportional recommended:** 4 better, 1 equivalent.
+- **The DLI-best allocation tie-break is triggered:** a calibrated-vs-proportional replay is pending design.

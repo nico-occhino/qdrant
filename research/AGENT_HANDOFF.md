@@ -1,4 +1,4 @@
-# Agent handoff: where the full picture lives (updated 2026-11-23)
+# Agent handoff: where the full picture lives (updated 2026-11-24)
 
 This index is for an agent, or a person, who has to **continue** the research on the same path, **audit** it, or only
 **analyse** results. Read it first. It lists where things are. It does not restate results: the result documents
@@ -15,7 +15,10 @@ invent a measurement, and never move a preregistered threshold after seeing data
 | 1 | `research/DEVELOPMENT_JOURNAL.md` (this branch) | The project's whole history, Parts I–XIII. §15 lists negative results; §17 says where evidence lives |
 | 2 | `research/dli/DEVELOPMENT_JOURNAL.md` (this branch) | Short dated DLI log. The newest entries are at the end |
 | 3 | `research/dli/emma_path/PHASE3_PREREGISTRATION.md` | **Frozen** at `6538a4483`. Hypotheses H5–H12, thresholds and arms. Never edit; amendments only, dated |
-| 4 | `research/dli/emma_path/RESULTS_*.md` | Decided results: pilot, 10M, Phase 3 deletes, Phase 3 shift |
+| 4 | `research/dli/emma_path/RESULTS_*.md` | Decided results: pilot, 10M, Phase 3 deletes, Phase 3 shift, Phase 3 Part B |
+| 4a | `research/dli/emma_path/SHIFT_MECHANISM.md` and `DLI_BEST_RULE.md` | Why reuse fails under shift (bucket imbalance); the **frozen** rule that assembles DLI-best |
+| 4b | Branch `research/policy-replay-20261123`, `research/dli/policy_replay/` | `mdn_code` against `proportional`: frozen preregistration, final results, manifest |
+| 4c | `C:\Users\nicoo\Workspace\Learning stuff\Learned\CLI_AUDIT_AND_READING_GUIDE.md` | Audit of Jakubík's CLI thesis and code, and of Forgáč's DLI (the three different "DLI"s) |
 | 5 | `research/dli/emma_path/MULTILEVEL_DIAGNOSIS.md` | Why E1 needs 2.4× static work: a structural cause, shown by the oracle-cost method |
 | 6 | Branch `research/static-vs-dli-20261122`, `research/dli/static_qdrant_vs_dli/` | Second study: ordinary Qdrant static-LMI lifecycle against the DLI (§3) |
 | 7 | `C:\Users\nicoo\Workspace\Learning stuff\Progress_Ladder\PROJECT_EXPLAINER.md` | A first-principles explainer and audit of both repositories, with ranked findings and code/doc disagreements |
@@ -114,25 +117,41 @@ Remote: `/storage/budejovice1/home/nico/lmi-metacentrum/postgresql-native-tempor
   The project folder `/storage/brno12-cerit/projects/fi-lmi-data` is permission-denied, and no VIBE copy exists
   there.
 
-## 4. State on 2026-11-23, and what is open
+## 4. State on 2026-11-24, and what is open
 
 | Item | State | Next action |
 |---|---|---|
 | Phase 3 deletes (H6, H6b, H7) | decided, `RESULTS_PHASE3_DELETES.md` | — |
-| Phase 3 shift (H5, H12) | decided, `RESULTS_PHASE3_SHIFT.md` | separate *why* retraining helps (corpus assignment vs query ranking vs bucket balance) from the per-publication training history |
-| Phase 3 insert-only (Part B: H9 consolidation, H10 calibrated allocation, H5_insert_only) | job **25859945 running** (24 h walltime); E1C50 may be cut off | analyse with `analyze_phase3.py`; report a missing E1C50 as incomplete; write `RESULTS_PHASE3_PARTB.md` |
-| Static-vs-DLI pilot2 | completed, **not accepted**; granularity explains the S advantage; shift known-answer gate fails | the full-search diagnosis (below); an adaptive static arm B = ⌈n/g⌉ at build time (author decision); service pilot; freeze |
-| Shift known-answer diagnosis | in progress | see the journal entry of 2026-11-23. Every full-search miss is shared by D, S1 and SG except `mq_val` query 15, which only D loses, at batches 3–5 (scored but ranked out of the top 30). A tie check against regenerated gold is running locally |
-| `mdn_code` vs proportional, Emma's suggestion | not started | replay both on identical frozen snapshots (`DLI_FRONTIER_POLICIES=mdn_code,proportional`) on SISAP shift and uniform workloads first, then on other datasets. Note: `proportional` is population-quota allocation with probability order inside a level, so against `mdn_code` it already isolates cross-level allocation. It is **not** `reserved` (`select_reserved` fills in slot order) |
-| Multi-dataset study | slate not confirmed by the author | needs a `DIM` parameter (currently hard-coded 768), an fbin/hdf5 → Float16 converter, and query pools |
+| Phase 3 shift (H5, H12) | decided, `RESULTS_PHASE3_SHIFT.md`. Mechanism in `SHIFT_MECHANISM.md`: reuse fails through bucket imbalance, and consolidation helps through granularity | optional: an oracle-cost replay to separate ranking from imbalance |
+| Phase 3 Part B (H9, H10, H5 insert-only) | decided, `RESULTS_PHASE3_PARTB.md`. H9 not supported (0.841), H10 not supported (0.929). Job 25859945 was cancelled by the author after E1C; E1C50 is incomplete | the H11 oracle-cost decomposition can be done offline |
+| DLI-best | **frozen**, `DLI_BEST_RULE.md`: E1 + vacuum + consolidation ρ = 0.25 + calibrated allocation | **the allocation tie-break is triggered** (below) |
+| Policy replay, `mdn_code` against `proportional` | **final**, `policy_replay/RESULTS_POLICY_REPLAY.md` (policy-replay branch). **Proportional recommended**: better on insert-only 0.908, constant-R 0.784, Shift `ids` 0.887 and Shift `ood` 0.693; equivalent on Shift `mq` 1.023 | per `DLI_BEST_RULE.md`, preregister and run a short calibrated-vs-proportional replay on the insert-only snapshots. It is **not yet designed**, and needs the author's go-ahead |
+| Static-vs-DLI pilot2 | completed, not accepted. Granularity explains the S advantage. The known-answer failure is explained as exact-duplicate ties (`PILOT2_RESULTS.md` addendum) | **superseded by the final-benchmark plan.** S1 and the tie-aware gate fold into it |
+| Final benchmark (author decision, 2026-11-23) | planned. Qdrant hosts IVF, HNSW, E1, DLI-best, CLI and at most one CLI variant. PostgreSQL is a replication subset | after the CLI design note (mutability options: an appendable learned segment, or copy-on-write); the author is reading Jakubík's thesis first |
+| CLI implementation | not started. Audit and reading guide done | wait for the author |
+| PostgreSQL R3 replication | run by a separate agent in the PostgreSQL repository. Prompts were given to it in chat (pilot done; freeze and primary prompt issued, with 10M conditional) | read `docs/research/R3_*.md` there |
+| Multi-dataset study | folded into the final benchmark (one extra OOD dataset); not started | needs a `DIM` parameter, a data converter and query pools |
+
+**Evidence on C: (all verified against sha256 lists computed on storage, in
+`~/research-admin/experiments/2026-11-20-dli-emma-path/copy-to-C-20261123/`):**
+- `Research-Results\2026-11-20-dli-emma-path\`: Phase 3 Shift and insert-only;
+- `Research-Results\2026-11-22-static-vs-dli\`: pilot 2;
+- `Research-Results\2026-11-23-policy-replay\`: the check job and the five primaries. The `ood` rerun 25908996 is **not yet copied**.
 
 ## 5. How to work here safely
 
 - **MetaCentrum access** goes through perian.
   - The SSH ControlMaster socket is `~/.ssh/metacentrum-control`. A stale socket file silently disables multiplexing:
     delete it before starting a new master.
-  - Kerberos expires about daily ("Key has expired"). Only the author can renew it, with `kinit`.
-- **GitHub push** needs `SSH_AUTH_SOCK=~/.ssh/agent.sock`. Push only with the author's permission. Never force-push.
+  - The master dies every few hours. Only the author can restore it, by password login (`kinit` is not installed in
+    WSL):
+    `rm -f ~/.ssh/metacentrum-control && ssh -M -S ~/.ssh/metacentrum-control -o ServerAliveInterval=60 -fN nico@perian.metacentrum.cz`.
+  - `qextend <job> HH:MM:SS` extends a running job: 20 extensions per 30 days, by the author. The zenon nodes are
+    about 2× slower, so budget walltime for them.
+- **GitHub push** needs `SSH_AUTH_SOCK=~/.ssh/agent.sock`; if it is dead, the author restarts it with
+  `eval "$(ssh-agent -a ~/.ssh/agent.sock)" && ssh-add`. Push only with the author's permission. Never force-push.
+- **Commit by explicit paths, never `git commit -a`.** Parallel sessions share `~/work/qdrant`. The working tree shows
+  only the checked-out branch's files, so check `git branch --show-current` first.
 - **Jobs.**
   - Every job carries `COMPLETE.json` and `SHA256SUMS`. PBS exit 0 alone is not acceptance; the gates in each
     preregistration are.

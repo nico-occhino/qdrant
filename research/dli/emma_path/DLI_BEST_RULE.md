@@ -58,3 +58,10 @@ five policy-replay jobs were still running (state R at 15:52 UTC).
   gave 0.799 (descriptive). The final benchmark reports DLI-best per workload against E1, so harm from the
   combination would be visible.
 - **No component is re-selected** after the final benchmark's data exist.
+
+## Status update (2026-11-24)
+
+The policy replay is final (`research/dli/policy_replay/RESULTS_POLICY_REPLAY.md`, policy-replay branch, `21b58e1dc`).
+**`proportional` is recommended:** better in 4 of 5 decisions and equivalent in Shift `mq`. **The frozen tie-break is
+therefore triggered.** A calibrated-vs-proportional replay on the insert-only snapshots, separately preregistered,
+decides DLI-best's allocation. Until it runs, DLI-best keeps calibrated allocation. That replay is not yet designed.

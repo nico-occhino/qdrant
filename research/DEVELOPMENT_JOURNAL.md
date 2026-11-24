@@ -981,6 +981,11 @@ policy-replay branch).** R is the work ratio, proportional over `mdn_code`, at R
   imbalanced level 2, which no allocation fixes.
 - **Operations.** The zenon nodes are about twice as slow: two jobs needed `qextend` (by the author).
 
+**Policy replay final (2026-11-24).** The Shift `ood` rerun 25908996 completed (exit 0). Proportional needs 31% less
+work there, 0.693 [0.688, 0.700]. **Proportional is recommended:** better in 4 of 5 decisions, equivalent in `mq`.
+This triggers the frozen DLI-best allocation tie-break: a calibrated-vs-proportional replay on the insert-only
+snapshots, not yet designed. All results are archived on C: and verified, except the `ood` rerun.
+
 **A handoff index for other agents:** `research/AGENT_HANDOFF.md` (this branch). It lists reading order, branches,
 code, documents, jobs, remote and local evidence, open items and safety rules.
 
