@@ -1,13 +1,35 @@
 {
  "study": "research/dli/allocation_tiebreak (DLI-best allocation tie-break: calibrated vs proportional on E1C insert-only snapshots)",
  "preregistration": "PREREGISTRATION.md, frozen 2026-11-24 14:51 UTC at e8f168ed0",
- "staging": {"remote_input": "/storage/budejovice1/home/nico/lmi-metacentrum/dli-emma-path-20261120/native-e8f168ed0a00",
-             "source_bundle_sha256_prefix": "f10bc30258d011f3",
-             "shared_inputs": "copied server-side from native-3c0ae9b9ad43 (policy replay), hashes re-verified"},
+ "staging": {
+  "remote_input": "/storage/budejovice1/home/nico/lmi-metacentrum/dli-emma-path-20261120/native-e8f168ed0a00",
+  "source_bundle_sha256_prefix": "f10bc30258d011f3",
+  "shared_inputs": "copied server-side from native-3c0ae9b9ad43 (policy replay), hashes re-verified"
+ },
  "local_smoke": "60K rows, 3 batches, debug build: batch 0 complete with mdn_code, calibrated and proportional on partb and val; calibration fitted on 2,000 queries",
  "jobs": [
-  {"job": "25914476.pbs-m1.metacentrum.cz", "mode": "check", "commit": "e8f168ed0a00e6db2e926b278b13b679d7f7f100",
-   "resources": "8 CPUs, 96 GB, 100 GB scratch, walltime 03:00:00", "submitted": "2026-11-24, author-approved",
-   "status": "submitted", "not_analysed_for_decision": true}
+  {
+   "job": "25914476.pbs-m1.metacentrum.cz",
+   "mode": "check",
+   "commit": "e8f168ed0a00e6db2e926b278b13b679d7f7f100",
+   "resources": "8 CPUs, 96 GB, 100 GB scratch, walltime 03:00:00",
+   "submitted": "2026-11-24, author-approved",
+   "status": "exit 0, 00:42:50, eluo1-1; COMPLETE.json present",
+   "not_analysed_for_decision": true,
+   "checks": {
+    "plan_identical_to_phase3_primary": "130/130 files",
+    "binary": "cached b1a7ad70 (source key 2c16e4913ae0)",
+    "unit_tests": "analyze_phase3, analyze_policy_replay, analyze_tiebreak known-answer OK",
+    "calibration_fit": "fitted at both batches on 2,000 calib queries",
+    "pairing": "calibrated, proportional and mdn_code answered identical partb (1000) and val (32) queries at all 17 budgets, batches 0-1",
+    "S5_reproduction_vs_phase3_E1C": "mdn_code and calibrated 13,416/13,416 cells identical per batch",
+    "frontier_seconds": {
+     "batch0": 259.2,
+     "batch1": 346.0
+    },
+    "projection": "about 7 h on a fast node, up to about 14 h on zenon-class nodes; request 20 h"
+   },
+   "disclosure": "Only identity checks were computed (pairing, reproduction); no calibrated-vs-proportional contrast was inspected."
+  }
  ]
 }
