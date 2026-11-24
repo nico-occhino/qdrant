@@ -41,7 +41,7 @@
    "walltime_requested": "08:00:00",
    "resources": "8 CPUs, 96 GB, 100 GB scratch",
    "submitted": "2026-11-23, author-approved",
-   "status": "submitted"
+   "status": "exit 0, 03:20:22, alfrid4; complete with in-job analysis"
   },
   {
    "job": "25888670.pbs-m1.metacentrum.cz",
@@ -52,7 +52,7 @@
    "walltime_requested": "08:00:00",
    "resources": "8 CPUs, 96 GB, 100 GB scratch",
    "submitted": "2026-11-23, author-approved",
-   "status": "submitted"
+   "status": "exit 0, 03:18:15, tyra8; complete"
   },
   {
    "job": "25888671.pbs-m1.metacentrum.cz",
@@ -63,7 +63,7 @@
    "walltime_requested": "08:00:00",
    "resources": "8 CPUs, 96 GB, 100 GB scratch",
    "submitted": "2026-11-23, author-approved",
-   "status": "submitted"
+   "status": "FAILED exit 101 at 07:43:55, zenon32 (walltime extended to 16 h): batch 18 copy_dir NotFound race (dli_sisap_scaling_benchmark.rs:2533); batches 0-17 archived, not used; rerun 25908996"
   },
   {
    "job": "25888672.pbs-m1.metacentrum.cz",
@@ -74,7 +74,7 @@
    "walltime_requested": "08:00:00",
    "resources": "8 CPUs, 96 GB, 100 GB scratch",
    "submitted": "2026-11-23, author-approved",
-   "status": "submitted"
+   "status": "exit 0, 09:53:10, zenon32 (walltime extended by author qextend to 16 h); complete"
   },
   {
    "job": "25888673.pbs-m1.metacentrum.cz",
@@ -85,6 +85,17 @@
    "walltime_requested": "04:00:00",
    "resources": "8 CPUs, 96 GB, 100 GB scratch",
    "submitted": "2026-11-23, author-approved",
+   "status": "exit 0, 03:58:55 of 04:00, zenon43; complete"
+  },
+  {
+   "job": "25908996.pbs-m1.metacentrum.cz",
+   "mode": "primary",
+   "scenario": "shift",
+   "panel": "ood",
+   "commit": "3c0ae9b9ad43c2782a36ffa1a59baef602c283b2",
+   "walltime_requested": "16:00:00",
+   "resources": "8 CPUs, 96 GB, 100 GB scratch",
+   "submitted": "2026-11-24, identical rerun of failed 25888671 per stopping rule",
    "status": "submitted"
   }
  ]
