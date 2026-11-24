@@ -30,6 +30,14 @@
     "projection": "about 7 h on a fast node, up to about 14 h on zenon-class nodes; request 20 h"
    },
    "disclosure": "Only identity checks were computed (pairing, reproduction); no calibrated-vs-proportional contrast was inspected."
+  },
+  {
+   "job": "25931720.pbs-m1.metacentrum.cz",
+   "mode": "primary",
+   "commit": "e8f168ed0a00e6db2e926b278b13b679d7f7f100",
+   "resources": "8 CPUs, 96 GB, 100 GB scratch, walltime 20:00:00 (raised from the planned 16 h before data, for slow node classes; author-approved)",
+   "submitted": "2026-11-24, author-approved",
+   "status": "submitted"
   }
  ]
 }
