@@ -96,7 +96,7 @@
    "walltime_requested": "16:00:00",
    "resources": "8 CPUs, 96 GB, 100 GB scratch",
    "submitted": "2026-11-24, identical rerun of failed 25888671 per stopping rule",
-   "status": "submitted"
+   "status": "exit 0, 03:07:06, luna204; complete with in-job analysis; plan identical (205 files); decision: proportional better (R 0.693 [0.688, 0.700])"
   }
  ]
 }
