@@ -1,7 +1,7 @@
 # Preregistration: DLI-best allocation tie-break (calibrated against proportional)
 
-**Status: DRAFT, 2026-11-24.** It freezes on the author's approval, before any job of this study runs. Later changes
-are dated amendments that say whether they came before or after data.
+**Status: FROZEN, 2026-11-24 14:51 UTC, on the author's acceptance of the decision rule (§3), before any job of this study
+ran.** Later changes are dated amendments that say whether they came before or after data.
 
 **Why this exists.** The frozen DLI-best rule (`research/dli/emma_path/DLI_BEST_RULE.md`, on the Emma branch) says:
 if the policy replay recommends `proportional`, a short, separately preregistered calibrated-vs-proportional replay
@@ -42,7 +42,7 @@ R = mean_t W_cal(t) / mean_t W_prop(t), where W(t) is the work (vectors scored) 
 - **CIs:** paired query bootstrap stratified by batch, 10,000 resamples, seed 20261125.
 - **Labels and margin:** the same as the policy replay, with a 5% margin: *calibrated better*, *proportional better*,
   *equivalent*, *difference below the smallest effect of interest*, or *inconclusive*.
-- **Choice of DLI-best's allocation (proposed, for the author to freeze):**
+- **Choice of DLI-best's allocation (frozen, author-accepted):**
   - **`calibrated` only if the decision is *calibrated better*,** meaning R ≤ 0.95 with the CI upper bound < 1;
   - **otherwise `proportional`.**
 
