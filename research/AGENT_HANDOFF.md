@@ -136,7 +136,7 @@ Remote: `/storage/budejovice1/home/nico/lmi-metacentrum/postgresql-native-tempor
 `~/research-admin/experiments/2026-11-20-dli-emma-path/copy-to-C-20261123/`):**
 - `Research-Results\2026-11-20-dli-emma-path\`: Phase 3 Shift and insert-only;
 - `Research-Results\2026-11-22-static-vs-dli\`: pilot 2;
-- `Research-Results\2026-11-23-policy-replay\`: the check job and the five primaries. The `ood` rerun 25908996 is **not yet copied**.
+- `Research-Results\2026-11-23-policy-replay\`: the check job, the five primaries and the `ood` rerun 25908996.
 
 ## 5. How to work here safely
 
