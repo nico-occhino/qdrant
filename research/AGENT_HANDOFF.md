@@ -1,4 +1,4 @@
-# Agent handoff: where the full picture lives (updated 2026-11-24)
+# Agent handoff: where the full picture lives (updated 2026-11-25)
 
 This index is for an agent, or a person, who has to **continue** the research on the same path, **audit** it, or only
 **analyse** results. Read it first. It lists where things are. It does not restate results: the result documents
@@ -117,15 +117,15 @@ Remote: `/storage/budejovice1/home/nico/lmi-metacentrum/postgresql-native-tempor
   The project folder `/storage/brno12-cerit/projects/fi-lmi-data` is permission-denied, and no VIBE copy exists
   there.
 
-## 4. State on 2026-11-24, and what is open
+## 4. State on 2026-11-25, and what is open
 
 | Item | State | Next action |
 |---|---|---|
 | Phase 3 deletes (H6, H6b, H7) | decided, `RESULTS_PHASE3_DELETES.md` | — |
 | Phase 3 shift (H5, H12) | decided, `RESULTS_PHASE3_SHIFT.md`. Mechanism in `SHIFT_MECHANISM.md`: reuse fails through bucket imbalance, and consolidation helps through granularity | optional: an oracle-cost replay to separate ranking from imbalance |
 | Phase 3 Part B (H9, H10, H5 insert-only) | decided, `RESULTS_PHASE3_PARTB.md`. H9 not supported (0.841), H10 not supported (0.929). Job 25859945 was cancelled by the author after E1C; E1C50 is incomplete | the H11 oracle-cost decomposition can be done offline |
-| DLI-best | **frozen**, `DLI_BEST_RULE.md`: E1 + vacuum + consolidation ρ = 0.25 + calibrated allocation | **the allocation tie-break is triggered** (below) |
-| Policy replay, `mdn_code` against `proportional` | **final**, `policy_replay/RESULTS_POLICY_REPLAY.md` (policy-replay branch). **Proportional recommended**: better on insert-only 0.908, constant-R 0.784, Shift `ids` 0.887 and Shift `ood` 0.693; equivalent on Shift `mq` 1.023 | per `DLI_BEST_RULE.md`, preregister and run a short calibrated-vs-proportional replay on the insert-only snapshots. It is **not yet designed**, and needs the author's go-ahead |
+| DLI-best | **final**, `DLI_BEST_RULE.md`: E1 + vacuum + consolidation ρ = 0.25 + **proportional** allocation (tie-break: calibrated against proportional equivalent, R 1.0375, `research/dli/allocation_tiebreak/RESULTS_TIEBREAK.md` on branch `research/allocation-tiebreak-20261124`) | integration pilot of the combined configuration (needs the driver to combine maintenance variants) |
+| Policy replay, `mdn_code` against `proportional` | **final**, `policy_replay/RESULTS_POLICY_REPLAY.md` (policy-replay branch). **Proportional recommended**: better on insert-only 0.908, constant-R 0.784, Shift `ids` 0.887 and Shift `ood` 0.693; equivalent on Shift `mq` 1.023 | done: the tie-break chose proportional |
 | Static-vs-DLI pilot2 | completed, not accepted. Granularity explains the S advantage. The known-answer failure is explained as exact-duplicate ties (`PILOT2_RESULTS.md` addendum) | **superseded by the final-benchmark plan.** S1 and the tie-aware gate fold into it |
 | Final benchmark (author decision, 2026-11-23) | planned. Qdrant hosts IVF, HNSW, E1, DLI-best, CLI and at most one CLI variant. PostgreSQL is a replication subset | after the CLI design note (mutability options: an appendable learned segment, or copy-on-write); the author is reading Jakubík's thesis first |
 | CLI implementation | not started. Audit and reading guide done | wait for the author |
@@ -136,7 +136,8 @@ Remote: `/storage/budejovice1/home/nico/lmi-metacentrum/postgresql-native-tempor
 `~/research-admin/experiments/2026-11-20-dli-emma-path/copy-to-C-20261123/`):**
 - `Research-Results\2026-11-20-dli-emma-path\`: Phase 3 Shift and insert-only;
 - `Research-Results\2026-11-22-static-vs-dli\`: pilot 2;
-- `Research-Results\2026-11-23-policy-replay\`: the check job, the five primaries and the `ood` rerun 25908996.
+- `Research-Results\2026-11-23-policy-replay\`: the check job, the five primaries and the `ood` rerun 25908996;
+- `Research-Results\2026-11-24-allocation-tiebreak\`: the tie-break check (25914476) and primary (25931720).
 
 ## 5. How to work here safely
 

@@ -986,6 +986,12 @@ work there, 0.693 [0.688, 0.700]. **Proportional is recommended:** better in 4 o
 This triggers the frozen DLI-best allocation tie-break: a calibrated-vs-proportional replay on the insert-only
 snapshots, not yet designed. All results, including the `ood` rerun, are archived on C: and verified.
 
+**DLI-best final (2026-11-25).** The allocation tie-break (job 25931720) ran on DLI-best's insert-only topology:
+calibrated against proportional gave R = 1.0375 [1.027, 1.047], equivalent. By the frozen rule, DLI-best uses
+**proportional** allocation: E1 + vacuum + consolidation ρ = 0.25 + proportional. Reproduction of Phase 3 E1C was exact
+for `mdn_code` and `calibrated`. Calibrated allocation's earlier 7% gain was over `mdn_code`; over proportional it gives
+nothing. Report: `research/dli/allocation_tiebreak/RESULTS_TIEBREAK.md` (tie-break branch).
+
 **A handoff index for other agents:** `research/AGENT_HANDOFF.md` (this branch). It lists reading order, branches,
 code, documents, jobs, remote and local evidence, open items and safety rules.
 
