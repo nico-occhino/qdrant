@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use super::dli_bucket_plan::{
     BucketPrediction, RoutingPolicy, SelectedBuckets, select, select_density,
-    select_density_uncached, select_model_normalized, select_reserved,
+    select_density_uncached, select_model_normalized, select_proportional, select_reserved,
 };
 
 /// Linux task-local counters. CPU is in clock ticks (getconf CLK_TCK), not ns.
@@ -374,7 +374,13 @@ fn route_pinned_selected(
             }
             temperature_milli as f32 / 1000.
         }
-        _ => 1.,
+        RoutingPolicy::SlotWeighted
+        | RoutingPolicy::ReservedPerLevel
+        | RoutingPolicy::PopulationDensity
+        | RoutingPolicy::PopulationDensityUncached
+        | RoutingPolicy::ModelDrivenNormalized
+        | RoutingPolicy::ModelDrivenNormalizedCode
+        | RoutingPolicy::PopulationProportional => 1.,
     };
     let start = Instant::now();
     let mut predictions = Vec::new();
@@ -465,6 +471,16 @@ fn route_pinned_selected(
         }
         (None, RoutingPolicy::ModelDrivenNormalizedCode) => {
             select_model_normalized(predictions, arity, budget, true)
+        }
+        (None, RoutingPolicy::PopulationProportional) => {
+            // Quotas use each learned member's live point count, the same population the
+            // offline replay control used (`available_point_count`).
+            let live: HashMap<Uuid, usize> = members
+                .iter()
+                .filter(|(level, _)| *level > 0)
+                .map(|(_, segment)| (segment.uuid, segment.available_point_count()))
+                .collect();
+            select_proportional(predictions, arity, budget, &live)
         }
     }
     .map_err(|e| fail(&format!("invalid DLI candidate plan: {e:?}")))?;

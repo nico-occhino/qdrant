@@ -222,6 +222,9 @@ fn policies() -> Vec<(&'static str, Option<RoutingPolicy>)> {
         // Offline control: learned budget split proportionally to member
         // population; Plain buffer always fully scored.
         ("proportional", None),
+        // The same allocation as a native routing policy (DLI-best); must equal the
+        // offline control above on every frozen snapshot.
+        ("proportional_native", Some(RoutingPolicy::PopulationProportional)),
     ]
 }
 

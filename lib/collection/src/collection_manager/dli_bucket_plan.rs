@@ -20,6 +20,11 @@ pub enum RoutingPolicy {
     ModelDrivenNormalized,
     /// Her released code: the same score divided by the arity (0-based level exponent).
     ModelDrivenNormalizedCode,
+    /// Population-proportional allocation (DLI-best): each learned member gets the quota
+    /// `max(1, budget * live(member) / live(all learned members))` and takes whole buckets in
+    /// its own [`select`] order until the quota is met; the Plain buffer is always fully
+    /// scored. Recommended by `research/dli/policy_replay` and chosen by the DLI-best tie-break.
+    PopulationProportional,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -246,6 +251,76 @@ pub fn select_model_normalized(
             .checked_add(p.occupancy)
             .ok_or(PlanError::NumericOverflow)?;
         buckets.push(p);
+    }
+    Ok(SelectedBuckets {
+        requested: budget,
+        estimated_candidates: count,
+        buckets,
+    })
+}
+
+/// Population-proportional allocation, see [`RoutingPolicy::PopulationProportional`].
+///
+/// `live` maps each learned member's physical id to its live point count, the population
+/// the quota is computed from (posting occupancies may include dead postings). Every
+/// learned member present in `predictions` must appear in `live`. Each member is planned
+/// independently with [`select`], exactly as the offline replay control
+/// (`dli_selection_frontier::run_proportional`) did, so per-member bucket order,
+/// tie-breaking and whole-bucket semantics are unchanged. The Plain buffer (level 0) is
+/// selected whenever it is nonempty, whatever the budget.
+pub fn select_proportional(
+    predictions: Vec<BucketPrediction>,
+    arity: usize,
+    budget: usize,
+    live: &HashMap<Uuid, usize>,
+) -> Result<SelectedBuckets, PlanError> {
+    if arity < 2 {
+        return Err(PlanError::InvalidArity);
+    }
+    if budget == 0 {
+        return Err(PlanError::ZeroBudget);
+    }
+    let mut order = Vec::new();
+    let mut by_member: HashMap<Uuid, Vec<BucketPrediction>> = HashMap::new();
+    for p in predictions {
+        let entry = by_member.entry(p.physical).or_default();
+        if entry.is_empty() {
+            order.push((p.level, p.physical));
+        }
+        entry.push(p);
+    }
+    // Deterministic member order: buffer first, then by level and physical id.
+    order.sort();
+    let mut learned_population = 0usize;
+    for &(level, physical) in &order {
+        if level > 0 {
+            let n = *live.get(&physical).ok_or(PlanError::InvalidPrediction)?;
+            learned_population = learned_population
+                .checked_add(n)
+                .ok_or(PlanError::NumericOverflow)?;
+        }
+    }
+    let mut buckets = Vec::new();
+    let mut count = 0usize;
+    for (level, physical) in order {
+        let member = by_member.remove(&physical).ok_or(PlanError::InvalidPrediction)?;
+        let quota = if level == 0 {
+            // Plain buffer: always fully scored.
+            usize::MAX / 4
+        } else if learned_population == 0 {
+            1
+        } else {
+            // u128 so that full-search budgets (usize::MAX / 2) cannot overflow; for every
+            // product that fits in usize the quotient equals the usize arithmetic of the
+            // offline control.
+            let share = (budget as u128 * live[&physical] as u128) / learned_population as u128;
+            usize::try_from(share).unwrap_or(usize::MAX / 4).max(1)
+        };
+        let selected = select(member, arity, quota)?;
+        count = count
+            .checked_add(selected.estimated_candidates)
+            .ok_or(PlanError::NumericOverflow)?;
+        buckets.extend(selected.buckets);
     }
     Ok(SelectedBuckets {
         requested: budget,
@@ -503,6 +578,53 @@ mod tests {
             select_model_normalized(vec![], 10, 0, false),
             Err(PlanError::ZeroBudget)
         );
+    }
+
+    #[test]
+    fn proportional_splits_by_live_population_and_always_scores_buffer() {
+        // Member 1 (level 1): live 100, buckets of 30/30/40 postings by probability 0.5/0.3/0.2.
+        // Member 2 (level 2): live 300, buckets of 100/100/100 by probability 0.6/0.3/0.1.
+        // Buffer: 7 points.
+        let input = vec![
+            b(1, 1, Some(0), 0.5, 30),
+            b(1, 1, Some(1), 0.3, 30),
+            b(1, 1, Some(2), 0.2, 40),
+            b(2, 2, Some(0), 0.6, 100),
+            b(2, 2, Some(1), 0.3, 100),
+            b(2, 2, Some(2), 0.1, 100),
+            b(0, 3, None, 0., 7),
+        ];
+        let live = HashMap::from([(Uuid::from_u128(1), 100), (Uuid::from_u128(2), 300)]);
+        // Budget 200: quotas 200·100/400 = 50 (two buckets, 60) and 200·300/400 = 150 (two, 200).
+        let plan = select_proportional(input.clone(), 10, 200, &live).unwrap();
+        let picked: Vec<_> = plan.buckets.iter().map(|p| (p.physical.as_u128(), p.bucket)).collect();
+        assert_eq!(picked, vec![(3, None), (1, Some(0)), (1, Some(1)), (2, Some(0)), (2, Some(1))]);
+        assert_eq!(plan.estimated_candidates, 7 + 60 + 200);
+        // The result equals planning each member alone with `select` and its quota.
+        let alone = |id: u128, quota: usize| {
+            select(input.iter().filter(|p| p.physical.as_u128() == id).cloned().collect(), 10, quota).unwrap()
+        };
+        let mut expected = alone(3, usize::MAX / 4).buckets;
+        expected.extend(alone(1, 50).buckets);
+        expected.extend(alone(2, 150).buckets);
+        assert_eq!(plan.buckets, expected);
+        // A tiny budget still buys at least one bucket per member (quota floor 1) and the buffer.
+        let tiny = select_proportional(input.clone(), 10, 1, &live).unwrap();
+        assert_eq!(tiny.buckets.len(), 3);
+        // Buffer only: no learned population, the buffer alone is selected.
+        let buffer_only = select_proportional(vec![b(0, 3, None, 0., 7)], 10, 5, &HashMap::new()).unwrap();
+        assert_eq!(buffer_only.buckets.len(), 1);
+        assert_eq!(buffer_only.estimated_candidates, 7);
+        // A learned member without a live count is an invalid plan input.
+        assert_eq!(
+            select_proportional(input.clone(), 10, 200, &HashMap::from([(Uuid::from_u128(1), 100)])),
+            Err(PlanError::InvalidPrediction)
+        );
+        // A full-search budget does not overflow and selects every nonempty bucket.
+        let full = select_proportional(input.clone(), 10, usize::MAX / 2, &live).unwrap();
+        assert_eq!(full.buckets.len(), 7);
+        assert_eq!(full.estimated_candidates, 7 + 100 + 300);
+        assert_eq!(select_proportional(input, 10, 0, &live), Err(PlanError::ZeroBudget));
     }
 
     #[test]
