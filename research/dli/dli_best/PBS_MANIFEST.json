@@ -1,0 +1,14 @@
+{
+ "study": "research/dli/dli_best — DLI-best integration pilot (validation panels only)",
+ "criteria": "INTEGRATION_PILOT.md (amended pre-run 2026-11-25 for exact-duplicate ties)",
+ "staging": {"remote_input": "/storage/budejovice1/home/nico/lmi-metacentrum/dli-emma-path-20261120/native-e32fc6b9092a",
+             "commit": "e32fc6b9092ab89af9f523c5d4947a71e4b8af85", "source_bundle_sha256_prefix": "49ee22e258dbd33f",
+             "source_key": "8a0a28b3807f670608710792 (new: first job builds the binary)",
+             "shared_inputs": "copied server-side from native-3c0ae9b9ad43, hashes re-verified"},
+ "jobs": [
+  {"job": "25942585.pbs-m1.metacentrum.cz", "scenario": "insert_only", "role": "builds and caches the binary", "walltime": "06:00:00", "status": "submitted"},
+  {"job": "25942586.pbs-m1.metacentrum.cz", "scenario": "constant_r", "depend": "afterany:25942585", "walltime": "06:00:00", "status": "held (dependency)"},
+  {"job": "25942587.pbs-m1.metacentrum.cz", "scenario": "shift", "depend": "afterany:25942585", "walltime": "06:00:00", "status": "held (dependency)"}
+ ],
+ "resources": "8 CPUs, 96 GB, 100 GB scratch each; submitted 2026-11-25, author-approved"
+}
