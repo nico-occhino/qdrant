@@ -587,3 +587,8 @@ The fourth attempt completed (exit 0, 4:24, 167 GB peak; 16 build CPUs after Ame
 - **Shift `ood` (rerun 25908996): proportional better, 0.693.**
 - **Proportional recommended:** 4 better, 1 equivalent.
 - **The DLI-best allocation tie-break is triggered:** a calibrated-vs-proportional replay is pending design.
+
+**2026-11-25 — DLI-best final.**
+- **Tie-break:** calibrated against proportional is equivalent (R = 1.0375 [1.027, 1.047], job 25931720).
+- **DLI-best = E1 + vacuum + consolidation ρ = 0.25 + proportional.**
+- **Report:** `allocation_tiebreak/RESULTS_TIEBREAK.md` (tie-break branch).

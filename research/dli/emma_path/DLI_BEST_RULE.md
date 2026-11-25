@@ -65,3 +65,12 @@ The policy replay is final (`research/dli/policy_replay/RESULTS_POLICY_REPLAY.md
 **`proportional` is recommended:** better in 4 of 5 decisions and equivalent in Shift `mq`. **The frozen tie-break is
 therefore triggered.** A calibrated-vs-proportional replay on the insert-only snapshots, separately preregistered,
 decides DLI-best's allocation. Until it runs, DLI-best keeps calibrated allocation. That replay is not yet designed.
+
+## DLI-best is final (2026-11-25)
+
+The frozen tie-break ran (`research/dli/allocation_tiebreak/RESULTS_TIEBREAK.md`, branch
+`research/allocation-tiebreak-20261124`, job 25931720). On DLI-best's insert-only topology (E1 + consolidation), calibrated
+against proportional allocation gave R = 1.0375 [1.027, 1.047]: **equivalent**, so the frozen rule chose `proportional`.
+
+**DLI-best = E1 + vacuum (dead fraction > 0.2) + consolidation ρ = 0.25 + `proportional` allocation.** No component
+is re-selected after the final benchmark's data exist.
