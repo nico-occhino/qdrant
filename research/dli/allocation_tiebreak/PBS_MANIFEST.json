@@ -37,7 +37,7 @@
    "commit": "e8f168ed0a00e6db2e926b278b13b679d7f7f100",
    "resources": "8 CPUs, 96 GB, 100 GB scratch, walltime 20:00:00 (raised from the planned 16 h before data, for slow node classes; author-approved)",
    "submitted": "2026-11-24, author-approved",
-   "status": "submitted"
+   "status": "exit 0, 04:54:53, alfrid2; COMPLETE.json present; 21/21 batches; plan identical (130 files); S5 exact for mdn_code and calibrated; decision equivalent (R 1.0375 [1.0274, 1.0465]) -> choice proportional"
   }
  ]
 }
