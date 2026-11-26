@@ -100,5 +100,43 @@
   "selection_result": "analyze_final.selection on the 9 completed arms: S-LMI 3162, IVF 3162, HNSW 16 (provisional: the HNSW ef grid gives upper_bound W in batch 0 for m=16 and in 10 batches for m=32, so per \u00a78 the grid must be extended before stage 2). Not yet an amendment.",
   "archive": "C: Research-Results/2026-11-26-final-benchmark-stage1 (884 files, STORAGE_SHA256.txt verified)"
  },
- "resources": "8 CPUs, 96 GB, 100 GB scratch SSD, AMD (fb.pbs header)"
+ "resources": "8 CPUs, 96 GB, 100 GB scratch SSD, AMD (fb.pbs header)",
+ "amendment_A1": {
+  "authorised": "author, 2026-11-26 ('accept all recommendations, push and resubmit')",
+  "staging": {
+   "remote_input": "/storage/budejovice1/home/nico/lmi-metacentrum/final-benchmark-20261126/native-b69819de05c1",
+   "commit": "b69819de05c1d75cb960217d8e66aeb15d234038",
+   "source_bundle_sha256": "6a0276d57835ea47efd3c89bf3b37d3fb8f97b7e5b6894c98bf89d34f07e39e8",
+   "vendor_and_cargo_config": "copied from native-52347112c7c2, hashes verified",
+   "source_key": "d298fc79d33f894793a910ed (cache hit)"
+  },
+  "jobs": [
+   {
+    "job": "26027409.pbs-m1.metacentrum.cz",
+    "arm": "DLI-best",
+    "why": "A1.1 rerun, unchanged",
+    "staging": "native-52347112c7c2",
+    "walltime": "12:00:00",
+    "status": "submitted"
+   },
+   {
+    "job": "26027410.pbs-m1.metacentrum.cz",
+    "arm": "S-LMI",
+    "cfg": 10000,
+    "why": "A1.2",
+    "staging": "native-b69819de05c1",
+    "walltime": "12:00:00",
+    "status": "submitted"
+   },
+   {
+    "job": "26027411.pbs-m1.metacentrum.cz",
+    "arm": "IVF",
+    "cfg": 10000,
+    "why": "A1.2",
+    "staging": "native-b69819de05c1",
+    "walltime": "12:00:00",
+    "status": "submitted"
+   }
+  ]
+ }
 }
