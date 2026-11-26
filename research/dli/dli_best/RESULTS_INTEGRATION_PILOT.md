@@ -42,7 +42,7 @@ The live count and live-set SHA-256 match the plan after every batch: 21, 21 and
 - **Work.** `proportional_native` and the offline `proportional` scored exactly the same number of vectors in
   every row (0 mismatches on all three workloads).
 - **Recall.** Recall@30 differs in 0 rows on insert-only, 11 on constant-R and 37 on shift. The differences come
-  from 1, 1 and 3 queries. Every one is an exact Float64 score tie at rank 30, with more tied rows than the
+  from 0, 1 and 3 queries. Every one is an exact Float64 score tie at rank 30, with more tied rows than the
   difference: tied (gold, other) rows were (2, 1); (2, 2), (1, 3) and (28, 45). With equal work and equal tied
   scores, the two policies returned different copies of the same score.
 - **Method.** [`tie_check.py`](tie_check.py) rebuilds each batch's live set and regenerates the validation gold. Both
