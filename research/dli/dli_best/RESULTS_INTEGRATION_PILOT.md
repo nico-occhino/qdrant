@@ -109,27 +109,34 @@ over Phase 3 E1 (`mdn_code`), with batch-stratified bootstrap 95% CIs, on 32-que
   the Phase 3 budget grid in 5–13 of 20 batches, while DLI-best always does. Those batches are left out, so the
   ratios understate DLI-best's advantage under shift. The `ood_val` CI includes 1.
 
-### An interaction the component studies did not test
+### Allocation on the DLI-best topology: a small-panel signal
 
 The same runs also replayed `mdn_code` on DLI-best's own topology. That separates the allocation policy from the
 maintenance components:
 
-| R proportional / `mdn_code`, on the DLI-best topology [95% CI] | On the E1 topology (policy replay, test panels) |
-|---|---|
-| insert-only **1.072** [1.006, 1.122] | 0.908 |
-| constant-R 0.855 [0.813, 0.895] | 0.784 |
-| shift `mq_val` **1.183** [1.060, 1.239] | 1.023 (equivalent) |
-| shift `ids_val` 0.939 [0.893, 0.994] | 0.887 |
-| shift `ood_val` 0.849 [0.835, 0.879] | 0.693 |
+| R proportional / `mdn_code`, DLI-best topology, `val` (32 queries) [95% CI] | Larger panel on a consolidated topology | E1 topology (policy replay, test panels) |
+|---|---|---|
+| insert-only 1.072 [1.006, 1.122] | **`partb`, 1,000 queries: 0.915 [0.908, 0.924]** (tie-break job 25931720) | 0.908 |
+| constant-R 0.855 [0.813, 0.895] | — | 0.784 |
+| shift `mq_val` 1.183 [1.060, 1.239] | not run | 1.023 (equivalent) |
+| shift `ids_val` 0.939 [0.893, 0.994] | not run | 0.887 |
+| shift `ood_val` 0.849 [0.835, 0.879] | not run | 0.693 |
 
-- **Proportional is better than `mdn_code` on E1's topology but loses its edge after consolidation:** on DLI-best's
-  topology it is worse on insert-only and on shift `mq`.
-- **A plausible reason** *[inferred]*: proportional splits the budget by population, and consolidation leaves one
-  dominant deepest level (about 90% of the points). The split then gives the small upper levels a tiny quota, while
-  `mdn_code` can still spend on them when their buckets look promising.
-- **Status.** This is descriptive, on 32-query validation panels, and was not preregistered. Under the frozen
-  DLI-best rule it changes nothing. Components are not re-selected on pilot data, and the rule says interactions are
-  measured in the final benchmark.
+- **On insert-only, the 32-query panel is contradicted by the 1,000-query one.**
+  - The tie-break job ran the same configuration on the same plan, and on `partb` proportional is clearly better than
+    `mdn_code`. Recomputed from the C: archive: `derived/tiebreak_E1C_prop_vs_mdn.json`.
+  - That job's own `val` panel gives 1.072 [1.006, 1.122], the same as this pilot. The tie-break report had already
+    noted that `val` and `partb` point in opposite directions there.
+- **The pilot reproduces the tie-break run closely.** On insert-only, recall is identical in all but 2 of 22,848
+  shared `val` rows. Work differs by at most 0.7% per row.
+  - The router hashes differ, so the two runs trained slightly different routers. *[Inferred, not checked]*: the
+    hosts differ (alfrid2 has 256 CPUs, turin9 has 128), and threaded k-means or training on them may not be
+    bit-reproducible.
+  - The S5 reproduction in the tie-break was exact, but on its own job.
+- **Shift `mq` is untested on a large panel.** It is the one remaining sign that proportional may lose its edge after
+  consolidation. On E1's topology, `mq` was already the one panel where proportional was only equivalent.
+- **Status.** All of this is descriptive, on validation panels, and was not preregistered. The frozen DLI-best rule
+  does not re-select components on pilot data, and the rule says interactions are measured in the final benchmark.
 
 ## What is open (author decisions)
 
@@ -142,7 +149,7 @@ maintenance components:
    Recommendation: (a). The final benchmark's preregistration should define gold on the stored representation
    (Qdrant-like f16 after normalisation), or count a returned point as correct when its exact gold score equals the
    rank-30 score. This must be fixed before any final-benchmark data exist.
-2. **The allocation interaction (§5).** The frozen rule keeps DLI-best as it is. Recommendation: the final benchmark
-   preregisters `mdn_code` on the DLI-best topology as a secondary, descriptive replay. It costs nothing extra,
-   because the replay already runs both policies on the same snapshots. The thesis can then report the interaction on
-   test panels instead of assuming it away.
+2. **Allocation on the DLI-best topology (§5).** The frozen rule keeps DLI-best as it is. Recommendation: the final
+   benchmark preregisters `mdn_code` on the DLI-best topology as a secondary, descriptive replay in every workload.
+   Shift `mq` is where it matters. The replay already runs both policies on the same snapshots, so it costs nothing
+   extra, and the thesis can report the interaction on test panels.
