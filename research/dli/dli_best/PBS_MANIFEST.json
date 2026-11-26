@@ -1,14 +1,47 @@
 {
- "study": "research/dli/dli_best — DLI-best integration pilot (validation panels only)",
+ "study": "research/dli/dli_best \u2014 DLI-best integration pilot (validation panels only)",
  "criteria": "INTEGRATION_PILOT.md (amended pre-run 2026-11-25 for exact-duplicate ties)",
- "staging": {"remote_input": "/storage/budejovice1/home/nico/lmi-metacentrum/dli-emma-path-20261120/native-e32fc6b9092a",
-             "commit": "e32fc6b9092ab89af9f523c5d4947a71e4b8af85", "source_bundle_sha256_prefix": "49ee22e258dbd33f",
-             "source_key": "8a0a28b3807f670608710792 (new: first job builds the binary)",
-             "shared_inputs": "copied server-side from native-3c0ae9b9ad43, hashes re-verified"},
+ "staging": {
+  "remote_input": "/storage/budejovice1/home/nico/lmi-metacentrum/dli-emma-path-20261120/native-e32fc6b9092a",
+  "commit": "e32fc6b9092ab89af9f523c5d4947a71e4b8af85",
+  "source_bundle_sha256_prefix": "49ee22e258dbd33f",
+  "source_key": "8a0a28b3807f670608710792 (new: first job builds the binary)",
+  "shared_inputs": "copied server-side from native-3c0ae9b9ad43, hashes re-verified"
+ },
  "jobs": [
-  {"job": "25942585.pbs-m1.metacentrum.cz", "scenario": "insert_only", "role": "builds and caches the binary", "walltime": "06:00:00", "status": "submitted"},
-  {"job": "25942586.pbs-m1.metacentrum.cz", "scenario": "constant_r", "depend": "afterany:25942585", "walltime": "06:00:00", "status": "held (dependency)"},
-  {"job": "25942587.pbs-m1.metacentrum.cz", "scenario": "shift", "depend": "afterany:25942585", "walltime": "06:00:00", "status": "held (dependency)"}
+  {
+   "job": "25942585.pbs-m1.metacentrum.cz",
+   "scenario": "insert_only",
+   "role": "builds and caches the binary",
+   "walltime": "06:00:00",
+   "status": "completed, exit 0",
+   "host": "turin9",
+   "walltime_used": "01:39:06",
+   "result_dir": "results/dli-best-pilot-insert_only-25942585.pbs-m1.metacentrum.cz"
+  },
+  {
+   "job": "25942586.pbs-m1.metacentrum.cz",
+   "scenario": "constant_r",
+   "depend": "afterany:25942585",
+   "walltime": "06:00:00",
+   "status": "completed, exit 0",
+   "host": "zenon21",
+   "walltime_used": "00:57:36",
+   "result_dir": "results/dli-best-pilot-constant_r-25942586.pbs-m1.metacentrum.cz"
+  },
+  {
+   "job": "25942587.pbs-m1.metacentrum.cz",
+   "scenario": "shift",
+   "depend": "afterany:25942585",
+   "walltime": "06:00:00",
+   "status": "completed, exit 0; walltime extended to 08:00:00 by the author at 05:57",
+   "host": "zenon34",
+   "walltime_used": "06:19:46",
+   "result_dir": "results/dli-best-pilot-shift-25942587.pbs-m1.metacentrum.cz"
+  }
  ],
- "resources": "8 CPUs, 96 GB, 100 GB scratch each; submitted 2026-11-25, author-approved"
+ "resources": "8 CPUs, 96 GB, 100 GB scratch each; submitted 2026-11-25, author-approved",
+ "results": "RESULTS_INTEGRATION_PILOT.md: completed, not accepted as written (criterion 3, storage rounding shared by all policies)",
+ "archive_c": "Research-Results/2026-11-25-dli-best-pilot/ (247 files, identical to storage; STORAGE_SHA256.txt)",
+ "offline_checks": "tie_check.py (commit after 4aba5d532), outputs in derived/; shift uses PG R3 job 25910367's regenerated plan, all 205 files hash-matched"
 }

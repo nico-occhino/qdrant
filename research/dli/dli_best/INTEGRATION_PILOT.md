@@ -1,6 +1,8 @@
 # DLI-best integration pilot (validation panels only)
 
-**Status: DRAFT, 2026-11-25.** The criteria are fixed before any run. Submission needs the author's go-ahead.
+**Status: RUN, 2026-11-25 (jobs 25942585–25942587).** The criteria below were fixed before any run and are not
+edited. Results: [RESULTS_INTEGRATION_PILOT.md](RESULTS_INTEGRATION_PILOT.md). Criteria 1, 2 and 4 pass on all three
+workloads. Criterion 3 fails on insert-only and shift, through storage rounding shared by every policy.
 
 **What DLI-best is** (`research/dli/emma_path/DLI_BEST_RULE.md`, final): E1 + vacuum above 20% dead + consolidation
 ρ = 0.25 + `PopulationProportional` allocation.

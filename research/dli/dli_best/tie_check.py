@@ -1,11 +1,13 @@
 """Offline rank-30 tie check for the DLI-best integration pilot (INTEGRATION_PILOT.md, criteria 2-3).
 
     python3 -I tie_check.py --corpus F16 --queries OFFICIAL_F32 --plan PLAN_JSON --run RUN_DIR --out FILE
+    python3 -I tie_check.py --corpus F16 --plan PLAN_JSON --plan-dir PLAN_DIR --run RUN_DIR --out FILE  (shift)
 
-Uniform scenarios only (insert_only, constant_r): the live set of every batch is rebuilt with the
-planner's own rules (phase3_plan.py) and checked against the plan's live SHA-256, and the
-regenerated val gold is checked against the plan's gold SHA-256. Shift needs the k-means plan and
-is checked separately.
+Uniform scenarios (insert_only, constant_r): the live set of every batch is rebuilt with the
+planner's own rules (phase3_plan.py). Shift (--plan-dir): live sets and query files come from a
+regenerated plan directory whose every file is first checked against plan.json's SHA-256. In both,
+the live set is checked against the plan's live SHA-256 and the regenerated gold of every panel
+against the plan's gold SHA-256.
 
 Per (batch, query): Float64 scores as in the planner gold; s30, s31; `tie30` = s30 == s31 (an exact
 score tie crosses the rank-30 boundary); `tied_gold` / `tied_other` = gold / non-gold live rows with
@@ -78,12 +80,12 @@ def all_scores(corpus, q, chunk=65_536):
     return s, sq
 
 
-def load_rows(run_dir, b):
+def load_rows(run_dir, b, sets):
     rows = {}
     for line in open(Path(run_dir) / f"batch_{b:02d}" / "rows.jsonl"):
         r = json.loads(line)
-        if r["set"] == "val" and r["policy"] in POLICIES:
-            rows[(r["policy"], r["query"], r["budget"])] = r["recall30"]
+        if r["set"] in sets and r["policy"] in POLICIES:
+            rows[(r["policy"], r["set"], r["query"], r["budget"])] = r["recall30"]
     return rows
 
 
@@ -91,71 +93,115 @@ def explained(m, t):
     return bool(t["tie30"]) and m <= min(t["tied_gold"], t["tied_other"])
 
 
+def classify(sc, scq, rows):
+    """Gold (1-based ids) and the rank-30 tie record of one query over live `rows`."""
+    top = np.flatnonzero(sc >= -np.partition(-sc, K)[K])  # every row tied with rank 31 kept
+    order = top[np.lexsort((rows[top], -sc[top]))]
+    s30, s31 = sc[order[K - 1]], sc[order[K]]
+    gold = rows[order[:K]]
+    tied = np.flatnonzero(sc == s30)
+    g = int(np.isin(rows[tied], gold).sum())
+    topq = np.argpartition(-scq, K)[:K]
+    return gold + 1, {"tie30": bool(s30 == s31), "s30": float(s30), "s31": float(s31),
+                      "tied_gold": g, "tied_other": int(len(tied) - g),
+                      "qlike_lost": int(K - np.isin(rows[topq], gold).sum())}
+
+
+def uniform_source(args, plan, corpus):
+    """Yields (batch, live rows, {set: (f64 scores, Qdrant-like scores)}) for uniform scenarios."""
+    q = np.fromfile(args.queries, dtype="<f4").reshape(P.QUERIES, DIM)[900:932]
+    scores, qscores = all_scores(corpus, q)
+    live = np.zeros(plan["rows"], dtype=bool)
+    for b, (ins, dels) in enumerate(uniform_batches(plan)):
+        live[ins] = True
+        live[dels] = False
+        rows = np.flatnonzero(live)
+        yield b, rows, {"val": (scores[:, rows], qscores[:, rows])}
+
+
+def plan_dir_source(args, plan, corpus, sets):
+    """Shift: live sets and query files from a regenerated plan directory (hash-checked first)."""
+    d = args.plan_dir
+    for f, h in plan["files"].items():
+        assert P.sha256_file(d / f) == h, ("plan file differs", f)
+    live = np.zeros(plan["rows"], dtype=bool)
+    for b, meta in enumerate(plan["batches"]):
+        live[np.fromfile(d / f"batch_{b:02d}" / "insert.u32", "<u4").astype(np.int64) - 1] = True
+        live[np.fromfile(d / f"batch_{b:02d}" / "delete.u32", "<u4").astype(np.int64) - 1] = False
+        rows = np.flatnonzero(live)
+        x = corpus[rows]
+        xn = P.normalized(x)
+        xf = x.astype(np.float32)
+        xq = (xf / np.linalg.norm(xf, axis=1, keepdims=True)).astype(np.float16).astype(np.float32)
+        del xf
+        out = {}
+        for s in sets:
+            q = np.fromfile(d / meta["sets"][s]["queries"], "<f4").reshape(-1, DIM)
+            qf = (q / np.linalg.norm(q, axis=1, keepdims=True)).astype(np.float32)
+            out[s] = (P.normalized(q) @ xn.T, qf @ xq.T)
+        del xn, xq
+        yield b, rows, out
+
+
 def main():
     a = argparse.ArgumentParser()
     a.add_argument("--corpus", type=Path, required=True)
-    a.add_argument("--queries", type=Path, required=True)
-    a.add_argument("--plan", type=Path, required=True)
+    a.add_argument("--queries", type=Path, help="official query file (uniform scenarios)")
+    a.add_argument("--plan", type=Path, required=True, help="the job's plan.json")
+    a.add_argument("--plan-dir", type=Path, help="regenerated plan directory (shift)")
     a.add_argument("--run", type=Path, required=True)
     a.add_argument("--analysis", type=Path, help="analysis.json (defaults to RUN/../analysis.json)")
     a.add_argument("--out", type=Path, required=True)
     args = a.parse_args()
     plan = json.loads(args.plan.read_text())
-    assert plan["scenario"] != "shift", "uniform scenarios only"
     analysis = json.loads((args.analysis or args.run.parent / "analysis.json").read_text())
+    sets = analysis["sets"]
     diffs = analysis["native_vs_control"]["recall_differences"]
     assert not analysis["native_vs_control"]["work_mismatches"], "work mismatch: not a tie question"
 
-    n = plan["rows"]
-    corpus = np.memmap(args.corpus, dtype="<f2", mode="r").reshape(-1, DIM)[:n]
-    q = np.fromfile(args.queries, dtype="<f4").reshape(P.QUERIES, DIM)[900:932]
-    scores, qscores = all_scores(corpus, q)
-    live = np.zeros(n, dtype=bool)
+    corpus = np.memmap(args.corpus, dtype="<f2", mode="r").reshape(-1, DIM)[: plan["rows"]]
+    if plan["scenario"] == "shift":
+        assert args.plan_dir, "shift needs --plan-dir"
+        source = plan_dir_source(args, plan, corpus, sets)
+    else:
+        assert sets == ["val"] and args.queries, "uniform scenarios: panel val and --queries"
+        source = uniform_source(args, plan, corpus)
     per_batch, misses, diff_checks = [], [], []
-    for b, (ins, dels) in enumerate(uniform_batches(plan)):
-        live[ins] = True
-        live[dels] = False
-        rows = np.flatnonzero(live)
+    for b, rows, scored in source:
         meta = plan["batches"][b]
         assert P.live_digest(rows + 1) == (meta["live_count"], meta["live_sha256"]), ("live set", b)
-        golds, ties = [], {}
-        for i in range(len(q)):
-            sc = scores[i, rows]
-            top = np.flatnonzero(sc >= -np.partition(-sc, K)[K])  # every row tied with rank 31 kept
-            order = top[np.lexsort((rows[top], -sc[top]))]
-            s30, s31 = sc[order[K - 1]], sc[order[K]]
-            gold = rows[order[:K]]
-            golds.append(gold + 1)
-            tied = np.flatnonzero(sc == s30)
-            g = int(np.isin(rows[tied], gold).sum())
-            scq = qscores[i, rows]
-            topq = np.argpartition(-scq, K)[:K]
-            ties[i] = {"tie30": bool(s30 == s31), "s30": float(s30), "s31": float(s31),
-                       "tied_gold": g, "tied_other": int(len(tied) - g),
-                       "qlike_lost": int(K - np.isin(rows[topq], gold).sum())}
-        gsha = hashlib.sha256(np.stack(golds).astype("<u8").tobytes()).hexdigest()
-        assert gsha == plan["files"][meta["sets"]["val"]["gold"]], ("regenerated gold differs", b)
-        r = load_rows(args.run, b)
-        for (pol, qi, budget), rec in sorted(r.items()):
-            if budget == FULL and rec < K:
-                misses.append({"batch": b, "policy": pol, "query": qi, "miss": K - rec, **ties[qi],
-                               "explained": explained(K - rec, ties[qi]),
-                               "rounding_reproduced": K - rec <= ties[qi]["qlike_lost"]})
-        for d in diffs:
-            if d[0] == b:
-                _, s, qi, budget, c, nv = d
-                diff_checks.append({"batch": b, "query": qi, "budget": budget, "control": c, "native": nv,
-                                    **ties[qi], "explained": explained(abs(c - nv), ties[qi])})
-        clean = [qi for qi in range(len(q)) if not ties[qi]["tie30"]]
-        nat = [r[("proportional_native", qi, FULL)] / K for qi in clean]
-        per_batch.append({"batch": b, "tie30_queries": [qi for qi in range(len(q)) if ties[qi]["tie30"]],
-                          "native_raw": float(np.mean([r[("proportional_native", qi, FULL)] / K for qi in range(len(q))])),
-                          "native_tie_excluded": float(np.mean(nat)) if nat else None})
-        print(json.dumps(per_batch[-1]), flush=True)
+        r = load_rows(args.run, b, sets)
+        for s, (sc, scq) in scored.items():
+            golds, ties = [], {}
+            for i in range(len(sc)):
+                g, ties[i] = classify(sc[i], scq[i], rows)
+                golds.append(g)
+            gsha = hashlib.sha256(np.stack(golds).astype("<u8").tobytes()).hexdigest()
+            assert gsha == plan["files"][meta["sets"][s]["gold"]], ("regenerated gold differs", b, s)
+            for (pol, rs, qi, budget), rec in sorted(r.items()):
+                if rs == s and budget == FULL and rec < K:
+                    misses.append({"batch": b, "set": s, "policy": pol, "query": qi, "miss": K - rec, **ties[qi],
+                                   "explained": explained(K - rec, ties[qi]),
+                                   "rounding_reproduced": K - rec <= ties[qi]["qlike_lost"]})
+            for d in diffs:
+                if d[0] == b and d[1] == s:
+                    _, _, qi, budget, c, nv = d
+                    diff_checks.append({"batch": b, "set": s, "query": qi, "budget": budget, "control": c,
+                                        "native": nv, **ties[qi], "explained": explained(abs(c - nv), ties[qi])})
+            nq = len(sc)
+            clean = [qi for qi in range(nq) if not ties[qi]["tie30"]]
+            nat = [r[("proportional_native", s, qi, FULL)] / K for qi in clean]
+            per_batch.append({"batch": b, "set": s, "tie30_queries": [qi for qi in range(nq) if ties[qi]["tie30"]],
+                              "native_raw": float(np.mean([r[("proportional_native", s, qi, FULL)] / K
+                                                           for qi in range(nq)])),
+                              "native_tie_excluded": float(np.mean(nat)) if nat else None})
+            print(json.dumps(per_batch[-1]), flush=True)
     native_misses = [m for m in misses if m["policy"] == "proportional_native"]
+    by_set = {s: min(p["native_tie_excluded"] for p in per_batch if p["set"] == s and p["native_tie_excluded"] is not None)
+              for s in sets}
     out = {"scenario": plan["scenario"], "run": str(args.run), "gold_regenerated": True,
            "per_batch": per_batch,
-           "min_native_tie_excluded": min(p["native_tie_excluded"] for p in per_batch if p["native_tie_excluded"] is not None),
+           "min_native_tie_excluded": min(by_set.values()), "min_native_tie_excluded_by_set": by_set,
            "full_search_misses": misses,
            "native_misses_unexplained": [m for m in native_misses if not m["explained"]],
            "native_misses_neither_tie_nor_rounding": [m for m in native_misses
@@ -163,7 +209,7 @@ def main():
            "recall_differences": diff_checks,
            "recall_differences_unexplained": [d for d in diff_checks if not d["explained"]]}
     args.out.write_text(json.dumps(out, indent=1))
-    print(json.dumps({"min_native_tie_excluded": out["min_native_tie_excluded"],
+    print(json.dumps({"min_native_tie_excluded_by_set": by_set,
                       "native_misses": len(native_misses),
                       "native_misses_unexplained_by_tie": len(out["native_misses_unexplained"]),
                       "native_misses_neither_tie_nor_rounding": out["native_misses_neither_tie_nor_rounding"],
