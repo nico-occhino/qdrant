@@ -2898,11 +2898,16 @@ async fn dli_phase3_workload() {
                 .iter()
                 .filter(|(name, _)| set_filter.as_ref().is_none_or(|f| f.contains(*name)))
                 .map(|(name, s)| {
-                    read_set(
+                    let set = read_set(
                         name,
                         &plan_dir.join(s["queries"].as_str().unwrap()),
                         &plan_dir.join(s["gold"].as_str().unwrap()),
-                    )
+                    );
+                    // Final-benchmark plans (fb_plan.py) carry G1 tie sets; Phase 3 plans do not.
+                    match (s["tie"].as_str(), s["tie_offsets"].as_str()) {
+                        (Some(t), Some(o)) => set.with_ties(&plan_dir.join(t), &plan_dir.join(o)),
+                        _ => set,
+                    }
                 })
                 .collect();
             let static_model = static_batches.contains(&index).then(|| {
@@ -3088,7 +3093,11 @@ async fn dli_service_workload() {
         let index = batch["index"].as_u64().unwrap() as usize;
         let dir = plan_dir.join(format!("batch_{index:02}"));
         let spec = &batch["sets"][&set_name];
-        let panel = Arc::new(read_set(&set_name, &plan_dir.join(spec["queries"].as_str().unwrap()), &plan_dir.join(spec["gold"].as_str().unwrap())));
+        let mut panel = read_set(&set_name, &plan_dir.join(spec["queries"].as_str().unwrap()), &plan_dir.join(spec["gold"].as_str().unwrap()));
+        if let (Some(t), Some(o)) = (spec["tie"].as_str(), spec["tie_offsets"].as_str()) {
+            panel = panel.with_ties(&plan_dir.join(t), &plan_dir.join(o));
+        }
+        let panel = Arc::new(panel);
         let queries: Arc<Vec<Vec<f32>>> = Arc::new(panel.queries.clone());
         for q in queries.iter().cycle().take(warmup) {
             let _ = collection.search(request(q), None, None, &ShardSelectorInternal::All, Some(Duration::from_millis(timeout_ms as u64))).await;
@@ -3231,7 +3240,8 @@ async fn dli_service_workload() {
         // Settled pass: sequential, recall against this batch's gold.
         let mut settled_ms = Vec::new();
         let mut recall30 = 0usize;
-        for (q, gold) in panel.queries.iter().zip(&panel.gold) {
+        let mut recall30_g1: Option<usize> = panel.ties.as_ref().map(|_| 0);
+        for (qi, (q, gold)) in panel.queries.iter().zip(&panel.gold).enumerate() {
             let started = Instant::now();
             let hits = collection
                 .search(request(q), None, None, &ShardSelectorInternal::All, Some(Duration::from_millis(timeout_ms as u64)))
@@ -3240,6 +3250,9 @@ async fn dli_service_workload() {
             settled_ms.push(started.elapsed().as_secs_f64() * 1000.0);
             let ids: Vec<u64> = hits.iter().map(id_of).collect();
             recall30 += gold[..30].iter().filter(|g| ids.contains(g)).count();
+            if let (Some(total), Some(ties)) = (recall30_g1.as_mut(), panel.ties.as_ref()) {
+                *total += super::dli_selection_frontier::recall_g1(&ids, &ties[qi]);
+            }
         }
         let (live, digest) = live_id_digest(&collection).await;
         assert_eq!(live as u64, batch["live_count"].as_u64().unwrap(), "batch {index} live count");
@@ -3259,7 +3272,8 @@ async fn dli_service_workload() {
                        "deleted_point_violations": batch_violations,
                        "maintenance_busy_seconds": busy_seconds, "dli_max_backlog": max_backlog},
             "settled": {"latency_ms": percentiles(settled_ms),
-                        "recall30": recall30 as f64 / (30 * panel.queries.len()) as f64},
+                        "recall30": recall30 as f64 / (30 * panel.queries.len()) as f64,
+                        "recall30_g1": recall30_g1.map(|r| r as f64 / (30 * panel.queries.len()) as f64)},
             "dli_learned_fallback_before_after": [counts_before, counts_after],
             "counters_before": counters_before, "counters_after": service_counters(),
             "segments": segment_topology(&collection).await,

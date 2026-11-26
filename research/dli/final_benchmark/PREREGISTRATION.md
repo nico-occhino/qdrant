@@ -278,6 +278,20 @@ configuration is fixed before the primary run, by §8 or as stated.
   - the mean tie set is 30.76 ids, and 6% of queries have more than 30 (at most 334, from duplicates);
   - stored gold costs about 1.2× source gold, so a 1M insert-only plan takes about 25 minutes.
 
+**Status of I2 (2026-11-26): done.**
+- **Code.** `QuerySet::with_ties` loads the planner's CSR tie sets. The DLI frontier, the static nprobe frontier and
+  the service driver's settled pass now write `recall30_g1` next to the unchanged source-gold `recall30` (null for
+  plans without tie sets, so Phase 3 analyses are unaffected). The Phase 3 driver attaches tie sets whenever the plan
+  has them.
+- **Tests.** The unit test `g1_recall_counts_tied_copies_and_caps_at_top` passes, as do all 54 collection DLI/LMI
+  tests. Clippy reports nothing on the changed lines.
+- **Smoke test** (a 20K-row G1 plan, constant-R, 3 batches, 24 queries, debug build):
+  - **DLI-best:** 1,152 rows. At full search, G1 recall is 30/30 for all 96 queries under all three policies. Source
+    gold misses 2 per policy, which is the rounding effect G1 removes. Native and control agree in work and G1 recall
+    on every row.
+  - **Static S-LMI (16 buckets):** 480 rows. With all buckets probed, G1 is 30/30 for 96/96 queries; source gold is
+    94/96.
+
 ## 11. Budget and timeline (estimate)
 - **Primary:** 5 arms × 3 workloads × 2 seeds. Jobs combine arms per workload where memory allows.
 - **Time:** about 2–6 h per (workload, arm) on a perian node, judging by the pilots, so on the order of 30

@@ -45,6 +45,41 @@ pub(super) struct QuerySet {
     label: String,
     pub(super) queries: Vec<Vec<f32>>,
     pub(super) gold: Vec<Vec<u64>>,
+    /// Final-benchmark G1 tie sets (PREREGISTRATION.md §2.3), one per query: every live id whose
+    /// stored-representation score is within eps of the stored-gold rank-30 score. `None` for
+    /// plans without stored gold; rows then carry `recall30_g1: null`.
+    pub(super) ties: Option<Vec<HashSet<u64>>>,
+}
+
+impl QuerySet {
+    /// Attaches the planner's CSR tie sets (`<set>.tie.u64`, `<set>.tie_off.u64`, n + 1 offsets).
+    pub(super) fn with_ties(mut self, tie: &Path, offsets: &Path) -> Self {
+        let read_u64 = |p: &Path| -> Vec<u64> {
+            fs_err::read(p).unwrap().as_chunks::<8>().0.iter().map(|b| u64::from_le_bytes(*b)).collect()
+        };
+        let (ids, off) = (read_u64(tie), read_u64(offsets));
+        assert_eq!(off.len(), self.queries.len() + 1, "{}: tie offsets/queries mismatch", self.label);
+        assert_eq!(*off.last().unwrap() as usize, ids.len(), "{}: tie offsets/ids mismatch", self.label);
+        let ties: Vec<HashSet<u64>> =
+            off.windows(2).map(|w| ids[w[0] as usize..w[1] as usize].iter().copied().collect()).collect();
+        // A tie set holds the stored gold (not the source gold), so only its size is checked here.
+        for (i, t) in ties.iter().enumerate() {
+            assert!(t.len() >= TOP, "{}: query {i} tie set smaller than top-{TOP}", self.label);
+        }
+        self.ties = Some(ties);
+        self
+    }
+
+    fn recall30_g1(&self, query: usize, returned: &[u64]) -> Option<usize> {
+        self.ties.as_ref().map(|t| recall_g1(returned, &t[query]))
+    }
+}
+
+/// G1 Recall@30 numerator: distinct ids among the first 30 returned that lie in the query's tie set,
+/// capped at 30 (PREREGISTRATION.md §2.3).
+pub(super) fn recall_g1(returned: &[u64], ties: &HashSet<u64>) -> usize {
+    let mut seen = HashSet::new();
+    returned.iter().take(TOP).filter(|id| ties.contains(id) && seen.insert(**id)).count().min(TOP)
 }
 
 pub(super) fn read_set(label: &str, queries: &Path, gold: &Path) -> QuerySet {
@@ -65,6 +100,7 @@ pub(super) fn read_set(label: &str, queries: &Path, gold: &Path) -> QuerySet {
         label: label.to_owned(),
         queries,
         gold,
+        ties: None,
     }
 }
 
@@ -679,6 +715,7 @@ pub(super) fn run_frontier(run: &FrontierRun) {
                 let row = serde_json::json!({
                     "set": set.label, "query": qi, "policy": name, "budget": budget,
                     "recall10": recall(10), "recall30": recall(30),
+                    "recall30_g1": set.recall30_g1(qi, &e.hits),
                     "posting_entries": e.posting_entries, "unique_offsets": e.unique_offsets, "dead_offsets": e.dead_offsets,
                     "original_scored": e.original_scored, "plain_scored": e.plain_scored,
                     "scored_total": e.original_scored + e.plain_scored,
@@ -819,6 +856,7 @@ pub(super) fn run_static_frontier(
                 let row = serde_json::json!({
                     "set": set.label, "query": qi, "policy": "static_nprobe", "budget": nprobe,
                     "recall10": recall(10), "recall30": recall(30),
+                    "recall30_g1": set.recall30_g1(qi, &ids),
                     "posting_entries": raw, "unique_offsets": unique, "dead_offsets": dead,
                     "original_scored": learned_scored, "plain_scored": plain_scored,
                     "scored_total": learned_scored + plain_scored, "widened": widened,
@@ -830,3 +868,41 @@ pub(super) fn run_static_frontier(
         println!("STATIC_FRONTIER_SET_DONE set={} queries={}", set.label, set.queries.len());
     }
 }
+
+#[test]
+fn g1_recall_counts_tied_copies_and_caps_at_top() {
+    // Query 0: 30 stored-gold ids 1..=30 plus two copies (31, 32) tied within eps at rank 30.
+    // Query 1: exactly the 30 ids 101..=130.
+    let dir = tempfile::tempdir().unwrap();
+    let ids: Vec<u64> = (1..=32).chain(101..=130).collect();
+    let off: Vec<u64> = vec![0, 32, 62];
+    let write = |name: &str, v: &[u64]| {
+        let p = dir.path().join(name);
+        fs_err::write(&p, v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>()).unwrap();
+        p
+    };
+    let (tie, offsets) = (write("t.tie.u64", &ids), write("t.tie_off.u64", &off));
+    let set = QuerySet {
+        label: "t".into(),
+        queries: vec![vec![0.0; 768]; 2],
+        gold: vec![(1..=30).collect(), (101..=130).collect()],
+        ties: None,
+    }
+    .with_ties(&tie, &offsets);
+    // A tied copy (31) returned in place of gold id 30 counts; an outside id (999) does not.
+    let mut returned: Vec<u64> = (1..=29).collect();
+    returned.push(31);
+    assert_eq!(set.recall30_g1(0, &returned), Some(30));
+    returned[0] = 999;
+    assert_eq!(set.recall30_g1(0, &returned), Some(29));
+    // Duplicates in the returned list count once; ids beyond the first 30 are ignored.
+    let dup: Vec<u64> = std::iter::repeat_n(1, 30).chain(2..=32).collect();
+    assert_eq!(set.recall30_g1(0, &dup), Some(1));
+    // Query 1 has no ties: the source and G1 rules agree.
+    let exact: Vec<u64> = (101..=130).collect();
+    assert_eq!(set.recall30_g1(1, &exact), Some(30));
+    // Plans without tie sets give None.
+    let plain = QuerySet { label: "p".into(), queries: vec![vec![0.0; 768]], gold: vec![(1..=30).collect()], ties: None };
+    assert_eq!(plain.recall30_g1(0, &exact), None);
+}
+
