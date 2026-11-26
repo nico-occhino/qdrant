@@ -1,6 +1,13 @@
 # Final benchmark: preregistration
 
-**Status: DRAFT, 2026-11-26.**
+**Status: FROZEN, 2026-11-26, by the author's go-ahead.**
+- The frozen revision is the commit that introduces this status line. Its hash is recorded in
+  [FREEZE.md](FREEZE.md) by the next commit.
+- From here on, any change is a dated amendment that says whether it came before or after data.
+- **Nothing has run:** no selection-pilot or primary job exists. The only data so far are local smoke tests on
+  20K–30K-row plans, used to test the implementation (§10). They are not results.
+- **CLI (§3.6) is still a placeholder.** It enters by amendment before any primary data, or later on the same plans
+  under its own amendment (§3.6).
 
 **Author decisions, 2026-11-26.** The recommendations below were accepted before any data:
 - panels from corpus rows ≥ 1M, with 64-query validation panels (§2.2);
@@ -8,14 +15,6 @@
 - a replication seed (§5.4);
 - only the three workloads of §2.1;
 - the HNSW m candidates {16, 32} (§3.3).
-
-The document stays a draft until the implementation items of §10 pass their tests. It is then frozen, before the
-selection pilot.
-
-- **Not frozen.** The author's decisions are recorded below.
-- **CLI (§3.6) is a placeholder** until its design note exists.
-- **Freezing.** Freezing means a commit hash recorded here, before the selection pilot (§8) runs. Changes after that
-  point are dated amendments, each stating whether it came before or after data.
 
 ## 1. Question and claims
 
@@ -216,7 +215,8 @@ configuration is fixed before the primary run, by §8 or as stated.
 
 ### 5.4 Replication (decided: yes)
 - Pilot vs tie-break showed router training differs slightly across hosts. So the whole primary run is repeated once
-  on a second plan seed, 20261205, with the same panels drawn under that seed.
+  on a second plan seed, 20261205. The uniform workloads keep the same query panels (§2.2); shift draws its holdout
+  panels under that seed, as its plan requires.
 - A family A or B verdict is **replicated** if seed 2 gives the same category. Otherwise it is reported as *not
   replicated*.
 - This measures stream-, training- and build-level variability, which the query bootstrap cannot.
@@ -242,12 +242,22 @@ configuration is fixed before the primary run, by §8 or as stated.
   negative findings (for example, DLI-best worse than S-LMI).
 
 ## 8. Selection pilot (before the primary; validation panels only)
-- Plan seed 20261202, all three workloads, the 64-query validation panels.
-- **It chooses:**
-  - S-LMI and IVF bucket counts and HNSW m, each by the lower mean validation W@0.90 on W1, ties broken by p50 latency;
-  - and it confirms that the grids bracket 0.90 for every arm.
-- **It checks:** every gate in §6, and the runtime per job, which sets walltimes.
-- **It does not read** any test panel, and it re-selects no DLI component.
+- Plan seed 20261202 and the 64-query validation panels. No test panel is read, and no DLI component is re-selected.
+- **Stage 1 (W1):** E1, DLI-best, S-LMI and IVF with each of {250, 1,000, 3,162} buckets, and HNSW with m ∈ {16, 32}.
+  That is 10 arm jobs.
+  - **Choice** (`analyze_final.selection`): per arm family, the configuration with the lowest mean validation
+    W@0.90 over W1 batches 1–20. The mean is taken over the batches where every candidate of that family attains.
+    Exact ties are broken by the lower mean p50 latency.
+  - The choice is recorded as a dated amendment, derived from validation data only. That use is preregistered here.
+- **Stage 2 (W2, W3):** E1, DLI-best and the chosen S-LMI, IVF and HNSW configurations. That is 5 arm jobs per
+  workload.
+- **Both stages check:**
+  - every gate of §6;
+  - that every arm's grid brackets 0.90 in every batch (no `upper_bound`, and non-attainment only where §3.3 allows
+    it);
+  - the runtime per job, which sets the primary walltimes.
+- **If a stage-1 grid fails to bracket,** the grid is extended by a dated amendment before stage 2. No candidate is
+  dropped for failing to bracket.
 
 ## 9. PostgreSQL replication subset (separate preregistration, in the PostgreSQL repository)
 - It reuses this document's plans, panels and gold contract, with gold recomputed for PostgreSQL's own stored
@@ -387,8 +397,30 @@ configuration is fixed before the primary run, by §8 or as stated.
   results.
 
 ## 11. Budget and timeline (estimate)
-- **Primary:** 5 arms × 3 workloads × 2 seeds. Jobs combine arms per workload where memory allows.
-- **Time:** about 2–6 h per (workload, arm) on a perian node, judging by the pilots, so on the order of 30
-  node-jobs. The selection pilot is about a third of that.
-- **Target:** frozen in early December, primary complete by mid-January 2027. That leaves the rest for writing
-  (submission 2027-03-10).
+- **Selection pilot:** 3 plan jobs and 10 + 10 arm jobs.
+- **Primary:** 6 plan jobs (3 workloads × 2 seeds) and 30 arm jobs (5 arms × 3 workloads × 2 seeds), plus CLI by
+  amendment.
+- **Time:** about 2–6 h per arm job on validation panels, judging by the DLI-best pilot. Test panels add replay
+  time. Primary walltimes are set from the stage-1 runtimes, at 1.5× the longest of each arm, and recorded in the
+  manifest before submission.
+- **Target:** pilot in early December, primary complete by mid-January 2027 (submission 2027-03-10).
+
+## 12. Execution
+- **One script, [`pbs/fb.pbs`](pbs/fb.pbs):**
+  - `MODE=plan` writes the immutable plan of a (workload, seed) to
+    `final-benchmark-20261126/plans/<W>-<seed>/`. It hash-checks the plan after publishing and makes it read-only.
+  - `MODE=pilot|primary` runs one (workload, seed, arm, configuration). It copies that plan, re-verifies every file
+    hash and the plan's seed and scenario, and runs the driver with `DLI_P3_TIMED=1`.
+  - Then come the oracle gate (`oracle_check.py`) and the per-run gates (`analyze_final.gates`). A failed gate fails
+    the job, and the data are kept.
+- **Script guards:**
+  - the pilot only on seed 20261202, and the primary never on it;
+  - only preregistered seeds and configurations;
+  - refusal of a node without AVX/FMA;
+  - result directories are never reused.
+- **Staging** works as in the earlier campaigns: source bundle of the frozen commit, vendor tarball and
+  `inputs.sha256`, in `native-<commit12>`. The binary comes from the source-keyed cache.
+- **Each submission needs the author's explicit authorisation.** Job IDs, hosts and walltimes go into
+  `PBS_MANIFEST.json`.
+- **Analysis:** `analyze_final.py --manifest RUNS.json`, with `"mode": "pilot"` for the selection pilot. Results go
+  to C: with verified checksums.

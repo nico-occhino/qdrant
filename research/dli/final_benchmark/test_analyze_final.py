@@ -33,8 +33,8 @@ def g1(arm, b):
     return min(30, int(30 * b // SCALE[arm]))
 
 
-def write_run(root, seed, arm, plan, break_ledger=False, break_control=False):
-    d = root / f"{seed}-{arm}"
+def write_run(root, seed, arm, plan, break_ledger=False, break_control=False, panel="test", scale=None, tag=""):
+    d = root / f"{seed}-{arm}{tag}"
     policy = A.ARM_POLICY[arm]
     for t in range(3):
         (d / f"batch_{t:02d}").mkdir(parents=True)
@@ -43,16 +43,16 @@ def write_run(root, seed, arm, plan, break_ledger=False, break_control=False):
             for pol in pols:
                 for q in range(4):
                     for b in BUDGETS:
-                        rec = g1("E1" if pol == "mdn_code" else arm, b)
+                        rec = min(30, int(30 * b // scale)) if scale else g1("E1" if pol == "mdn_code" else arm, b)
                         work = b + (1 if (break_control and pol == "proportional" and t == 1 and q == 0) else 0)
-                        f.write(json.dumps({"set": "test", "query": q, "policy": pol, "budget": b, "recall30": rec,
+                        f.write(json.dumps({"set": panel, "query": q, "policy": pol, "budget": b, "recall30": rec,
                                             "recall30_g1": rec, "scored_total": work}) + "\n")
                         if pol == policy:
-                            ft.write(json.dumps({"set": "test", "query": q, "policy": pol, "budget": b,
+                            ft.write(json.dumps({"set": panel, "query": q, "policy": pol, "budget": b,
                                                  "elapsed_ns": b, "recall30": rec, "recall30_g1": rec}) + "\n")
                 if arm == "HNSW":
                     for q in range(4):
-                        f.write(json.dumps({"set": "test", "query": q, "policy": "hnsw_exact", "budget": 0,
+                        f.write(json.dumps({"set": panel, "query": q, "policy": "hnsw_exact", "budget": 0,
                                             "recall30": 30, "recall30_g1": 30, "scored_total": 9999}) + "\n")
     with open(d / "batches.jsonl", "w") as f:
         for m in plan["batches"]:
@@ -99,4 +99,15 @@ with tempfile.TemporaryDirectory() as tmp:
     gb = A.analyze({"runs": bad}, resamples=10)["gates"]["W1/1/DLI-best"]
     assert not gb["ledger"] and not gb["native_equals_control"] and gb["native_control_work_mismatches"] == len(BUDGETS), gb
     assert not gb["pass"]
+    # Selection pilot: S-LMI with 250 buckets (W = 2,700) against 1,000 buckets (W = 1,350) on W1 `val`;
+    # the 1,000-bucket configuration must be chosen, and both bracket 0.90 in every batch.
+    pil = root / "pilot"
+    pil.mkdir()
+    pruns = [{"workload": "W1", "seed": 20261202, "arm": "S-LMI", "cfg": c, "plan": str(root / "plan.json"),
+              "dir": write_run(pil, 20261202, "S-LMI", plan, panel="val", scale=sc, tag=f"-{c}")}
+             for c, sc in ((250, 3000), (1000, 1500))]
+    sel = A.selection({"mode": "pilot", "runs": pruns})
+    assert sel["choice"]["S-LMI"]["cfg"] == 1000, sel["choice"]
+    assert sel["choice"]["S-LMI"]["mean_W"] == {250: 2700.0, 1000: 1350.0}, sel["choice"]
+    assert all(v["all_interpolated"] for v in sel["bracketing"].values()), sel["bracketing"]
 print("analyze_final known-answer test: OK")

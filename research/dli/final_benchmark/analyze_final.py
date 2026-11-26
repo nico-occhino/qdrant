@@ -2,8 +2,10 @@
 
     analyze_final.py --manifest RUNS.json --out FILE [--resamples 10000]
 
-RUNS.json lists every arm run:
-    {"runs": [{"workload": "W1", "seed": 20261201, "arm": "DLI-best", "dir": ".../E1", "plan": ".../plan.json"}, ...]}
+RUNS.json lists every arm run (`cfg` for S-LMI, IVF and HNSW). `"mode": "pilot"` analyses the selection pilot
+(validation panels, §8) instead of the primary:
+    {"mode": "primary", "runs": [{"workload": "W1", "seed": 20261201, "arm": "DLI-best", "dir": ".../run",
+                                  "plan": ".../plan.json"}, ...]}
 Arms and the policy their rows carry: E1 → mdn_code, DLI-best → proportional_native, S-LMI and IVF →
 static_nprobe, HNSW → hnsw_ef. CLI is added by amendment. The DLI-best run also carries `mdn_code` (the
 secondary allocation replay) and `proportional` (the offline control).
@@ -52,6 +54,7 @@ KNOWN = 0.999
 ARM_POLICY = {"E1": "mdn_code", "DLI-best": "proportional_native", "S-LMI": "static_nprobe", "IVF": "static_nprobe",
               "HNSW": "hnsw_ef"}
 PANELS = {"W1": ["test"], "W2": ["test"], "W3": ["mq", "ids", "ood"]}
+PILOT_PANELS = {"W1": ["val"], "W2": ["val"], "W3": ["mq_val", "ids_val", "ood_val"]}
 FAMILY_B = ["S-LMI", "IVF", "HNSW"]
 FAMILY_A_SIZE = 5  # panel decisions
 FAMILY_B_SIZE = len(FAMILY_B) * 5 * 2  # baselines x panels x (work, latency)
@@ -252,16 +255,49 @@ def gates(run, panels):
 
 # ---------- driver ----------
 
+def selection(manifest):
+    """Selection pilot (PREREGISTRATION.md §8): for S-LMI, IVF and HNSW, the configuration (`cfg`: bucket count or m)
+    with the lowest mean validation W@0.90 on W1 over batches 1–20, taken over the batches where every candidate of
+    that arm attains. Exact ties are broken by the lower mean p50 latency. Also reports, for every arm and workload,
+    whether each validation panel brackets 0.90 in every batch."""
+    out = {"choice": {}, "bracketing": {}}
+    for arm in FAMILY_B:
+        cands = [r for r in manifest["runs"] if r["arm"] == arm and r["workload"] == "W1"]
+        if not cands:
+            continue
+        data = {r["cfg"]: load_rows(r["dir"], "rows.jsonl", ARM_POLICY[arm], "val") for r in cands}
+        timed = {r["cfg"]: load_rows(r["dir"], "timed_rows.jsonl", ARM_POLICY[arm], "val") for r in cands}
+        common = sorted(set.intersection(*[set(d) for d in data.values()]))
+        ws = {c: {t: batch_w(d, t)[0] for t in eligible("W1", common)} for c, d in data.items()}
+        both = [t for t in eligible("W1", common) if all(ws[c][t] is not None for c in ws)]
+        mean_w = {c: float(np.mean([ws[c][t] for t in both])) if both else None for c in ws}
+        lat = {c: float(np.mean([latency_at(data[c], timed[c], t) or np.nan for t in both])) if both else None for c in ws}
+        ranked = sorted((c for c in ws if mean_w[c] is not None), key=lambda c: (mean_w[c], lat[c]))
+        out["choice"][arm] = {"cfg": ranked[0] if ranked else None, "mean_W": mean_w, "mean_p50_ns": lat,
+                              "batches_used": both}
+    for r in manifest["runs"]:
+        for p in PILOT_PANELS[r["workload"]]:
+            d = load_rows(r["dir"], "rows.jsonl", ARM_POLICY[r["arm"]], p)
+            kinds = {t: batch_w(d, t)[1]["kind"] for t in d}
+            out["bracketing"][f'{r["workload"]}/{r["arm"]}/{r.get("cfg", "-")}/{p}'] = {
+                "all_interpolated": all(k == "interpolated" for k in kinds.values()),
+                "upper_bound_batches": [t for t, k in kinds.items() if k == "upper_bound"],
+                "not_attained_batches": [t for t, k in kinds.items() if k == "not_attained"]}
+    return out
+
+
 def analyze(manifest, resamples=RESAMPLES):
+    panels_by_workload = PILOT_PANELS if manifest.get("mode") == "pilot" else PANELS
     runs = manifest["runs"]
     by = {(r["workload"], r["seed"], r["arm"]): r for r in runs}
     seeds = sorted({r["seed"] for r in runs})
     result = {"gates": {}, "family_A": {}, "family_B": {}, "secondary_allocation": {}, "replication": {}}
     for r in runs:
-        result["gates"][f'{r["workload"]}/{r["seed"]}/{r["arm"]}'] = gates(r, PANELS[r["workload"]])
+        result["gates"][f'{r["workload"]}/{r["seed"]}/{r["arm"]}{"/" + str(r["cfg"]) if "cfg" in r else ""}'] = gates(
+            r, panels_by_workload[r["workload"]])
     for seed in seeds:
         rng = np.random.default_rng(SEED)
-        for wl, panels in PANELS.items():
+        for wl, panels in panels_by_workload.items():
             for p in panels:
                 key = f"{wl}/{seed}/{p}"
                 get = lambda arm, pol=None, name="rows.jsonl": load_rows(by[(wl, seed, arm)]["dir"], name,
@@ -309,7 +345,16 @@ def main():
     a.add_argument("--out", type=Path, required=True)
     a.add_argument("--resamples", type=int, default=RESAMPLES)
     args = a.parse_args()
-    res = analyze(json.loads(args.manifest.read_text()), args.resamples)
+    manifest = json.loads(args.manifest.read_text())
+    if manifest.get("mode") == "pilot":
+        res = {"selection": selection(manifest),
+               "gates": {f'{r["workload"]}/{r["arm"]}/{r.get("cfg", "-")}': gates(r, PILOT_PANELS[r["workload"]])
+                         for r in manifest["runs"]}}
+        args.out.write_text(json.dumps(res, indent=1, default=float))
+        print(json.dumps({"choice": {a: v["cfg"] for a, v in res["selection"]["choice"].items()},
+                          "gates_pass": {k: v["pass"] for k, v in res["gates"].items()}}, indent=1))
+        return
+    res = analyze(manifest, args.resamples)
     args.out.write_text(json.dumps(res, indent=1, default=float))
     print(json.dumps({"gates_pass": {k: v["pass"] for k, v in res["gates"].items()},
                       "family_A": {k: (v.get("R"), v.get("ci95"), v["decision"]) for k, v in res["family_A"].items()},
