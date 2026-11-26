@@ -350,6 +350,42 @@ configuration is fixed before the primary run, by §8 or as stated.
   ε), and empty or truncated samples are rejected. All 56 collection DLI/LMI tests pass. Clippy reports nothing on
   the changed lines.
 
+**Status of I6 (2026-11-26): done.**
+- **Mode.** `DLI_P3_TIMED=1` runs `run_timed` on the same flushed copy after the work replay, through each arm's
+  production search path with no tracing or profiling:
+  - DLI: `route_pinned_traced` with no trace, then candidate resolution, per policy in `DLI_P3_TIMED_POLICIES`
+    (native policies only);
+  - S-LMI/IVF: route at nprobe, score with `score_candidates_generic` (the scorer native LMI search uses), and widen
+    until 30 results are found;
+  - HNSW: segment search at each `ef`.
+- **Protocol.** One untimed pass over every (query, knob), then one timed pass per query end to end (all segments
+  plus merge) on one thread. Recall is computed after the clock stops.
+- **Check.** Timed rows reproduce the work replay's recall on **1,440 of 1,440** rows: DLI-best (`mdn_code`,
+  `proportional_native`), S-LMI and HNSW on the 30K smoke plan. Smoke latencies come from a debug build and are not
+  results; the jobs use the optimised build.
+- **HNSW known-answer rows.** The HNSW replay also records Qdrant's exact search (`hnsw_exact`, budget 0) per query.
+  On the smoke plan these rows give G1 30/30 on 96 of 96, and their scored count equals the live points.
+
+**Status of I7 (2026-11-26): done.** [`analyze_final.py`](analyze_final.py) and
+[`test_analyze_final.py`](test_analyze_final.py).
+- **Implements:**
+  - W@0.90 under G1;
+  - the paired, batch-stratified bootstrap (10,000 resamples, seed 20261204);
+  - Family A, Family B on work and latency, and the 80% attainment rule;
+  - Bonferroni intervals (family A: 5 decisions; family B: 30);
+  - the secondary `mdn_code` replay on the DLI-best topology;
+  - replication across seeds;
+  - the per-run gates of §6 except the oracle, which is `oracle_check.py`.
+- **Two rules fixed here, before any data:**
+  - **If a batch's first grid point already reaches 0.90,** W is that point's work, flagged `upper_bound`. The grids
+    are designed so this should not happen, and every occurrence is reported.
+  - **Latency per batch** is the median timed query latency at the first grid point whose full-panel mean G1 recall
+    is ≥ 0.90. That point is held fixed within bootstrap resamples, and latency R = mean_t L_X / mean_t L_Y.
+- **Tests.** The known-answer test with planted W values passes: interpolation, upper bound, non-attainment, A
+  supported, B better, worse and equivalent, latency ratios, replication, gates, and a broken ledger plus a
+  native/control mismatch being caught. Run on the real 30K smoke outputs, every gate passes. Those verdicts are not
+  results.
+
 ## 11. Budget and timeline (estimate)
 - **Primary:** 5 arms × 3 workloads × 2 seeds. Jobs combine arms per workload where memory allows.
 - **Time:** about 2–6 h per (workload, arm) on a perian node, judging by the pilots, so on the order of 30

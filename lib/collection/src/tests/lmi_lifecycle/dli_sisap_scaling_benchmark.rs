@@ -2989,8 +2989,30 @@ async fn dli_phase3_workload() {
                 calibration_set: calibration_set.as_ref(),
             });
             }
-            std::fs::remove_dir_all(&copy).unwrap();
             record["frontier_seconds"] = frontier_started.elapsed().as_secs_f64().into();
+            // I6 timed replay (PREREGISTRATION.md §4): same copy, production search paths, no tracing.
+            if std::env::var("DLI_P3_TIMED").as_deref() == Ok("1") {
+                use super::dli_selection_frontier::{TimedSystem, native_policy, run_timed};
+                let timed_started = Instant::now();
+                let out = output.join(format!("batch_{index:02}"));
+                if hnsw_system {
+                    run_timed(&copy, &out, &sets, &TimedSystem::Hnsw, &hnsw_efs, query_cap);
+                } else if static_system {
+                    run_timed(&copy, &out, &sets, &TimedSystem::Static, &static_nprobes, query_cap);
+                } else {
+                    let timed: Vec<(String, crate::collection_manager::dli_bucket_plan::RoutingPolicy)> = env_list("DLI_P3_TIMED_POLICIES")
+                        .expect("DLI_P3_TIMED_POLICIES (native policies to time)")
+                        .into_iter()
+                        .map(|n| {
+                            let p = native_policy(&n).unwrap_or_else(|| panic!("{n} has no native search path to time"));
+                            (n, p)
+                        })
+                        .collect();
+                    run_timed(&copy, &out, &sets, &TimedSystem::Dli { policies: &timed }, &budgets, query_cap);
+                }
+                record["timed_seconds"] = timed_started.elapsed().as_secs_f64().into();
+            }
+            fs_err::remove_dir_all(&copy).unwrap();
         }
         writeln!(log, "{record}").unwrap();
         println!("PHASE3_BATCH {record}");

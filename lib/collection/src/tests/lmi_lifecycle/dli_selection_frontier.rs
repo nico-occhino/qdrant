@@ -242,6 +242,12 @@ fn locate(members: &[(usize, &Segment)], index: &[Option<MemberIndex>], id: u64)
     found.unwrap_or_else(|| panic!("gold id {id} not present in topology"))
 }
 
+/// The native routing policy behind a frontier policy name; `None` for offline controls
+/// (`proportional`, `calibrated`, oracles), which have no production search path to time.
+pub(super) fn native_policy(name: &str) -> Option<RoutingPolicy> {
+    policies().into_iter().find(|(n, _)| *n == name).and_then(|(_, p)| p)
+}
+
 fn policies() -> Vec<(&'static str, Option<RoutingPolicy>)> {
     vec![
         ("slot", Some(RoutingPolicy::SlotWeighted)),
@@ -742,6 +748,134 @@ pub(super) fn run_frontier(run: &FrontierRun) {
 /// Work counts every scoring pass, including widening re-scores. No DLI descriptor is
 /// read. Rows use the DLI frontier schema with `policy = "static_nprobe"` and
 /// `budget = nprobe`.
+/// Which production search path a timed replay (I6) drives.
+pub(super) enum TimedSystem<'a> {
+    /// DLI native routing (`route_pinned_traced` with no trace, then resolution) per policy.
+    Dli { policies: &'a [(String, RoutingPolicy)] },
+    /// Static LMI / IVF: route at nprobe, score with the native scorer, widen until 30 found.
+    Static,
+    /// HNSW: Qdrant segment search at `ef`.
+    Hnsw,
+}
+
+/// Timed replay (final benchmark I6, PREREGISTRATION.md §4): on the same flushed copy as the
+/// work replay, drive each arm's production search path with tracing and counters off. One
+/// untimed pass over every (query, knob) warms caches, then a timed pass measures each query end
+/// to end (all segments plus merge) on this one thread. Recall is computed after the clock stops,
+/// as a consistency check against the work replay. Rows go to `timed_rows.jsonl`.
+pub(super) fn run_timed(segments_dir: &Path, output: &Path, sets: &[QuerySet], system: &TimedSystem, knobs: &[usize], query_cap: usize) {
+    use segment::data_types::vectors::{QueryVector, VectorInternal};
+    use segment::index::candidate_scoring::score_candidates_generic;
+    use segment::types::{SearchParams, WithPayload, WithVector};
+    assert!(!output.join("timed_rows.jsonl").exists(), "refusing to overwrite");
+    fs_err::create_dir_all(output).unwrap();
+    let load = |uuid: Uuid| {
+        let path = segments_dir.join("segments").join(uuid.to_string());
+        load_segment(&path, uuid, None, &AtomicBool::new(false), true).unwrap_or_else(|e| panic!("segment {uuid} did not load: {e}"))
+    };
+    // DLI members come from the hierarchy descriptor (level order as in `run_frontier`); the other
+    // systems use every segment of the copy.
+    let (arity, mut loaded): (usize, Vec<(usize, Segment)>) = if matches!(system, TimedSystem::Dli { .. }) {
+        let d: serde_json::Value = serde_json::from_slice(&fs_err::read(segments_dir.join("dli_hierarchy.json")).unwrap()).unwrap();
+        let members = d["members"].as_array().unwrap().iter().map(|m| {
+            (m[1].as_u64().unwrap() as usize, load(m[0].as_str().unwrap().parse().unwrap()))
+        });
+        (d["arity"].as_u64().unwrap() as usize, members.collect())
+    } else {
+        let all = fs_err::read_dir(segments_dir.join("segments"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.is_dir() && !p.file_name().unwrap().to_string_lossy().starts_with('.'))
+            .map(|p| (0usize, load(p.file_name().unwrap().to_string_lossy().parse().unwrap())));
+        (0, all.collect())
+    };
+    loaded.sort_by_key(|(level, s)| (std::cmp::Reverse(*level), s.uuid));
+    let members: Vec<(usize, &Segment)> = loaded.iter().map(|(l, s)| (*l, s)).collect();
+    let stopped = AtomicBool::new(false);
+    let context = VectorQueryContext::default();
+    let labels: Vec<(String, Option<RoutingPolicy>)> = match system {
+        TimedSystem::Dli { policies } => policies.iter().map(|(n, p)| (n.clone(), Some(*p))).collect(),
+        TimedSystem::Static => vec![("static_nprobe".into(), None)],
+        TimedSystem::Hnsw => vec![("hnsw_ef".into(), None)],
+    };
+    let search = |query: &[f32], policy: Option<RoutingPolicy>, knob: usize| -> Vec<u64> {
+        match system {
+            TimedSystem::Dli { .. } => {
+                let routed = route_pinned_traced(&members, query, arity, knob, &context, policy.unwrap(), TOP, None, None).unwrap();
+                match resolve_pinned_candidates(&members, routed, TOP).unwrap() {
+                    CandidateResolution::Resolved(hits) => hits.into_iter().map(|h| num(h.id)).collect(),
+                    CandidateResolution::ExactFallback(reason) => panic!("frozen topology must resolve: {reason:?}"),
+                }
+            }
+            TimedSystem::Static | TimedSystem::Hnsw => {
+                let original = QueryVector::Nearest(VectorInternal::Dense(query.to_vec()));
+                let routed = QueryVector::Nearest(VectorInternal::Dense(Distance::Cosine.preprocess_vector::<f32>(query.to_vec())));
+                let mut hits: Vec<(f32, u64)> = Vec::new();
+                for (_, segment) in &members {
+                    let data = &segment.vector_data[DEFAULT_VECTOR_NAME];
+                    let index = data.vector_index.borrow();
+                    let state = match (&*index, system) {
+                        (VectorIndexEnum::Lmi(lmi), TimedSystem::Static) => lmi.routing_state(),
+                        _ => None,
+                    };
+                    if let Some(state) = state {
+                        let tracker = segment.id_tracker.borrow();
+                        let storage = data.vector_storage.borrow();
+                        let buckets = state.postings().len();
+                        let needed = TOP.min(tracker.available_point_count());
+                        let mut probe = knob.clamp(1, buckets);
+                        let found = loop {
+                            let (candidates, _) = state.candidates_with_raw_count(&routed, probe, &stopped).unwrap().expect("dense query");
+                            let found = score_candidates_generic(&original, &candidates, TOP, &*tracker, &*storage, &context).unwrap();
+                            if found.len() >= needed || probe >= buckets {
+                                break found;
+                            }
+                            probe = probe.saturating_mul(2).min(buckets);
+                        };
+                        hits.extend(found.into_iter().map(|h| (h.score, num(tracker.external_id(h.idx).expect("live offset")))));
+                    } else {
+                        drop(index);
+                        let params = SearchParams { hnsw_ef: Some(knob), ..Default::default() };
+                        let found = segment
+                            .search(DEFAULT_VECTOR_NAME, &original, &WithPayload::from(false), &WithVector::Bool(false), None, TOP, Some(&params))
+                            .unwrap();
+                        hits.extend(found.into_iter().map(|p| (p.score, num(p.id))));
+                    }
+                }
+                hits.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+                hits.into_iter().take(TOP).map(|h| h.1).collect()
+            }
+        }
+    };
+    // Warm pass: every (query, policy, knob) once, untimed.
+    for set in sets {
+        for query in set.queries.iter().take(query_cap) {
+            for (_, policy) in &labels {
+                for &knob in knobs {
+                    std::hint::black_box(search(query, *policy, knob));
+                }
+            }
+        }
+    }
+    let mut rows = fs_err::File::create(output.join("timed_rows.jsonl")).unwrap();
+    for set in sets {
+        for (qi, (query, gold)) in set.queries.iter().zip(&set.gold).enumerate().take(query_cap) {
+            for (name, policy) in &labels {
+                for &knob in knobs {
+                    let started = std::time::Instant::now();
+                    let ids = std::hint::black_box(search(query, *policy, knob));
+                    let elapsed_ns = started.elapsed().as_nanos();
+                    let recall30 = gold[..TOP].iter().filter(|id| ids.contains(id)).count();
+                    let row = serde_json::json!({"set": set.label, "query": qi, "policy": name, "budget": knob,
+                        "elapsed_ns": elapsed_ns, "recall30": recall30, "recall30_g1": set.recall30_g1(qi, &ids)});
+                    writeln!(rows, "{row}").unwrap();
+                }
+            }
+        }
+    }
+    println!("TIMED_REPLAY_DONE sets={} knobs={} policies={}", sets.len(), knobs.len(), labels.len());
+}
+
 /// Stored-vector oracle sample (final benchmark I5, PREREGISTRATION.md §2.3): from a flushed shard
 /// copy, `count` live points evenly spaced over the sorted live ids, written to
 /// `stored_sample.bin` as records of (id: u64 LE, 768 × f16 LE). The f32 values read back are
@@ -888,8 +1022,10 @@ pub(super) fn run_hnsw_frontier(segments_dir: &Path, output: &Path, sets: &[Quer
     for set in sets {
         for (qi, (query, gold)) in set.queries.iter().zip(&set.gold).enumerate().take(query_cap) {
             let original = QueryVector::Nearest(VectorInternal::Dense(query.clone()));
-            for &ef in efs {
-                let params = SearchParams { hnsw_ef: Some(ef), ..Default::default() };
+            // Every ef, then Qdrant's exact search on the same snapshot (the HNSW known-answer row,
+            // PREREGISTRATION.md §6 gate 4), recorded as policy `hnsw_exact` with budget 0.
+            for (ef, exact) in efs.iter().map(|&e| (e, false)).chain(std::iter::once((0, true))) {
+                let params = SearchParams { hnsw_ef: (!exact).then_some(ef), exact, ..Default::default() };
                 let started = std::time::Instant::now();
                 let (mut graph_scored, mut plain_scored) = (0usize, 0usize);
                 let mut hits: Vec<(f32, u64)> = Vec::new();
@@ -911,7 +1047,7 @@ pub(super) fn run_hnsw_frontier(segments_dir: &Path, output: &Path, sets: &[Quer
                 let ids: Vec<u64> = hits.iter().take(TOP).map(|h| h.1).collect();
                 let recall = |k: usize| gold[..k].iter().filter(|id| ids[..k.min(ids.len())].contains(id)).count();
                 let row = serde_json::json!({
-                    "set": set.label, "query": qi, "policy": "hnsw_ef", "budget": ef,
+                    "set": set.label, "query": qi, "policy": if exact { "hnsw_exact" } else { "hnsw_ef" }, "budget": ef,
                     "recall10": recall(10), "recall30": recall(30),
                     "recall30_g1": set.recall30_g1(qi, &ids),
                     "original_scored": graph_scored, "plain_scored": plain_scored,
