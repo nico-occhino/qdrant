@@ -14,7 +14,7 @@
    "workload": "W1",
    "seed": 20261202,
    "walltime": "06:00:00",
-   "status": "completed (arm 26011819 released by afterok)"
+   "status": "completed 2026-11-26"
   },
   "arms": [
    {
@@ -23,14 +23,14 @@
     "depend": "afterok:26011817",
     "walltime": "12:00:00",
     "role": "builds and caches the binary",
-    "status": "running; binary cached"
+    "status": "FAILED in phase run, exit 101, 2026-11-26T19:57Z: panic at dli_sisap_scaling_benchmark.rs:3017 (writeln to batches.jsonl on /storage -> EBADF, os error 9) after batch 16 of 21; cause not established; no data used"
    },
    {
     "job": "26021472.pbs-m1.metacentrum.cz",
     "arm": "E1",
     "walltime": "12:00:00",
     "role": "uses cached binary d298fc79d33f894793a910ed",
-    "status": "submitted"
+    "status": "completed 2026-11-26; COMPLETE.json, SHA256SUMS verified, all gates pass"
    },
    {
     "job": "26021473.pbs-m1.metacentrum.cz",
@@ -38,7 +38,7 @@
     "cfg": 250,
     "walltime": "12:00:00",
     "role": "uses cached binary d298fc79d33f894793a910ed",
-    "status": "submitted"
+    "status": "completed 2026-11-26; COMPLETE.json, SHA256SUMS verified, all gates pass"
    },
    {
     "job": "26021474.pbs-m1.metacentrum.cz",
@@ -46,7 +46,7 @@
     "cfg": 1000,
     "walltime": "12:00:00",
     "role": "uses cached binary d298fc79d33f894793a910ed",
-    "status": "submitted"
+    "status": "completed 2026-11-26; COMPLETE.json, SHA256SUMS verified, all gates pass"
    },
    {
     "job": "26021475.pbs-m1.metacentrum.cz",
@@ -54,7 +54,7 @@
     "cfg": 3162,
     "walltime": "12:00:00",
     "role": "uses cached binary d298fc79d33f894793a910ed",
-    "status": "submitted"
+    "status": "completed 2026-11-26; COMPLETE.json, SHA256SUMS verified, all gates pass"
    },
    {
     "job": "26021477.pbs-m1.metacentrum.cz",
@@ -62,7 +62,7 @@
     "cfg": 250,
     "walltime": "12:00:00",
     "role": "uses cached binary d298fc79d33f894793a910ed",
-    "status": "submitted"
+    "status": "completed 2026-11-26; COMPLETE.json, SHA256SUMS verified, all gates pass"
    },
    {
     "job": "26021478.pbs-m1.metacentrum.cz",
@@ -70,7 +70,7 @@
     "cfg": 1000,
     "walltime": "12:00:00",
     "role": "uses cached binary d298fc79d33f894793a910ed",
-    "status": "submitted"
+    "status": "completed 2026-11-26; COMPLETE.json, SHA256SUMS verified, all gates pass"
    },
    {
     "job": "26021479.pbs-m1.metacentrum.cz",
@@ -78,7 +78,7 @@
     "cfg": 3162,
     "walltime": "12:00:00",
     "role": "uses cached binary d298fc79d33f894793a910ed",
-    "status": "submitted"
+    "status": "completed 2026-11-26; COMPLETE.json, SHA256SUMS verified, all gates pass"
    },
    {
     "job": "26021480.pbs-m1.metacentrum.cz",
@@ -86,7 +86,7 @@
     "cfg": 16,
     "walltime": "12:00:00",
     "role": "uses cached binary d298fc79d33f894793a910ed",
-    "status": "submitted"
+    "status": "completed 2026-11-26; COMPLETE.json, SHA256SUMS verified, all gates pass"
    },
    {
     "job": "26021481.pbs-m1.metacentrum.cz",
@@ -94,9 +94,11 @@
     "cfg": 32,
     "walltime": "12:00:00",
     "role": "uses cached binary d298fc79d33f894793a910ed",
-    "status": "submitted"
+    "status": "completed 2026-11-26; COMPLETE.json, SHA256SUMS verified, all gates pass"
    }
-  ]
+  ],
+  "selection_result": "analyze_final.selection on the 9 completed arms: S-LMI 3162, IVF 3162, HNSW 16 (provisional: the HNSW ef grid gives upper_bound W in batch 0 for m=16 and in 10 batches for m=32, so per \u00a78 the grid must be extended before stage 2). Not yet an amendment.",
+  "archive": "C: Research-Results/2026-11-26-final-benchmark-stage1 (884 files, STORAGE_SHA256.txt verified)"
  },
  "resources": "8 CPUs, 96 GB, 100 GB scratch SSD, AMD (fb.pbs header)"
 }
