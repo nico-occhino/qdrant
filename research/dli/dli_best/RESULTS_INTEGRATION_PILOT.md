@@ -138,7 +138,17 @@ maintenance components:
 - **Status.** All of this is descriptive, on validation panels, and was not preregistered. The frozen DLI-best rule
   does not re-select components on pilot data, and the rule says interactions are measured in the final benchmark.
 
-## What is open (author decisions)
+## Author decisions (2026-11-26)
+
+The author accepted both recommendations below:
+- **Criterion 3:** option (a). The pilot is recorded as not accepted on criterion 3, with the cause documented. The
+  final benchmark fixes its gold rule in its own preregistration, before any data.
+- **Allocation:** `mdn_code` on the DLI-best topology becomes a secondary, descriptive replay in the final benchmark.
+
+The choice of gold rule (stored-representation gold, or tie- and rounding-aware scoring) is made in the
+final-benchmark preregistration draft. The CLI design note waits for the author.
+
+## What was open (decided above)
 
 1. **Criterion 3.** Choose between two options:
    - **(a)** Record the pilot as not accepted on criterion 3. The documented cause is gold definition, which E1
