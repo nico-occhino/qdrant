@@ -2711,15 +2711,20 @@ fn p3_setup() -> (CollectionConfigInternal, bool, Option<LmiConfig>, String, usi
     // static-LMI model on every optimized segment (the arm's model rule with
     // `DLI_P3_STATIC_BUCKETS` buckets), `DLI_P3_STATIC_SEGMENTS` target segments,
     // `DLI_P3_STATIC_INDEXING_KB` indexing threshold, one optimization job at a time.
-    let static_system = match std::env::var("DLI_P3_SYSTEM").as_deref() {
-        Err(_) | Ok("dli") => false,
-        Ok("static") => true,
-        Ok(other) => panic!("DLI_P3_SYSTEM must be dli or static, got {other}"),
+    // `hnsw` is the final benchmark's HNSW arm (research/dli/final_benchmark/PREREGISTRATION.md
+    // §3.3): the same ordinary-optimizer lifecycle as `static`, with no LMI model, so optimized
+    // segments become Qdrant HNSW indexes (`DLI_P3_HNSW_M`, `DLI_P3_HNSW_EF_CONSTRUCT`, default 100).
+    let system = std::env::var("DLI_P3_SYSTEM").unwrap_or_else(|_| "dli".into());
+    let (static_system, hnsw_system) = match system.as_str() {
+        "dli" => (false, false),
+        "static" => (true, false),
+        "hnsw" => (true, true),
+        other => panic!("DLI_P3_SYSTEM must be dli, static or hnsw, got {other}"),
     };
     let env_usize = |name: &str| -> usize {
         std::env::var(name).unwrap_or_else(|_| panic!("{name} required")).parse().expect(name)
     };
-    let static_model = static_system.then(|| {
+    let static_model = (static_system && !hnsw_system).then(|| {
         let buckets = env_usize("DLI_P3_STATIC_BUCKETS");
         let mut model = base_model;
         model.n_buckets = buckets;
@@ -2729,6 +2734,19 @@ fn p3_setup() -> (CollectionConfigInternal, bool, Option<LmiConfig>, String, usi
         model
     });
     let mut config = collection_config(!static_system);
+    if hnsw_system {
+        let crate::operations::types::VectorsConfig::Single(vectors) = &mut config.params.vectors else {
+            unreachable!()
+        };
+        vectors.lmi_config = None;
+        config.hnsw_config.m = env_usize("DLI_P3_HNSW_M");
+        config.hnsw_config.ef_construct =
+            std::env::var("DLI_P3_HNSW_EF_CONSTRUCT").map_or(100, |v| v.parse().expect("DLI_P3_HNSW_EF_CONSTRUCT"));
+        config.optimizer_config.default_segment_number = env_usize("DLI_P3_STATIC_SEGMENTS");
+        config.optimizer_config.indexing_threshold = Some(env_usize("DLI_P3_STATIC_INDEXING_KB"));
+        config.optimizer_config.max_optimization_threads = Some(1);
+        assert_eq!(variant, "none", "variants apply to the DLI system only");
+    }
     if let Some(model) = static_model {
         let crate::operations::types::VectorsConfig::Single(vectors) = &mut config.params.vectors else {
             unreachable!()
@@ -2738,7 +2756,7 @@ fn p3_setup() -> (CollectionConfigInternal, bool, Option<LmiConfig>, String, usi
         config.optimizer_config.indexing_threshold = Some(env_usize("DLI_P3_STATIC_INDEXING_KB"));
         config.optimizer_config.max_optimization_threads = Some(1);
         assert_eq!(variant, "none", "variants apply to the DLI system only");
-    } else {
+    } else if !hnsw_system {
         let dli = config.dli_experimental.as_mut().unwrap();
         match variant.as_str() {
             "none" => {}
@@ -2760,7 +2778,9 @@ fn p3_setup() -> (CollectionConfigInternal, bool, Option<LmiConfig>, String, usi
             other => panic!("unknown DLI_P3_VARIANT {other}"),
         }
     }
-    let arm_label = if static_system {
+    let arm_label = if hnsw_system {
+        format!("HNSW/m{}/efc{}/seg{}", config.hnsw_config.m, config.hnsw_config.ef_construct, env_usize("DLI_P3_STATIC_SEGMENTS"))
+    } else if static_system {
         format!("S/b{}/seg{}", static_model.unwrap().n_buckets, env_usize("DLI_P3_STATIC_SEGMENTS"))
     } else {
         format!("{:?}/{variant}", arm())
@@ -2793,7 +2813,13 @@ async fn dli_phase3_workload() {
     let plan: serde_json::Value =
         serde_json::from_slice(&std::fs::read(plan_dir.join("plan.json")).unwrap()).unwrap();
     let (config, static_system, static_model, arm_label, buffer_capacity, arity, base_model) = p3_setup();
-    let static_nprobes: Vec<usize> = if static_system {
+    let hnsw_system = std::env::var("DLI_P3_SYSTEM").as_deref() == Ok("hnsw");
+    let hnsw_efs: Vec<usize> = if hnsw_system {
+        env_list("DLI_P3_HNSW_EFS").expect("DLI_P3_HNSW_EFS").iter().map(|s| s.parse().unwrap()).collect()
+    } else {
+        Vec::new()
+    };
+    let static_nprobes: Vec<usize> = if static_system && !hnsw_system {
         env_list("DLI_P3_STATIC_NPROBES").expect("DLI_P3_STATIC_NPROBES").iter().map(|s| s.parse().unwrap()).collect()
     } else {
         Vec::new()
@@ -2928,7 +2954,11 @@ async fn dli_phase3_workload() {
                 )
             });
             let frontier_started = Instant::now();
-            if static_system {
+            if hnsw_system {
+                super::dli_selection_frontier::run_hnsw_frontier(
+                    &copy, &output.join(format!("batch_{index:02}")), &sets, &hnsw_efs, query_cap,
+                );
+            } else if static_system {
                 super::dli_selection_frontier::run_static_frontier(
                     &copy, &output.join(format!("batch_{index:02}")), &sets, &static_nprobes, query_cap,
                 );
@@ -2958,7 +2988,7 @@ async fn dli_phase3_workload() {
     };
     assert!(diagnostics.4.is_empty(), "maintenance errors: {diagnostics:?}");
     let summary = serde_json::json!({
-        "system": if static_system { "static" } else { "dli" }, "static_model": static_model,
+        "system": if hnsw_system { "hnsw" } else if static_system { "static" } else { "dli" }, "static_model": static_model,
         "arm": arm_label, "scenario": plan["scenario"], "rows": plan["rows"],
         "buffer_capacity": buffer_capacity, "arity": arity, "model": base_model,
         "publications": if static_system { Vec::new() } else { local.local_dli_publication_events_for_test().await.unwrap() },

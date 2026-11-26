@@ -292,6 +292,24 @@ configuration is fixed before the primary run, by §8 or as stated.
   - **Static S-LMI (16 buckets):** 480 rows. With all buckets probed, G1 is 30/30 for 96/96 queries; source gold is
     94/96.
 
+**Status of I3 (2026-11-26): done.**
+- **Driver.** `DLI_P3_SYSTEM=hnsw` runs the static arm's optimizer lifecycle with no LMI model, so optimized segments
+  become Qdrant HNSW indexes. Settings: `DLI_P3_HNSW_M`, `DLI_P3_HNSW_EF_CONSTRUCT` (default 100), and the static
+  arm's segment and indexing-threshold variables. `run_hnsw_frontier` replays every `ef` in `DLI_P3_HNSW_EFS` through
+  Qdrant's own segment search and merges the per-segment top-30.
+- **Work.** A thread-local `TaskScoringProfileGuard` counts every scored vector. HNSW graph-search scorer calls
+  (`FilteredScorer::score_points_unfiltered`, `score_point`) now feed that per-task counter. It counts only inside an
+  active guard, so builds and service queries are not counted.
+- **Qdrant behaviour, kept as is:** an HNSW segment smaller than `full_scan_threshold` (default 10,000 KB, about
+  6,600 vectors here) is scanned exhaustively by Qdrant itself, and that work is counted.
+- **Tests.** All 412 segment HNSW tests and all 54 collection DLI/LMI tests pass. Clippy reports nothing on the
+  changed lines.
+- **Smoke test** (30K-row G1 insert-only plan, m = 16, 24 queries, debug build):
+  - batch 0 (3,000 points, below the threshold): the scored count is exactly 3,000 at every `ef`, an independent check
+    of the counter;
+  - batches 1–3 (12K–30K points): mean work grows with `ef` (at 30K: 489 → 16,369 for `ef` 30 → 4,096), and G1
+    recall rises from 0.885 to 1.000. Source gold reaches only 0.997–0.999 at the top `ef`.
+
 ## 11. Budget and timeline (estimate)
 - **Primary:** 5 arms × 3 workloads × 2 seeds. Jobs combine arms per workload where memory allows.
 - **Time:** about 2–6 h per (workload, arm) on a perian node, judging by the pilots, so on the order of 30

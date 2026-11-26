@@ -742,6 +742,93 @@ pub(super) fn run_frontier(run: &FrontierRun) {
 /// Work counts every scoring pass, including widening re-scores. No DLI descriptor is
 /// read. Rows use the DLI frontier schema with `policy = "static_nprobe"` and
 /// `budget = nprobe`.
+/// HNSW arm of the final benchmark (research/dli/final_benchmark/PREREGISTRATION.md §3.3):
+/// for every query and every `ef`, search each copied segment through Qdrant's own segment
+/// search (HNSW graph on indexed segments, full scan on plain ones), merge the per-segment
+/// top-30, and count every scored vector with the thread-local `TaskScoringProfileGuard`. That
+/// counts graph traversal, entry points and plain scans; index builds are not counted.
+pub(super) fn run_hnsw_frontier(segments_dir: &Path, output: &Path, sets: &[QuerySet], efs: &[usize], query_cap: usize) {
+    use segment::data_types::vectors::{QueryVector, VectorInternal};
+    use segment::index::hnsw_index::point_scorer::{TaskScoringProfileGuard, scoring_task_success_snapshot};
+    use segment::types::{SearchParams, WithPayload, WithVector};
+    assert!(!output.join("rows.jsonl").exists(), "refusing to overwrite");
+    fs_err::create_dir_all(output).unwrap();
+    let mut loaded: Vec<Segment> = fs_err::read_dir(segments_dir.join("segments"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_dir() && !path.file_name().unwrap().to_string_lossy().starts_with('.'))
+        .map(|path| {
+            let uuid: Uuid = path.file_name().unwrap().to_string_lossy().parse().unwrap();
+            load_segment(&path, uuid, None, &AtomicBool::new(false), true)
+                .unwrap_or_else(|e| panic!("segment {uuid} did not load: {e}"))
+        })
+        .collect();
+    loaded.sort_by_key(|s| s.uuid);
+    let kind = |s: &Segment| match &*s.vector_data[DEFAULT_VECTOR_NAME].vector_index.borrow() {
+        VectorIndexEnum::Hnsw(_) => "hnsw",
+        VectorIndexEnum::Plain(_) => "plain",
+        VectorIndexEnum::Lmi(_) => "lmi",
+        VectorIndexEnum::SparseRam(_)
+        | VectorIndexEnum::SparseCompressedImmutableRamF32(_)
+        | VectorIndexEnum::SparseCompressedImmutableRamF16(_)
+        | VectorIndexEnum::SparseCompressedImmutableRamU8(_)
+        | VectorIndexEnum::SparseCompressedMmapF32(_)
+        | VectorIndexEnum::SparseCompressedMmapF16(_)
+        | VectorIndexEnum::SparseCompressedMmapU8(_) => "other",
+    };
+    let topology: Vec<serde_json::Value> = loaded
+        .iter()
+        .map(|s| serde_json::json!({"uuid": s.uuid, "appendable": s.is_appendable(), "live": s.available_point_count(),
+            "deleted": s.deleted_point_count(), "index": kind(s)}))
+        .collect();
+    assert!(loaded.iter().all(|s| kind(s) != "lmi" && kind(s) != "other"), "HNSW arm: unexpected index kind");
+    fs_err::write(
+        output.join("topology.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({"segments": topology,
+            "total_live": loaded.iter().map(|s| s.available_point_count()).sum::<usize>(), "efs": efs})).unwrap(),
+    )
+    .unwrap();
+    let mut rows = fs_err::File::create(output.join("rows.jsonl")).unwrap();
+    for set in sets {
+        for (qi, (query, gold)) in set.queries.iter().zip(&set.gold).enumerate().take(query_cap) {
+            let original = QueryVector::Nearest(VectorInternal::Dense(query.clone()));
+            for &ef in efs {
+                let params = SearchParams { hnsw_ef: Some(ef), ..Default::default() };
+                let started = std::time::Instant::now();
+                let (mut graph_scored, mut plain_scored) = (0usize, 0usize);
+                let mut hits: Vec<(f32, u64)> = Vec::new();
+                for segment in &loaded {
+                    let guard = TaskScoringProfileGuard::begin();
+                    let found = segment
+                        .search(DEFAULT_VECTOR_NAME, &original, &WithPayload::from(false), &WithVector::Bool(false), None, TOP, Some(&params))
+                        .unwrap();
+                    let scored = scoring_task_success_snapshot() as usize;
+                    drop(guard);
+                    if kind(segment) == "hnsw" {
+                        graph_scored += scored;
+                    } else {
+                        plain_scored += scored;
+                    }
+                    hits.extend(found.into_iter().map(|p| (p.score, num(p.id))));
+                }
+                hits.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+                let ids: Vec<u64> = hits.iter().take(TOP).map(|h| h.1).collect();
+                let recall = |k: usize| gold[..k].iter().filter(|id| ids[..k.min(ids.len())].contains(id)).count();
+                let row = serde_json::json!({
+                    "set": set.label, "query": qi, "policy": "hnsw_ef", "budget": ef,
+                    "recall10": recall(10), "recall30": recall(30),
+                    "recall30_g1": set.recall30_g1(qi, &ids),
+                    "original_scored": graph_scored, "plain_scored": plain_scored,
+                    "scored_total": graph_scored + plain_scored,
+                    "elapsed_ns": started.elapsed().as_nanos(),
+                });
+                writeln!(rows, "{row}").unwrap();
+            }
+        }
+        println!("HNSW_FRONTIER_SET_DONE set={} queries={}", set.label, set.queries.len());
+    }
+}
+
 pub(super) fn run_static_frontier(
     segments_dir: &Path,
     output: &Path,

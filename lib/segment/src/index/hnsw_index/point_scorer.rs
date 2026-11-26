@@ -413,13 +413,18 @@ impl<'a> FilteredScorer<'a> {
 
         self.raw_scorer
             .score_points(point_ids, &mut self.scores_buffer[..point_ids.len()])?;
+        // Research accounting (HNSW graph search): counted only inside an active
+        // `TaskScoringProfileGuard` on this thread, so index builds and service queries are unaffected.
+        record_scoring_successes(point_ids.len());
 
         Ok(std::iter::zip(point_ids, &self.scores_buffer)
             .map(|(&idx, &score)| ScoredPointOffset { idx, score }))
     }
 
     pub fn score_point(&self, point_id: PointOffsetType) -> OperationResult<ScoreType> {
-        self.raw_scorer.score_point(point_id)
+        let score = self.raw_scorer.score_point(point_id)?;
+        record_scoring_successes(1);
+        Ok(score)
     }
 
     pub fn score_internal(&self, point_a: PointOffsetType, point_b: PointOffsetType) -> ScoreType {
