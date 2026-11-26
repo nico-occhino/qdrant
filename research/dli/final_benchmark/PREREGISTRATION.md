@@ -1,7 +1,18 @@
 # Final benchmark: preregistration
 
 **Status: DRAFT, 2026-11-26.**
-- **Not frozen.** Sections marked **[DECIDE]** need the author.
+
+**Author decisions, 2026-11-26.** The recommendations below were accepted before any data:
+- panels from corpus rows ≥ 1M, with 64-query validation panels (§2.2);
+- gold option G1 (§2.3);
+- a replication seed (§5.4);
+- only the three workloads of §2.1;
+- the HNSW m candidates {16, 32} (§3.3).
+
+The document stays a draft until the implementation items of §10 pass their tests. It is then frozen, before the
+selection pilot.
+
+- **Not frozen.** The author's decisions are recorded below.
 - **CLI (§3.6) is a placeholder** until its design note exists.
 - **Freezing.** Freezing means a commit hash recorded here, before the selection pilot (§8) runs. Changes after that
   point are dated amendments, each stating whether it came before or after data.
@@ -46,7 +57,7 @@ maintenance and allocation fixes. The standard indexes are HNSW, IVF and Qdrant'
   The other Phase 3 delete scenarios are left out to bound cost. Phase 3 already decided their questions.
 - **Selection seed.** The selection pilot (§8) uses **20261202**, a different plan, on validation panels only.
 
-### 2.2 Query panels: fresh rows **[DECIDE]**
+### 2.2 Query panels: fresh rows (decided)
 - **Why the official queries cannot be used.** All 10,000 official queries have been evaluated in some earlier
   campaign. DLI-best's components were selected on rows 8000–9999 (Phase 3 test and `partb`). Reusing them would
   leak selection into the test.
@@ -54,6 +65,7 @@ maintenance and allocation fixes. The standard indexes are HNSW, IVF and Qdrant'
   queried them, and the 10M studies inserted them only as data.
   - Sample with seed 20261203, without replacement: **test 1,000; validation 64; calibration 2,000** (the last is
     kept for CLI or any arm that needs one).
+  - **The same uniform panels serve every plan seed** (primary, selection, replication). Only the stream changes.
   - **Caveat:** corpus rows include exact duplicates of other rows. If a query has a duplicate in the live set, the
     duplicate is its own nearest neighbour. This is reported as the share of test queries with a score-1.0
     neighbour, and the tie rule (§2.3) handles it.
@@ -63,7 +75,7 @@ maintenance and allocation fixes. The standard indexes are HNSW, IVF and Qdrant'
   1,000-query one (`dli_best/RESULTS_INTEGRATION_PILOT.md` §5).
 - **Alternative:** keep official rows 9000–9999 and disclose the selection leakage. *Not recommended.*
 
-### 2.3 Gold and the recall rule **[DECIDE: recommended option G1]**
+### 2.3 Gold and the recall rule (decided: G1)
 The DLI-best pilot showed that gold computed on raw Float16 rows in Float64 disagrees with what any Qdrant arm can
 return. Qdrant stores each Cosine vector normalised in f32 and cast to f16. That causes 96% of full-search misses.
 
@@ -198,7 +210,7 @@ configuration is fixed before the primary run, by §8 or as stated.
 - A ratio with an attainment share below 80% is *descriptive*.
 - For HNSW, every panel and batch where it does not attain is listed.
 
-### 5.4 Replication **[DECIDE: recommended yes]**
+### 5.4 Replication (decided: yes)
 - Pilot vs tie-break showed router training differs slightly across hosts. So the whole primary run is repeated once
   on a second plan seed, 20261205, with the same panels drawn under that seed.
 - A family A or B verdict is **replicated** if seed 2 gives the same category. Otherwise it is reported as *not
