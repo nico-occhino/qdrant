@@ -176,7 +176,7 @@ print('plan verified:', len(m['files']), 'files, seed', m['seed'], m['scenario']
                      DLI_FRONTIER_POLICIES=mdn_code,proportional,proportional_native
                      DLI_P3_TIMED_POLICIES=proportional_native) ;;
     S-LMI|IVF) : "${CFG:?bucket count}"
-              case "$CFG" in 250|1000|3162) ;; *) echo "bucket count not in the pilot set"; exit 2 ;; esac
+              case "$CFG" in 250|1000|3162|10000) ;; *) echo "bucket count not in the pilot set (A1.2 adds 10000)"; exit 2 ;; esac
               ENVS+=(DLI_P3_SYSTEM=static DLI_P3_STATIC_BUCKETS="$CFG" DLI_P3_STATIC_SEGMENTS=1
                      DLI_P3_STATIC_INDEXING_KB=20000 DLI_P3_STATIC_NPROBES="$(nprobes "$CFG")")
               [[ "$ARM" = IVF ]] && ENVS+=(LMI_RESEARCH_ROUTER=centroid) || ENVS+=(LMI_RESEARCH_ROUTER=mlp) ;;

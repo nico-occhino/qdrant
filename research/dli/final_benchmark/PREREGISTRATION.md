@@ -124,7 +124,7 @@ configuration is fixed before the primary run, by §8 or as stated.
 ### 3.2 S-LMI and IVF
 - Model rule as in the static-vs-DLI study: hidden 128, 10 epochs, 25 k-means iterations, and the same sample rule.
   `indexing_threshold` 20,000 KB; one optimization job at a time.
-- **Bucket count chosen in the pilot (§8)** from {250, 1,000, 3,162}, separately for S-LMI and IVF, with
+- **Bucket count chosen in the pilot (§8)** from {250, 1,000, 3,162, 10,000 (A1.2)}, separately for S-LMI and IVF, with
   `default_segment_number = 1`.
 - **nprobe grid:** doubling from 1 up to all buckets, so both arms also attain every target.
 
@@ -424,3 +424,37 @@ configuration is fixed before the primary run, by §8 or as stated.
   `PBS_MANIFEST.json`.
 - **Analysis:** `analyze_final.py --manifest RUNS.json`, with `"mode": "pilot"` for the selection pilot. Results go
   to C: with verified checksums.
+
+## 13. Amendments
+
+### A1 (2026-11-26, after the stage-1 validation data; validation panels only, no test panel read)
+Authorised by the author ("accept all recommendations, push and resubmit"). Stage-1 outcomes are in
+`PBS_MANIFEST.json`. Nine arm jobs completed, and every §6 gate passed. The provisional choice by §8's rule was
+S-LMI 3,162, IVF 3,162 and HNSW m = 16.
+
+- **A1.1 DLI-best rerun.**
+  - **What happened.** Job 26011819 failed in its run phase (exit 101) after batch 16 of 21. The driver panicked when
+    `writeln!` to `batches.jsonl` on network storage returned EBADF (os error 9). This was not a gate failure, and the
+    cause is not established.
+  - **What we do.** It is resubmitted **once, unchanged**, on the same staged revision (`native-52347112c7c2`). No
+    data from the failed job are used.
+  - **If it fails again in the same way,** it is treated as a defect. The defect is diagnosed and fixed by a further
+    amendment before stage 2.
+- **A1.2 Wider bucket grid for S-LMI and IVF.**
+  - **Why.** Both families chose the largest candidate, 3,162. The §8 rule only requires extension when a recall
+    grid fails to bracket, so this step goes beyond the rule. It is taken so the baselines are not under-tuned.
+  - **The added candidate.** 10,000 buckets, one more half-decade step: about 100 vectors per bucket at 1M rows. It
+    is added to §3.2's set, with the nprobe grid doubling from 1 up to 10,000.
+  - **The choice.** It is re-taken by §8's unchanged rule over {250, 1,000, 3,162, 10,000}, using the stage-1 jobs
+    for the first three candidates.
+  - **Decided before these data:** the grid is not extended further. If 10,000 is chosen, it is used, and the choice
+    at the edge of the grid is reported as a limitation.
+- **A1.3 HNSW is not amended here.**
+  - **What failed.** §8's bracketing check fails: the first `ef`, 30, already yields `upper_bound` in batch 0 for m = 16 and in 10 of
+    batches 1–20 for m = 32.
+  - **Why the grid cannot simply go lower.** Qdrant sets the effective `ef` to max(`ef`, limit)
+    (`lib/segment/src/index/hnsw_index/graph_layers.rs:552`), and the limit is 30. So any `ef` below 30 is identical
+    to 30.
+  - **What comes next.** The HNSW remedy is a separate amendment, and it comes before stage 2.
+- **Script.** `pbs/fb.pbs` accepts CFG 10000 for S-LMI and IVF. Nothing else changes. The binary's source key is
+  unchanged, because no file under `lib/`, `src/` or `Cargo.*` changes.
