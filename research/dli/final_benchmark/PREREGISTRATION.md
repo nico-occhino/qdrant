@@ -311,6 +311,21 @@ configuration is fixed before the primary run, by §8 or as stated.
   - batches 1–3 (12K–30K points): mean work grows with `ef` (at 30K: 489 → 16,369 for `ef` 30 → 4,096), and G1
     recall rises from 0.885 to 1.000. Source gold reaches only 0.997–0.999 at the top `ef`.
 
+**Status of I4 (2026-11-26): done.**
+- **Arm.** IVF is `DLI_P3_SYSTEM=static` with `LMI_RESEARCH_ROUTER=centroid`, labelled `IVF/b{B}/seg{n}`. The
+  variable is process-wide, so the driver refuses it for the DLI and HNSW systems; that refusal was checked.
+- **Replay checks.** The static replay classifies every learned segment's router as centroid (one Linear layer, zero
+  bias, unit-norm rows) or MLP, and asserts that the class matches the arm. For IVF, at every query and starting
+  nprobe, it asserts that the router's chosen buckets are the best centroids by dot product with the routed query.
+- **Tests.** Unit tests cover the classifier, a correct ranking, and rejection of a wrong pick. All 56 collection
+  DLI/LMI tests pass. Clippy reports nothing on the changed lines.
+- **Smoke test** (30K-row G1 insert-only plan, 32 buckets, nprobe 1–32, 24 queries):
+  - IVF: all 8 optimizer builds logged `"router":"centroid"`, and the centroid-ranking assertion held on every query
+    of every batch;
+  - S-LMI: all 8 builds trained the MLP;
+  - final batch (30K points, nprobe 1 → 32): IVF G1 recall 0.576 → 1.000 for 1,063 → 30,000 vectors scored; S-LMI
+    0.563 → 1.000 for 1,047 → 30,000. Full probing is exact for both.
+
 ## 11. Budget and timeline (estimate)
 - **Primary:** 5 arms × 3 workloads × 2 seeds. Jobs combine arms per workload where memory allows.
 - **Time:** about 2–6 h per (workload, arm) on a perian node, judging by the pilots, so on the order of 30

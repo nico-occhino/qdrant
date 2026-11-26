@@ -742,6 +742,40 @@ pub(super) fn run_frontier(run: &FrontierRun) {
 /// Work counts every scoring pass, including widening re-scores. No DLI descriptor is
 /// read. Rows use the DLI frontier schema with `policy = "static_nprobe"` and
 /// `budget = nprobe`.
+/// Whether an LMI router is the research centroid router (IVF-Flat): one Linear layer, zero bias,
+/// unit-norm rows (`training.rs::centroid_router`). An MLP router has hidden layers and ReLU.
+fn is_centroid_router(router: &segment::index::lmi_index::MlpRouter) -> bool {
+    use segment::index::lmi_index::RouterLayer;
+    match router.layers.as_slice() {
+        [RouterLayer::Linear(l)] => {
+            l.bias.iter().all(|b| *b == 0.0)
+                && l.weights.chunks_exact(l.in_features).all(|row| {
+                    let n: f64 = row.iter().map(|x| f64::from(*x) * f64::from(*x)).sum::<f64>().sqrt();
+                    (n - 1.0).abs() < 1e-3
+                })
+        }
+        _ => false,
+    }
+}
+
+/// IVF check (I4): the router's top-`nprobe` buckets must be the `nprobe` best centroids by dot
+/// product with the routed query. Compared as score sequences, so ties may resolve either way.
+fn assert_centroid_ranking(router: &segment::index::lmi_index::MlpRouter, routed: &[f32], picked: &[usize]) {
+    use segment::index::lmi_index::RouterLayer;
+    let [RouterLayer::Linear(l)] = router.layers.as_slice() else { panic!("not a centroid router") };
+    let scores: Vec<f64> = l
+        .weights
+        .chunks_exact(l.in_features)
+        .map(|row| row.iter().zip(routed).map(|(a, b)| f64::from(*a) * f64::from(*b)).sum())
+        .collect();
+    let mut best = scores.clone();
+    best.sort_by(|a, b| b.total_cmp(a));
+    let got: Vec<f64> = picked.iter().map(|&b| scores[b]).collect();
+    for (k, (g, w)) in got.iter().zip(&best).enumerate() {
+        assert!((g - w).abs() <= 1e-6, "IVF: router bucket rank {k} has centroid score {g}, best is {w}");
+    }
+}
+
 /// HNSW arm of the final benchmark (research/dli/final_benchmark/PREREGISTRATION.md §3.3):
 /// for every query and every `ef`, search each copied segment through Qdrant's own segment
 /// search (HNSW graph on indexed segments, full scan on plain ones), merge the per-segment
@@ -861,10 +895,22 @@ pub(super) fn run_static_frontier(
                 VectorIndexEnum::Lmi(lmi) => lmi.routing_state().map(|st| st.postings().len()),
                 _ => None,
             };
+            let router = if let VectorIndexEnum::Lmi(lmi) = &*index {
+                lmi.routing_state().map(|st| if is_centroid_router(st.router()) { "centroid" } else { "mlp" })
+            } else {
+                None
+            };
             serde_json::json!({"uuid": s.uuid, "appendable": s.is_appendable(), "live": s.available_point_count(),
-                "deleted": s.deleted_point_count(), "learned_buckets": buckets})
+                "deleted": s.deleted_point_count(), "learned_buckets": buckets, "router": router})
         })
         .collect();
+    // The IVF arm must route every learned segment with the centroid router; S-LMI with none.
+    let expect_centroid = std::env::var("LMI_RESEARCH_ROUTER").as_deref() == Ok("centroid");
+    for t in &topology {
+        if let Some(kind) = t["router"].as_str() {
+            assert_eq!(kind == "centroid", expect_centroid, "segment {} has a {kind} router", t["uuid"]);
+        }
+    }
     fs_err::write(
         output.join("topology.json"),
         serde_json::to_vec_pretty(&serde_json::json!({"segments": topology, "total_live": total_live, "nprobes": nprobes})).unwrap(),
@@ -873,6 +919,7 @@ pub(super) fn run_static_frontier(
     let stopped = AtomicBool::new(false);
     let context = VectorQueryContext::default();
     let mut rows = fs_err::File::create(output.join("rows.jsonl")).unwrap();
+    let mut centroid_checks = 0usize;
     for set in sets {
         for (qi, (query, gold)) in set.queries.iter().zip(&set.gold).enumerate().take(query_cap) {
             let original = QueryVector::Nearest(VectorInternal::Dense(query.clone()));
@@ -904,6 +951,12 @@ pub(super) fn run_static_frontier(
                         let buckets = state.postings().len();
                         let needed = TOP.min(tracker.available_point_count());
                         let mut probe = nprobe.clamp(1, buckets);
+                        if expect_centroid {
+                            let QueryVector::Nearest(VectorInternal::Dense(v)) = &routed else { unreachable!() };
+                            let picked = state.router().top_buckets_with_stop(v, probe, &stopped).unwrap();
+                            assert_centroid_ranking(state.router(), v, &picked);
+                            centroid_checks += 1;
+                        }
                         loop {
                             let (candidates, raw_count) = state
                                 .candidates_with_raw_count(&routed, probe, &stopped)
@@ -952,7 +1005,7 @@ pub(super) fn run_static_frontier(
                 writeln!(rows, "{row}").unwrap();
             }
         }
-        println!("STATIC_FRONTIER_SET_DONE set={} queries={}", set.label, set.queries.len());
+        println!("STATIC_FRONTIER_SET_DONE set={} queries={} centroid_ranking_checks={centroid_checks}", set.label, set.queries.len());
     }
 }
 
@@ -993,3 +1046,52 @@ fn g1_recall_counts_tied_copies_and_caps_at_top() {
     assert_eq!(plain.recall30_g1(0, &exact), None);
 }
 
+
+#[cfg(test)]
+fn router_fixture(layers: Vec<segment::index::lmi_index::RouterLayer>) -> segment::index::lmi_index::MlpRouter {
+    segment::index::lmi_index::MlpRouter { layers }
+}
+
+#[cfg(test)]
+fn unit_linear(rows: &[[f32; 3]], bias: f32) -> segment::index::lmi_index::RouterLayer {
+    let weights: Vec<f32> = rows
+        .iter()
+        .flat_map(|r| {
+            let n = r.iter().map(|x| x * x).sum::<f32>().sqrt();
+            r.iter().map(move |x| x / n)
+        })
+        .collect();
+    segment::index::lmi_index::RouterLayer::Linear(segment::index::lmi_index::LinearLayer {
+        in_features: 3,
+        out_features: rows.len(),
+        weights,
+        bias: vec![bias; rows.len()],
+    })
+}
+
+#[test]
+fn ivf_router_classifier_and_centroid_ranking() {
+    use segment::index::lmi_index::RouterLayer;
+    let rows = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.6, 0.8, 0.0], [0.0, 0.0, 1.0]];
+    let centroid = router_fixture(vec![unit_linear(&rows, 0.0)]);
+    assert!(is_centroid_router(&centroid));
+    assert!(!is_centroid_router(&router_fixture(vec![unit_linear(&rows, 0.5)])), "nonzero bias");
+    assert!(
+        !is_centroid_router(&router_fixture(vec![unit_linear(&rows, 0.0), RouterLayer::ReLU, unit_linear(&rows[..3], 0.0)])),
+        "an MLP is not a centroid router"
+    );
+    // Query close to bucket 2 (0.6, 0.8), then 1, then 0: the best three are [2, 1, 0].
+    let q = [0.5_f32, 0.8, 0.1];
+    let stopped = AtomicBool::new(false);
+    let picked = centroid.top_buckets_with_stop(&q, 3, &stopped).unwrap();
+    assert_centroid_ranking(&centroid, &q, &picked);
+    assert_eq!(picked, vec![2, 1, 0]);
+}
+
+#[test]
+#[should_panic(expected = "IVF: router bucket rank")]
+fn ivf_centroid_ranking_rejects_a_wrong_pick() {
+    let rows = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.6, 0.8, 0.0], [0.0, 0.0, 1.0]];
+    let centroid = router_fixture(vec![unit_linear(&rows, 0.0)]);
+    assert_centroid_ranking(&centroid, &[0.5, 0.8, 0.1], &[3, 1, 0]);
+}

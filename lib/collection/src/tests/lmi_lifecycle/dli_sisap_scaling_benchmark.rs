@@ -2715,6 +2715,15 @@ fn p3_setup() -> (CollectionConfigInternal, bool, Option<LmiConfig>, String, usi
     // §3.3): the same ordinary-optimizer lifecycle as `static`, with no LMI model, so optimized
     // segments become Qdrant HNSW indexes (`DLI_P3_HNSW_M`, `DLI_P3_HNSW_EF_CONSTRUCT`, default 100).
     let system = std::env::var("DLI_P3_SYSTEM").unwrap_or_else(|_| "dli".into());
+    // IVF arm (PREREGISTRATION.md §3.2): the static system with `LMI_RESEARCH_ROUTER=centroid`, an
+    // exact spherical-centroid router read by every LMI build in the process. It is refused for the
+    // DLI and HNSW systems, where it would silently change DLI's routers or mean nothing.
+    let centroid_router = match std::env::var("LMI_RESEARCH_ROUTER").as_deref() {
+        Err(_) | Ok("mlp") => false,
+        Ok("centroid") => true,
+        Ok(other) => panic!("LMI_RESEARCH_ROUTER must be mlp or centroid, got {other}"),
+    };
+    assert!(!centroid_router || system == "static", "LMI_RESEARCH_ROUTER=centroid is the IVF arm: DLI_P3_SYSTEM=static only");
     let (static_system, hnsw_system) = match system.as_str() {
         "dli" => (false, false),
         "static" => (true, false),
@@ -2781,7 +2790,8 @@ fn p3_setup() -> (CollectionConfigInternal, bool, Option<LmiConfig>, String, usi
     let arm_label = if hnsw_system {
         format!("HNSW/m{}/efc{}/seg{}", config.hnsw_config.m, config.hnsw_config.ef_construct, env_usize("DLI_P3_STATIC_SEGMENTS"))
     } else if static_system {
-        format!("S/b{}/seg{}", static_model.unwrap().n_buckets, env_usize("DLI_P3_STATIC_SEGMENTS"))
+        let family = if centroid_router { "IVF" } else { "S" };
+        format!("{family}/b{}/seg{}", static_model.unwrap().n_buckets, env_usize("DLI_P3_STATIC_SEGMENTS"))
     } else {
         format!("{:?}/{variant}", arm())
     };
