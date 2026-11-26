@@ -264,6 +264,20 @@ configuration is fixed before the primary run, by §8 or as stated.
 | I6 | Timed replay mode (warm, single thread, no counters) | p50 is stable across two passes within 5% on a small plan |
 | I7 | Analysis script: families A and B, attainment, replication | known-answer synthetic test, as in earlier studies |
 
+**Status of I1 (2026-11-26): done.** [`fb_plan.py`](fb_plan.py) and [`test_fb_plan.py`](test_fb_plan.py).
+- **Known-answer tests pass:**
+  - the stored-gold tie sets equal a brute-force sort, with planted exact duplicates, one-ulp near-duplicates and
+    three chunk sizes;
+  - an end-to-end corpus-panel plan passes its checks: query rows above the floor and never inserted, tie sets
+    containing the stored gold, CSR offsets, and live digests.
+- **Regression.** With official panels and source gold only, it reproduces the Phase 3 preflight plans (job 25842074,
+  100K) byte for byte: 18/18 constant-R files and 35/35 shift files, gold and queries included. The only extra files
+  are the new query-ID provenance files.
+- **Measured on 1,064 corpus-row queries over 200K rows:**
+  - stored-gold and source-gold top-30 agree on 99.77% of ids;
+  - the mean tie set is 30.76 ids, and 6% of queries have more than 30 (at most 334, from duplicates);
+  - stored gold costs about 1.2× source gold, so a 1M insert-only plan takes about 25 minutes.
+
 ## 11. Budget and timeline (estimate)
 - **Primary:** 5 arms × 3 workloads × 2 seeds. Jobs combine arms per workload where memory allows.
 - **Time:** about 2–6 h per (workload, arm) on a perian node, judging by the pilots, so on the order of 30
