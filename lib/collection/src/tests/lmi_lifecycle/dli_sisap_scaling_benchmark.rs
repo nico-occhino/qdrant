@@ -2963,6 +2963,10 @@ async fn dli_phase3_workload() {
                     &plan_dir.join(spec["gold"].as_str().unwrap()),
                 )
             });
+            // I5 oracle sample after the first and the last batch of the plan (every system).
+            if index == 0 || index + 1 == batches.len().min(max_batches) {
+                super::dli_selection_frontier::dump_stored_sample(&copy, &output.join(format!("batch_{index:02}")), 1000);
+            }
             let frontier_started = Instant::now();
             if hnsw_system {
                 super::dli_selection_frontier::run_hnsw_frontier(

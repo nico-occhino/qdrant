@@ -16,8 +16,9 @@ What is new:
 * **Two golds per (batch, set):**
   - `<set>.gold.u64`, the **source gold** of Phase 3: Float64 cosine of the raw Float16 rows against Float32
     queries, ties by smaller ID;
-  - `<set>.sgold.u64`, the **stored gold** (G1): each row normalised in f32 and cast to f16, as Qdrant stores Cosine
-    vectors, scored in Float64 against the f32-normalised query, ties by smaller ID.
+  - `<set>.sgold.u64`, the **stored gold** (G1): each row preprocessed exactly as Qdrant's AVX Cosine path does and
+    cast to f16 (`qdrant_cosine_preprocess`), scored in Float64 against the query preprocessed the same way, ties
+    by smaller ID.
 * **G1 tie sets.** `<set>.s30.f64` holds the stored-gold rank-30 score per query. `<set>.tie.u64` and
   `<set>.tie_off.u64` (CSR offsets, length n + 1) hold every live ID with stored score ≥ s30 − ε, in (−score, id)
   order. ε = 768 · 2⁻²⁴ bounds the f32 accumulation error of a dot product of two unit vectors. Recall@30 under G1 =
@@ -43,16 +44,42 @@ EPS = DIM * 2.0 ** -24
 QUERY_FLOOR = 1_000_000
 
 
+def qdrant_cosine_preprocess(x):
+    """Bit-exact model of Qdrant's x86-64 AVX+FMA Cosine preprocessing
+    (`lib/segment/src/spaces/simple_avx.rs::cosine_preprocess_avx`), for f32 rows of 768 components:
+    * four 8-lane accumulators take x*x by FMA over blocks of 32 (FMA modelled as an exact f64 sum
+      of the exact f64 product, rounded once to f32);
+    * reduction ((a + b) + (c + d)) lane-wise, then high half + low half, then
+      (l0 + l1) + (l2 + l3), all in f32;
+    * if length < f32 eps or |length - 1| <= 1e-6 the vector is returned unchanged;
+    * otherwise every component is multiplied by f32(1 / sqrt(length)).
+    The oracle gate (`oracle_check.py`) checks this model against vectors read back from storage."""
+    x = np.asarray(x, dtype=np.float32)
+    n, d = x.shape
+    assert d % 32 == 0, "model covers dimensions divisible by 32 (no scalar tail)"
+    acc = np.zeros((n, 32), dtype=np.float32)
+    for t in range(0, d, 32):
+        blk = x[:, t: t + 32].astype(np.float64)
+        acc = (acc.astype(np.float64) + blk * blk).astype(np.float32)
+    tot = (acc[:, 0:8] + acc[:, 8:16]) + (acc[:, 16:24] + acc[:, 24:32])
+    lr = tot[:, 4:8] + tot[:, 0:4]
+    length = (lr[:, 0] + lr[:, 1]) + (lr[:, 2] + lr[:, 3])
+    keep = (length < np.finfo(np.float32).eps) | (np.abs(length - np.float32(1.0)) <= np.float32(1e-6))
+    inv = (np.float32(1.0) / np.sqrt(length)).astype(np.float32)
+    out = x * inv[:, None]
+    out[keep] = x[keep]
+    return out
+
+
 def stored_rows(rows_f16):
-    """Qdrant's Cosine storage of Float16 rows: f32 normalise, cast to f16 (returned as f16)."""
-    x = np.asarray(rows_f16, dtype=np.float32)
-    n = np.sqrt(np.sum(x * x, axis=1, dtype=np.float32, keepdims=True))
-    return (x / n).astype(np.float16)
+    """Qdrant's Cosine storage of Float16 rows: the f16 row widened to f32, preprocessed as Qdrant
+    does (`qdrant_cosine_preprocess`), then narrowed to f16 (round to nearest even)."""
+    return qdrant_cosine_preprocess(np.asarray(rows_f16, dtype=np.float32)).astype(np.float16)
 
 
 def stored_queries(q):
-    q = np.asarray(q, dtype=np.float32)
-    return (q / np.sqrt(np.sum(q * q, axis=1, dtype=np.float32, keepdims=True))).astype(np.float64)
+    """The f32 query as Qdrant preprocesses it, widened to f64 for scoring."""
+    return qdrant_cosine_preprocess(np.asarray(q, dtype=np.float32)).astype(np.float64)
 
 
 def stored_top_ties(corpus, live_rows, queries, eps=EPS, chunk=65_536):

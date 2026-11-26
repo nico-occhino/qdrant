@@ -80,17 +80,20 @@ The DLI-best pilot showed that gold computed on raw Float16 rows in Float64 disa
 return. Qdrant stores each Cosine vector normalised in f32 and cast to f16. That causes 96% of full-search misses.
 
 - **G1 (recommended), stored-representation gold, tolerance-aware.**
-  - The planner normalises each corpus row in f32, casts it to f16, and scores it in Float64 against the f32-normalised
-    query.
+  - The planner models Qdrant's Cosine preprocessing bit for bit (x86-64 AVX+FMA path: four 8-lane FMA accumulators,
+    a fixed reduction order, multiplication by f32(1/√length), and rows within 10⁻⁶ of unit length left unchanged).
+    It casts each row to f16 and scores it in Float64 against the query preprocessed the same way.
   - Per (batch, query) it emits the top-30 ids, the rank-30 score s₃₀, and the **tie set**: every live id with score
     ≥ s₃₀ − ε.
   - ε = 768 · 2⁻²⁴ ≈ 4.6·10⁻⁵. This bounds the f32 accumulation error of a 768-dimensional dot product of unit
     vectors, which is how Qdrant scores.
   - Recall@30 = |returned ∩ tie set| / 30, capped at 1. Ties and accumulation-order swaps then count as correct.
     Nothing farther than ε below rank 30 does.
-  - **Independent oracle check:** in every job, 1,000 random live points are read back from the collection's vector
-    storage after batch 0 and the last batch. Their bytes must equal the planner's simulated stored vectors, or the
-    job fails.
+  - **Oracle check:** in every job, 1,000 live points, evenly spaced over the sorted live IDs, are read back from the
+    collection's vector storage after the first and the last batch. Their bytes must equal the planner's model, or
+    the job fails.
+    - The model follows Qdrant's source code, so the read-back is what makes it independent evidence.
+    - On a node without AVX and FMA, Qdrant uses a different path, and the gate fails instead of passing silently.
 - **G2: source gold with a tie set.** Gold stays on raw Float16 rows, plus the same ε tie set. It is simpler, but it
   leaves the rounding misses, whose margins reach 3.4·10⁻⁴ and so exceed ε. *Not recommended.*
 - **Either way, recall against the Phase 3 source gold is also reported for every row.** That keeps the results
@@ -222,7 +225,7 @@ configuration is fixed before the primary run, by §8 or as stated.
 
 1. **Ledger:** the live count and SHA-256 match the plan after every batch.
 2. **Completeness:** every (batch, panel, arm, knob) row exists.
-3. **Oracle:** the stored-vector read-back (§2.3) matches.
+3. **Oracle:** every sampled stored vector is bit-identical to the planner's model (§2.3, `oracle_check.py`).
 4. **Known answer:**
    - every DLI arm at full search, and every static arm with all buckets probed, has G1 Recall@30 ≥ 0.999 in every
      (batch, panel);
@@ -325,6 +328,27 @@ configuration is fixed before the primary run, by §8 or as stated.
   - S-LMI: all 8 builds trained the MLP;
   - final batch (30K points, nprobe 1 → 32): IVF G1 recall 0.576 → 1.000 for 1,063 → 30,000 vectors scored; S-LMI
     0.563 → 1.000 for 1,047 → 30,000. Full probing is exact for both.
+
+**Status of I5 (2026-11-26): done.**
+- **Code.**
+  - The driver calls `dump_stored_sample` on the flushed snapshot after the first and the last batch of every system.
+    It writes 1,000 live points, evenly spaced over the sorted live IDs, as `(id, 768 × f16)` records, and asserts
+    each is visible in exactly one segment.
+  - `oracle_check.py` compares them bit for bit with `fb_plan.stored_rows`, the function that also produces the G1
+    gold.
+- **First result: the planner's model was wrong.**
+  - The f32-normalise-then-cast model differed from storage by one f16 ulp in 2.1–3.0% of sampled vectors, the same
+    on all three systems.
+  - Cause: Qdrant's AVX path sums the squares in four FMA accumulators, reduces them in a fixed order, multiplies by
+    the reciprocal square root, and leaves rows within 10⁻⁶ of unit length unchanged (52 of 50K corpus rows).
+  - `fb_plan.qdrant_cosine_preprocess` now models that path exactly. Since then, **6,000 of 6,000** sampled vectors
+    are bit-identical: DLI-best, S-LMI and HNSW, batches 0 and 3 of the 30K smoke plan.
+- **Re-checks after the model change.** The planner tests pass, and the 200K real-data figures of I1 are unchanged
+  (99.77% agreement, mean tie set 30.76, at most 334). The I2–I4 smoke tests used plans made with the old model;
+  their checks do not depend on it.
+- **Tests.** The oracle known-answer test passes: model vectors pass, a one-ulp change fails (with score effect below
+  ε), and empty or truncated samples are rejected. All 56 collection DLI/LMI tests pass. Clippy reports nothing on
+  the changed lines.
 
 ## 11. Budget and timeline (estimate)
 - **Primary:** 5 arms × 3 workloads × 2 seeds. Jobs combine arms per workload where memory allows.

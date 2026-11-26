@@ -742,6 +742,68 @@ pub(super) fn run_frontier(run: &FrontierRun) {
 /// Work counts every scoring pass, including widening re-scores. No DLI descriptor is
 /// read. Rows use the DLI frontier schema with `policy = "static_nprobe"` and
 /// `budget = nprobe`.
+/// Stored-vector oracle sample (final benchmark I5, PREREGISTRATION.md §2.3): from a flushed shard
+/// copy, `count` live points evenly spaced over the sorted live ids, written to
+/// `stored_sample.bin` as records of (id: u64 LE, 768 × f16 LE). The f32 values read back are
+/// widened f16, so narrowing them again recovers the stored bits exactly. Each sampled id must be
+/// visible in exactly one segment. `oracle_check.py` compares the bits with the planner's model.
+pub(super) fn dump_stored_sample(segments_dir: &Path, output: &Path, count: usize) {
+    use segment::data_types::vectors::VectorInternal;
+    use segment::vector_storage::VectorStorageRead as _;
+    use common::generic_consts::Random;
+    let loaded: Vec<Segment> = fs_err::read_dir(segments_dir.join("segments"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_dir() && !path.file_name().unwrap().to_string_lossy().starts_with('.'))
+        .map(|path| {
+            let uuid: Uuid = path.file_name().unwrap().to_string_lossy().parse().unwrap();
+            load_segment(&path, uuid, None, &AtomicBool::new(false), true)
+                .unwrap_or_else(|e| panic!("segment {uuid} did not load: {e}"))
+        })
+        .collect();
+    let mut live: Vec<u64> = Vec::new();
+    for segment in &loaded {
+        let tracker = segment.id_tracker.borrow();
+        for (id, _) in tracker.point_mappings().iter_from(None) {
+            if segment.has_point(id, DeferredBehavior::VisibleOnly) {
+                live.push(num(id));
+            }
+        }
+    }
+    live.sort_unstable();
+    let before = live.len();
+    live.dedup();
+    assert_eq!(before, live.len(), "a live id is visible in two segments");
+    let n = count.min(live.len());
+    let picks: Vec<u64> = (0..n).map(|i| live[i * live.len() / n]).collect();
+    fs_err::create_dir_all(output).unwrap();
+    let mut out = std::io::BufWriter::new(fs_err::File::create(output.join("stored_sample.bin")).unwrap());
+    for id in &picks {
+        let mut found = None;
+        for segment in &loaded {
+            let internal = segment.id_tracker.borrow().internal_id_with_behavior((*id).into(), DeferredBehavior::VisibleOnly);
+            if let Some(offset) = internal {
+                assert!(found.is_none(), "sampled id {id} visible in two segments");
+                let storage = segment.vector_data[DEFAULT_VECTOR_NAME].vector_storage.borrow();
+                let VectorInternal::Dense(v) = storage.get_vector_opt::<Random>(offset).expect("stored vector").to_owned() else {
+                    panic!("dense vector expected")
+                };
+                assert_eq!(v.len(), 768, "dimension");
+                found = Some(v);
+            }
+        }
+        let v = found.unwrap_or_else(|| panic!("sampled id {id} not found"));
+        out.write_all(&id.to_le_bytes()).unwrap();
+        for x in v {
+            let h = half::f16::from_f32(x);
+            assert_eq!(h.to_f32(), x, "stored value is not an f16");
+            out.write_all(&h.to_le_bytes()).unwrap();
+        }
+    }
+    out.flush().unwrap();
+    println!("STORED_SAMPLE written={} live={}", picks.len(), live.len());
+}
+
 /// Whether an LMI router is the research centroid router (IVF-Flat): one Linear layer, zero bias,
 /// unit-norm rows (`training.rs::centroid_router`). An MLP router has hidden layers and ReLU.
 fn is_centroid_router(router: &segment::index::lmi_index::MlpRouter) -> bool {
