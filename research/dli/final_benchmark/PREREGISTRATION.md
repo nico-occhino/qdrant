@@ -133,8 +133,9 @@ configuration is fixed before the primary run, by §8 or as stated.
 - **`ef` grid:** 30, 45, 64, 90, 128, 181, 256, 362, 512, 724, 1,024, 1,448, 2,048.
   - HNSW has no exact mode, so it can fail to attain a target.
   - A non-attaining batch is reported as "not attained above `ef` 2,048". It is not extrapolated.
-- **Work counter:** Qdrant's own count of vectors scored (`scoring_work_snapshot`) for every scored vector, graph
-  traversal included. The rows also include full scans of plain segments.
+- **Work counter:** every scored vector, counted through the per-task scoring guard (I3), graph traversal and entry
+  points included. The rows also include full scans of plain segments, and of HNSW segments below Qdrant's
+  `full_scan_threshold`.
 
 ### 3.4 Shared harness rules
 - Inserts arrive in chunks of b, then deletes are applied. Maintenance or optimizers then settle to a fixed point, the
