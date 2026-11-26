@@ -592,3 +592,17 @@ The fourth attempt completed (exit 0, 4:24, 167 GB peak; 16 build CPUs after Ame
 - **Tie-break:** calibrated against proportional is equivalent (R = 1.0375 [1.027, 1.047], job 25931720).
 - **DLI-best = E1 + vacuum + consolidation ρ = 0.25 + proportional.**
 - **Report:** `allocation_tiebreak/RESULTS_TIEBREAK.md` (tie-break branch).
+
+**2026-11-25/26 — DLI-best integration pilot** (branch `research/dli-best-20261125`, jobs 25942585–25942587,
+validation panels only).
+- **Native proportional = offline control:** identical work in every row. All 48 recall differences, from 5 queries,
+  are exact rank-30 ties.
+- **Mechanisms:** 30 vacuums in constant-R. Consolidated topologies: L1 50K, L2 55K, L3 895K insert-only; L1 25K,
+  L3 875K shift.
+- **Known answer fails 0.995** on insert-only (0.9938) and shift (0.9946–0.9948). The cause is f16 storage rounding
+  (`tie_check.py`), with the same misses as `mdn_code`. Not accepted as written; the author decides.
+- **DLI-best / E1 work (descriptive):** 0.761, 0.632, shift 0.614–0.909. E1 does not reach 0.90 in 5–13 shift
+  batches, so the shift ratios understate the gain.
+- **Allocation on the DLI-best topology:** the insert-only `val` signal for `mdn_code` (1.072) is contradicted by
+  `partb` (0.915, tie-break job). Shift `mq` (1.183, `val`) is open.
+- **Report:** `dli_best/RESULTS_INTEGRATION_PILOT.md`. Archive on C:, verified.

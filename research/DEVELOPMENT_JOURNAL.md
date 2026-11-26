@@ -992,6 +992,23 @@ calibrated against proportional gave R = 1.0375 [1.027, 1.047], equivalent. By t
 for `mdn_code` and `calibrated`. Calibrated allocation's earlier 7% gain was over `mdn_code`; over proportional it gives
 nothing. Report: `research/dli/allocation_tiebreak/RESULTS_TIEBREAK.md` (tie-break branch).
 
+**DLI-best integration pilot (2026-11-25/26).** The proportional policy was implemented natively in Qdrant
+(`PopulationProportional`), and the driver gained a `dlibest` variant: vacuum + consolidation + proportional. Three
+validation-panel jobs (25942585–25942587) checked the combination. Report:
+`research/dli/dli_best/RESULTS_INTEGRATION_PILOT.md` (branch `research/dli-best-20261125`).
+- **The native policy reproduces the offline control exactly.** Work is identical in every row, and the few recall
+  differences are exact duplicate ties.
+- **Vacuum and consolidation fire as designed.**
+- **DLI-best needs 9–39% less work than E1** on every workload and panel (descriptive).
+- **The pilot is not accepted as written.** The full-search known-answer check (≥ 0.995) fails on insert-only and
+  shift by one or two points per batch-panel.
+  - The offline `tie_check.py` traces 98% of the misses to f16 storage rounding: Qdrant normalises and casts to f16,
+    while the gold scores raw f16 in Float64. The rest are exact ties, plus two near-ties.
+  - `mdn_code` misses exactly the same rows, so the failure lies in the gold definition, not in DLI-best.
+  - The threshold was not moved. The final benchmark's gold has to be fixed before its data exist.
+- **Lesson:** a 32-query validation panel can point the wrong way. Proportional vs `mdn_code` on the consolidated
+  topology was 1.072 on `val` but 0.915 on the 1,000-query `partb`.
+
 **A handoff index for other agents:** `research/AGENT_HANDOFF.md` (this branch). It lists reading order, branches,
 code, documents, jobs, remote and local evidence, open items and safety rules.
 

@@ -1,4 +1,4 @@
-# Agent handoff: where the full picture lives (updated 2026-11-25)
+# Agent handoff: where the full picture lives (updated 2026-11-26)
 
 This index is for an agent, or a person, who has to **continue** the research on the same path, **audit** it, or only
 **analyse** results. Read it first. It lists where things are. It does not restate results: the result documents
@@ -18,6 +18,7 @@ invent a measurement, and never move a preregistered threshold after seeing data
 | 4 | `research/dli/emma_path/RESULTS_*.md` | Decided results: pilot, 10M, Phase 3 deletes, Phase 3 shift, Phase 3 Part B |
 | 4a | `research/dli/emma_path/SHIFT_MECHANISM.md` and `DLI_BEST_RULE.md` | Why reuse fails under shift (bucket imbalance); the **frozen** rule that assembles DLI-best |
 | 4b | Branch `research/policy-replay-20261123`, `research/dli/policy_replay/` | `mdn_code` against `proportional`: frozen preregistration, final results, manifest |
+| 4b′ | Branch `research/dli-best-20261125`, `research/dli/dli_best/` | Native `PopulationProportional` policy, the `dlibest` driver variant, the integration pilot criteria and `RESULTS_INTEGRATION_PILOT.md`, `tie_check.py` |
 | 4c | `C:\Users\nicoo\Workspace\Learning stuff\Learned\CLI_AUDIT_AND_READING_GUIDE.md` | Audit of Jakubík's CLI thesis and code, and of Forgáč's DLI (the three different "DLI"s) |
 | 5 | `research/dli/emma_path/MULTILEVEL_DIAGNOSIS.md` | Why E1 needs 2.4× static work: a structural cause, shown by the oracle-cost method |
 | 6 | Branch `research/static-vs-dli-20261122`, `research/dli/static_qdrant_vs_dli/` | Second study: ordinary Qdrant static-LMI lifecycle against the DLI (§3) |
@@ -124,7 +125,8 @@ Remote: `/storage/budejovice1/home/nico/lmi-metacentrum/postgresql-native-tempor
 | Phase 3 deletes (H6, H6b, H7) | decided, `RESULTS_PHASE3_DELETES.md` | — |
 | Phase 3 shift (H5, H12) | decided, `RESULTS_PHASE3_SHIFT.md`. Mechanism in `SHIFT_MECHANISM.md`: reuse fails through bucket imbalance, and consolidation helps through granularity | optional: an oracle-cost replay to separate ranking from imbalance |
 | Phase 3 Part B (H9, H10, H5 insert-only) | decided, `RESULTS_PHASE3_PARTB.md`. H9 not supported (0.841), H10 not supported (0.929). Job 25859945 was cancelled by the author after E1C; E1C50 is incomplete | the H11 oracle-cost decomposition can be done offline |
-| DLI-best | **final**, `DLI_BEST_RULE.md`: E1 + vacuum + consolidation ρ = 0.25 + **proportional** allocation (tie-break: calibrated against proportional equivalent, R 1.0375, `research/dli/allocation_tiebreak/RESULTS_TIEBREAK.md` on branch `research/allocation-tiebreak-20261124`) | integration pilot of the combined configuration (needs the driver to combine maintenance variants) |
+| DLI-best | **final**, `DLI_BEST_RULE.md`: E1 + vacuum + consolidation ρ = 0.25 + **proportional** allocation (tie-break: calibrated against proportional equivalent, R 1.0375, `research/dli/allocation_tiebreak/RESULTS_TIEBREAK.md` on branch `research/allocation-tiebreak-20261124`) | integration pilot **run** (jobs 25942585–25942587, branch `research/dli-best-20261125`), see next row |
+| DLI-best integration pilot | **completed, not accepted as written**, `research/dli/dli_best/RESULTS_INTEGRATION_PILOT.md`. Criteria 1 (ledger), 2 (native equals offline control: identical work, recall differences all exact ties) and 4 (vacuum, consolidation shape) pass everywhere. Criterion 3 (full search ≥ 0.995) fails on insert-only and shift through f16 storage rounding that `mdn_code` misses identically. DLI-best / E1 work: 0.761 insert-only, 0.632 constant-R, 0.614–0.909 shift (descriptive, `val` panels) | author decision on criterion 3 (recommended: record the failure and fix gold in the final-benchmark preregistration); shift `mq` allocation interaction to be replayed in the final benchmark |
 | Policy replay, `mdn_code` against `proportional` | **final**, `policy_replay/RESULTS_POLICY_REPLAY.md` (policy-replay branch). **Proportional recommended**: better on insert-only 0.908, constant-R 0.784, Shift `ids` 0.887 and Shift `ood` 0.693; equivalent on Shift `mq` 1.023 | done: the tie-break chose proportional |
 | Static-vs-DLI pilot2 | completed, not accepted. Granularity explains the S advantage. The known-answer failure is explained as exact-duplicate ties (`PILOT2_RESULTS.md` addendum) | **superseded by the final-benchmark plan.** S1 and the tie-aware gate fold into it |
 | Final benchmark (author decision, 2026-11-23) | planned. Qdrant hosts IVF, HNSW, E1, DLI-best, CLI and at most one CLI variant. PostgreSQL is a replication subset | after the CLI design note (mutability options: an appendable learned segment, or copy-on-write); the author is reading Jakubík's thesis first |
@@ -138,6 +140,7 @@ Remote: `/storage/budejovice1/home/nico/lmi-metacentrum/postgresql-native-tempor
 - `Research-Results\2026-11-22-static-vs-dli\`: pilot 2;
 - `Research-Results\2026-11-23-policy-replay\`: the check job, the five primaries and the `ood` rerun 25908996;
 - `Research-Results\2026-11-24-allocation-tiebreak\`: the tie-break check (25914476) and primary (25931720).
+- `Research-Results\2026-11-25-dli-best-pilot\`: the three pilot jobs 25942585–25942587 (247 files, identical to storage; `STORAGE_SHA256.txt` there).
 
 ## 5. How to work here safely
 
