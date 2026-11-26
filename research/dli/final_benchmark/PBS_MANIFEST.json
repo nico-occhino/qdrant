@@ -1,0 +1,17 @@
+{
+ "study": "research/dli/final_benchmark — final benchmark (PREREGISTRATION.md, frozen at a3b37046d; FREEZE.md)",
+ "staging": {"remote_input": "/storage/budejovice1/home/nico/lmi-metacentrum/final-benchmark-20261126/native-52347112c7c2",
+             "commit": "52347112c7c2b1296bcc0c9ce8f68d756db0e72f (freeze record; code identical to a3b37046d)",
+             "source_bundle_sha256": "1606ccaed4ffc0f51d787df0fb5b9752062a71adc9739b5ea5c90435f62f9d64",
+             "vendor_and_cargo_config": "copied server-side from dli-emma-path-20261120/native-e32fc6b9092a, hashes re-verified (Cargo.lock unchanged since e32fc6b90)",
+             "source_key": "d298fc79d33f894793a910ed (cache miss at submission: 26011819 builds it)"},
+ "selection_pilot_stage1": {
+  "authorised": "author, 2026-11-26 ('push and submit stage 1')",
+  "plan": {"job": "26011817.pbs-m1.metacentrum.cz", "workload": "W1", "seed": 20261202, "walltime": "06:00:00", "status": "submitted"},
+  "arms": [
+   {"job": "26011819.pbs-m1.metacentrum.cz", "arm": "DLI-best", "depend": "afterok:26011817", "walltime": "12:00:00", "role": "builds and caches the binary", "status": "submitted"}
+  ],
+  "pending": "E1, S-LMI {250,1000,3162}, IVF {250,1000,3162}, HNSW {16,32}: submitted once the binary is cached, so every arm uses one binary"
+ },
+ "resources": "8 CPUs, 96 GB, 100 GB scratch SSD, AMD (fb.pbs header)"
+}
