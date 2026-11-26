@@ -27,6 +27,8 @@ is entirely > 1.05, inconclusive otherwise. Applied to work, and to latency.
 * Latency per batch: the median timed query latency at the measured grid point nearest above 0.90 (the first
   grid point whose batch mean G1 recall is >= 0.90, chosen on the full panel and held fixed in resamples).
 * Latency R = mean_t L_X(t) / mean_t L_Y(t).
+* Amendment A2 (`bound_adjust`): a decision that an `upper_bound` W (or the latency at that grid point) could
+  overturn becomes "not decidable (upper bound)".
 
 A ratio whose attainment share is below 80% is descriptive.
 
@@ -204,6 +206,33 @@ def family_b(r):
     return "inconclusive"
 
 
+def bound_adjust(r):
+    """Amendment A2: a W flagged `upper_bound` overstates that arm's true W (the cheapest grid point already reaches
+    0.90). With R = W_X / W_Y, an upper bound on the baseline Y means the true R is at least the reported R, and an
+    upper bound on X means it is at most the reported R. A decision survives only if moving R in the possible
+    direction cannot change it; otherwise it becomes "not decidable (upper bound)". The kinds come from the full
+    panel of each batch used (the same batches the point estimate uses), for both work and latency, since the latency
+    grid point is the first one reaching 0.90."""
+    used = [t for t, v in r.get("per_batch", {}).items() if v["A"] is not None and v["B"] is not None]
+    ub = {s: [t for t in used if r["per_batch"][t][f"{s}_info"]["kind"] == "upper_bound"] for s in ("A", "B")}
+    r["upper_bound_batches"] = ub
+    d = r["decision"]
+    if not (ub["A"] or ub["B"]) or d in ("not decidable", "descriptive"):
+        return d
+    survives_if_r_grows = {"worse", "not supported"}   # baseline overstated: true R >= reported R
+    survives_if_r_shrinks = {"better", "supported"}    # X overstated: true R <= reported R
+    if ub["A"] and ub["B"]:
+        ok = False
+    elif ub["B"]:
+        ok = d in survives_if_r_grows
+    else:
+        ok = d in survives_if_r_shrinks
+    if not ok:
+        r["decision_before_bound_rule"] = d
+        return "not decidable (upper bound)"
+    return d
+
+
 # ---------- gates ----------
 
 def gates(run, panels):
@@ -308,6 +337,7 @@ def analyze(manifest, resamples=RESAMPLES):
                 if (wl, seed, "E1") in by:
                     r = ratio(best, get("E1"), wl, resamples, rng, family_size=FAMILY_A_SIZE)
                     r["decision"] = family_a(r)
+                    r["decision"] = bound_adjust(r)
                     result["family_A"][key] = r
                 for arm in FAMILY_B:
                     if (wl, seed, arm) not in by:
@@ -316,6 +346,7 @@ def analyze(manifest, resamples=RESAMPLES):
                     rw = ratio(best, other, wl, resamples, rng, family_size=FAMILY_B_SIZE)
                     rl = ratio(best, other, wl, resamples, rng, "latency", best_t, other_t, family_size=FAMILY_B_SIZE)
                     rw["decision"], rl["decision"] = family_b(rw), family_b(rl)
+                    rw["decision"], rl["decision"] = bound_adjust(rw), bound_adjust(rl)
                     result["family_B"][f"{key}/{arm}"] = {"work": rw, "latency": rl}
                 mdn = get("DLI-best", "mdn_code")
                 if mdn:

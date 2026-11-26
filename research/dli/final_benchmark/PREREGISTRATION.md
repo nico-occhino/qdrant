@@ -458,3 +458,33 @@ S-LMI 3,162, IVF 3,162 and HNSW m = 16.
   - **What comes next.** The HNSW remedy is a separate amendment, and it comes before stage 2.
 - **Script.** `pbs/fb.pbs` accepts CFG 10000 for S-LMI and IVF. Nothing else changes. The binary's source key is
   unchanged, because no file under `lib/`, `src/` or `Cargo.*` changes.
+
+### A2 (2026-11-26, after the stage-1 validation data; validation panels only, no test panel read)
+Authorised by the author ("accept, write A2 and push"). This resolves A1.3.
+
+- **A2.1 HNSW keeps m = 16.**
+  - **The rule's choice.** §8's rule picks m = 16: mean validation W 4,698 against 5,738 for m = 32, over W1 batches
+    1–20.
+  - **The m = 32 figure is an upper bound.** m = 32 is `upper_bound` in 10 of those batches, so its 5,738
+    overstates it.
+  - **Why the choice still holds.** In the 11 batches where both settings are interpolated (2, 4–9, 14, 16, 17
+    and 19), m = 16 averages 2,954 against 5,738.
+  - **Is the grid extended?** No. The ef grid cannot go lower (A1.3), and the m grid is not extended.
+  - **Bracketing on W1.** m = 16 is `upper_bound` only in batch 0, which W1's analysis window (batches 1–20)
+    excludes.
+- **A2.2 The upper-bound rule, for every arm and for both work and latency.** §8's requirement of no `upper_bound`
+  is relaxed for HNSW only, where it cannot be met. Stage 2 still checks it for every other arm.
+  - **What an upper bound means.** A W flagged `upper_bound` means that arm's true W is at most the reported value.
+    So with R = W(DLI-best) / W(Y):
+    - an upper bound on the baseline Y means the true R ≥ the reported R;
+    - an upper bound on DLI-best means the true R ≤ the reported R.
+  - **Which decisions survive.** Only decisions that moving R in the possible direction cannot change:
+    - baseline bound only: Family B "worse" and Family A "not supported";
+    - DLI-best bound only: "better" and "supported";
+    - both: none.
+  - **Every other decision** becomes "not decidable (upper bound)". The original decision and the bound batches are
+    reported alongside it.
+  - **Latency uses the same rule.** The latency grid point is the first one reaching 0.90, so it is grid point 0
+    exactly when W is `upper_bound`.
+  - **Implementation.** `analyze_final.bound_adjust`, with known-answer tests in `test_analyze_final.py`. Point
+    estimates and intervals are unchanged; only the decision label changes.

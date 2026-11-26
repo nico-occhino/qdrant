@@ -110,4 +110,33 @@ with tempfile.TemporaryDirectory() as tmp:
     assert sel["choice"]["S-LMI"]["cfg"] == 1000, sel["choice"]
     assert sel["choice"]["S-LMI"]["mean_W"] == {250: 2700.0, 1000: 1350.0}, sel["choice"]
     assert all(v["all_interpolated"] for v in sel["bracketing"].values()), sel["bracketing"]
+    # Amendment A2: upper-bound rule. Synthetic ratio results with one batch whose W is an upper bound.
+    def fake(decision, ub_a, ub_b):
+        info = lambda ub: {"kind": "upper_bound" if ub else "interpolated"}
+        return {"decision": decision, "per_batch": {1: {"A": 1.0, "B": 1.0, "A_info": info(False), "B_info": info(False)},
+                                                    2: {"A": 1.0, "B": 1.0, "A_info": info(ub_a), "B_info": info(ub_b)},
+                                                    3: {"A": None, "B": 1.0, "A_info": {"kind": "not_attained"},
+                                                        "B_info": {"kind": "upper_bound"}}}}
+    for d, ua, ub, want in [("worse", False, True, "worse"), ("better", False, True, "not decidable (upper bound)"),
+                            ("equivalent", False, True, "not decidable (upper bound)"),
+                            ("inconclusive", False, True, "not decidable (upper bound)"),
+                            ("better", True, False, "better"), ("worse", True, False, "not decidable (upper bound)"),
+                            ("worse", True, True, "not decidable (upper bound)"),
+                            ("not supported", False, True, "not supported"),
+                            ("supported", False, True, "not decidable (upper bound)"),
+                            ("supported", True, False, "supported"), ("better", False, False, "better"),
+                            ("descriptive", False, True, "descriptive")]:
+        r = fake(d, ua, ub)
+        got = A.bound_adjust(r)
+        assert got == want, (d, ua, ub, got)
+        # Batch 3 is not used (A not attained), so its upper bound never counts.
+        assert r["upper_bound_batches"] == {"A": [2] if ua else [], "B": [2] if ub else []}, r["upper_bound_batches"]
+    # End to end: an HNSW whose first grid point already reaches 0.90 (W 300, upper bound in every batch) leaves the
+    # DLI-best "worse" verdict (R = 1350/300) intact.
+    ubr = root / "ub"
+    ubr.mkdir()
+    uruns = [{"workload": "W1", "seed": 1, "arm": arm, "plan": str(root / "plan.json"),
+              "dir": write_run(ubr, 1, arm, plan, scale=sc)} for arm, sc in (("DLI-best", None), ("HNSW", 300))]
+    ub_b = A.analyze({"runs": uruns}, resamples=50)["family_B"]["W1/1/test/HNSW"]["work"]
+    assert ub_b["decision"] == "worse" and ub_b["upper_bound_batches"]["B"] == [1, 2], ub_b
 print("analyze_final known-answer test: OK")
