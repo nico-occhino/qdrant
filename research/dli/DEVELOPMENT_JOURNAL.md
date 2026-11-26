@@ -595,7 +595,7 @@ The fourth attempt completed (exit 0, 4:24, 167 GB peak; 16 build CPUs after Ame
 
 **2026-11-25/26 — DLI-best integration pilot** (branch `research/dli-best-20261125`, jobs 25942585–25942587,
 validation panels only).
-- **Native proportional = offline control:** identical work in every row. All 48 recall differences, from 5 queries,
+- **Native proportional = offline control:** identical work in every row. All 48 recall differences, from 4 queries,
   are exact rank-30 ties.
 - **Mechanisms:** 30 vacuums in constant-R. Consolidated topologies: L1 50K, L2 55K, L3 895K insert-only; L1 25K,
   L3 875K shift.

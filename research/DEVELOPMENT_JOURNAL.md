@@ -1002,7 +1002,7 @@ validation-panel jobs (25942585–25942587) checked the combination. Report:
 - **DLI-best needs 9–39% less work than E1** on every workload and panel (descriptive).
 - **The pilot is not accepted as written.** The full-search known-answer check (≥ 0.995) fails on insert-only and
   shift by one or two points per batch-panel.
-  - The offline `tie_check.py` traces 98% of the misses to f16 storage rounding: Qdrant normalises and casts to f16,
+  - The offline `tie_check.py` traces 96% of the misses (212 of 220) to f16 storage rounding: Qdrant normalises and casts to f16,
     while the gold scores raw f16 in Float64. The rest are exact ties, plus two near-ties.
   - `mdn_code` misses exactly the same rows, so the failure lies in the gold definition, not in DLI-best.
   - The threshold was not moved. The final benchmark's gold has to be fixed before its data exist.
