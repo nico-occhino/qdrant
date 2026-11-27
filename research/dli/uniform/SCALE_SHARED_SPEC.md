@@ -4,6 +4,10 @@
 preregistration only after both sides accept this text, or an amended version pinned by commit and SHA-256. Every
 threshold below is a proposal until that freeze. Once frozen, no threshold moves after data is seen.
 
+**Author decision (2026-11-27).** The defaults are accepted on the Qdrant side: the 1.5× p95 threshold (§1.8), the
+relative-grid fractions r ∈ {0.5, 0.25} (§1.5), and the training-memory sweep 2 GB / 500 MB / 125 MB / 31 MB
+(§1.9). They still await PostgreSQL's review.
+
 Sources: the PostgreSQL proposal (Codex, 2026-11-27, `docs/research/STATUS.md` at `5f86dda`) and the Qdrant proposal
 (this branch). Where they differ, §5 records the choice and the reason.
 
@@ -127,8 +131,10 @@ splitting are separated from the costs of the network.
   return z ^ (z >> 31);
   ```
   Arithmetic is wrapping u64.
+- **The id convention.** The id is the u32 value in each batch's `insert.u32`, widened to u64. For I1 the live ids
+  are exactly 1–1,000,000.
 - **The shard-membership gate.** Each engine publishes the SHA-256 of each shard's sorted id list (u64 LE). The two
-  engines must agree.
+  engines must agree. Qdrant's values, from `shard_hashes.py`, are in `evidence/q11/shard_hashes_I1.json`.
 - **Building each shard.** Each shard is built by replaying, in plan order, only its own ids. Each shard therefore
   has its own learned hierarchy, buffer and routers. The trace that results is reported per shard.
 - **Qdrant mapping.** `sharding_method: custom` with shard keys s0–s3, and a search that names no shard key (all

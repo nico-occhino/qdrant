@@ -1,0 +1,32 @@
+{
+ "plan_dir": "I1-insert_only-20261121",
+ "scenario": "insert_only",
+ "seed": 20261121,
+ "live_count": 1000000,
+ "live_sha256_u32": "ee84c614c72f801d2be6ceb19009cd7ee73a1332cd6ad5485a741c4424155a6d",
+ "id_min": 1,
+ "id_max": 1000000,
+ "shard_function": "splitmix64(id) mod 4",
+ "shards": [
+  {
+   "shard": 0,
+   "size": 249518,
+   "sha256_u64le": "27bcfa3afae5906ae577e3fc03368b327d049221687de516d7382786d7c452e9"
+  },
+  {
+   "shard": 1,
+   "size": 250139,
+   "sha256_u64le": "8a402df973d0a9bf6a141257044aaeef38bdf06da3ba862c38fd1a1de36ef57c"
+  },
+  {
+   "shard": 2,
+   "size": 249949,
+   "sha256_u64le": "bf7bf7b04d49bc77ee1dffcf46b508e5494d93ef0a5a776be510c97dc4ff6518"
+  },
+  {
+   "shard": 3,
+   "size": 250394,
+   "sha256_u64le": "49ad97d29dcd377aa9e2874b7aa47859041e28654f9ad18d6b840b2e75da664f"
+  }
+ ]
+}
