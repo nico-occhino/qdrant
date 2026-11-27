@@ -1,6 +1,7 @@
 # Q4. Snapshot parity: why Qdrant and PostgreSQL snapshots differ (preregistration)
 
-**Status: DRAFT.** It is frozen by a commit recorded in `STATUS.md` before arm (b) or (a′) runs.
+**Status: FROZEN 2026-11-27**, by the commit that carries this line, before arm (a′) or (b) runs. Arm (c) is
+added by amendment when PostgreSQL's routers are available.
 
 The PostgreSQL counterpart is `DLI_SHIFT_TOPOLOGY_REPLAY.md` (pinned in `PINS.md`). Aligning PostgreSQL to Qdrant's
 publication schedule cut the batch-11 MQ-validation gap from 22.50 pp to 0.21 pp. This study runs the reciprocal
@@ -13,8 +14,8 @@ residual-engine parts.
   - Panel: MQ validation, 32 queries per batch (`mq_val`).
   - Snapshots: the ends of batches **10, 11 and 12**, covering level-3 publication. In PostgreSQL's schedule the
     publication falls in batch 12; in Qdrant's, in batch 11.
-- **Gold.** Plan gold, as PostgreSQL used. Budget grid: the 17-point R3 grid (1K–320K). Metrics: Recall@30 at
-  nominal 50K, and W@0.90.
+- **Gold.** Plan gold, as PostgreSQL used. Budget grid: the 17-point R3 grid (1K–320K), plus a gate-only 2,000,000
+  full search for the §5 known answer, excluded from W@0.90. Metrics: Recall@30 at nominal 50K, and W@0.90.
 - **PostgreSQL comparators.** `Research-Results/2026-11-26-pg-r3-followups/shift-topology/`, whose
   `ARTIFACTS.SHA256` verified on 2026-11-27.
   - **What they hold.** Per-query IDs, scored vectors and Recall@30 at 50K for both PostgreSQL schedules.
