@@ -34,10 +34,11 @@
     "status": "queued"
    },
    {
-    "job": "(auto, after 26075042)",
+    "job": "26075094.pbs-m1.metacentrum.cz",
     "plan": "I1",
     "walltime": "24:00:00",
-    "status": "pending submission"
+    "status": "queued",
+    "submitted_utc": "2026-11-27"
    }
   ]
  },
@@ -58,7 +59,7 @@
     "job": "26075042.pbs-m1.metacentrum.cz",
     "what": "network",
     "commit": "96d8f9e2ed8cb272f230fd69a61ca2cc669a9873",
-    "status": "pass; hangs at final wait until walltime"
+    "status": "pass (p0net.json); killed at walltime, Exit_status -29, while hanging at its final wait; evidence checksummed on collection"
    },
    {
     "job": "26075063.pbs-m1.metacentrum.cz",

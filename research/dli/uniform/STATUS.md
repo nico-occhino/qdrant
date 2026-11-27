@@ -9,15 +9,16 @@ Updated 2026-11-27. Branch `research/uniform-questions-20261127` (worktree `~/wo
 
 ## Running jobs (this worktree; cap of 4)
 - `26075075` Q5 S2 (PostgreSQL's fresh Shift, seed 20261127), 24 h, queued 2026-11-27. The binary is cached.
-- Q5 I1 (Insert-only) is submitted automatically when `26075042` (P0 network) ends.
+- `26075094` Q5 I1 (Insert-only), 24 h, queued 2026-11-27.
+- Q7 is submitted automatically when the count of these jobs falls below 4.
 - Also counted against the cap: the final-benchmark W3 jobs `26044026` (S-LMI) and `26044027` (IVF).
 
 ## Finished jobs
 - `26053393` **Q5 S1: validated.** See [RESULTS_Q5.md](RESULTS_Q5.md); it is archived on C:.
 - `26075041` P0 memory, first attempt: a script defect (it read the v2 path on a v1-memory host); no counters.
 - `26075063` P0 memory, the rerun: **pass**.
-- `26075042` P0 network: **pass** (`p0net.json`). The job then hangs at its final `wait` until walltime, so its
-  SHA256SUMS is computed on collection.
+- `26075042` P0 network: **pass** (`p0net.json`). The job then hangs at its final `wait` until walltime, so it was
+  killed (Exit_status −29). Its evidence is checksummed on collection, in `evidence/p0/`.
 
 ## Q5. Imbalance trigger
 - **Done:**

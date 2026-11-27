@@ -1,0 +1,29 @@
+{
+ "client": "elmo2-1.hw.elixir-czech.cz",
+ "server": "elmo2-3.hw.elixir-czech.cz",
+ "ports": {
+  "6333": {
+   "connected": true,
+   "last_error": "ConnectionRefusedError(111, 'Connection refused')",
+   "seconds": 0.91082763671875,
+   "mib_per_s": 1124.2522281042686,
+   "tx_delta": {
+    "eno1np0": 1119938994
+   }
+  },
+  "6335": {
+   "connected": true,
+   "seconds": 0.9115409851074219,
+   "mib_per_s": 1123.372417400766,
+   "tx_delta": {
+    "lo": 100,
+    "eno1np0": 1120111714
+   }
+  }
+ },
+ "checks": {
+  "p0_4_port_6333": true,
+  "p0_4_port_6335": true
+ },
+ "pass": true
+}
