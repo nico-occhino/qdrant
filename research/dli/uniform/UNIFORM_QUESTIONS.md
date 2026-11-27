@@ -1,4 +1,4 @@
-# Qdrant answers to the shared question set (Q1–Q9)
+# Qdrant answers to the shared question set (Q1–Q11)
 
 This is the Qdrant side of `CROSS_ENGINE_SYNTHESIS.md` (PostgreSQL, pinned in [PINS.md](PINS.md)).
 - **Branch.** `research/uniform-questions-20261127` of nico-occhino/qdrant. Cite a file by commit and SHA-256.
@@ -20,6 +20,8 @@ This is the Qdrant side of `CROSS_ENGINE_SYNTHESIS.md` (PostgreSQL, pinned in [P
 | Q7 | Filtering | **to prepare** | The shared fixture `FILTER_FIXTURE_SPEC.md` (3ec4041) is frozen; [Q7 plan](#q7-filtering) |
 | Q8 | DLI-best vs E1 | **done** (pilot) | Ratios 0.614–0.909 on validation; criterion 3 fails on Float16 rounding. `research/dli/dli_best/RESULTS_INTEGRATION_PILOT.md` |
 | Q9 | Final benchmark | **running** (another session) | `research/dli/final_benchmark/PREREGISTRATION.md`, amendments A1–A3 |
+| Q10 | Memory budget | **spec draft** (shared) | [SCALE_SHARED_SPEC.md](SCALE_SHARED_SPEC.md) §Q10; awaiting PostgreSQL acceptance and P0 |
+| Q11 | Distributed scale | **spec draft** (shared) | [SCALE_SHARED_SPEC.md](SCALE_SHARED_SPEC.md) §Q11; after Q10's U runs |
 
 ## Q4. Snapshot parity
 - **The question.** At the same live IDs, how much of the Shift batch 10–12 cross-engine gap comes from the
