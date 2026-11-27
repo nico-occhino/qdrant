@@ -57,6 +57,9 @@ enum Arm {
     G0,
     E1,
     E1R,
+    /// E1 plus the imbalance-triggered retraining rule frozen by PostgreSQL
+    /// (research/dli/uniform/Q5).
+    E1T,
 }
 
 fn arm() -> Arm {
@@ -64,7 +67,8 @@ fn arm() -> Arm {
         Err(_) | Ok("G0") => Arm::G0,
         Ok("E1") => Arm::E1,
         Ok("E1R") => Arm::E1R,
-        Ok(other) => panic!("DLI_ARM must be G0, E1 or E1R, got {other}"),
+        Ok("E1T") => Arm::E1T,
+        Ok(other) => panic!("DLI_ARM must be G0, E1, E1R or E1T, got {other}"),
     }
 }
 
@@ -88,14 +92,17 @@ fn arm_config() -> (
         ),
         // Sommerová `bs_10_5k.yml` + her code defaults (hidden 128, Faiss 25 iterations,
         // 100K preferred sample with the 40·k floor).
-        arm @ (Arm::E1 | Arm::E1R) => (
+        arm @ (Arm::E1 | Arm::E1R | Arm::E1T) => (
             5_000,
             10,
             emma_model_config(),
             LevelModelPolicy {
                 buckets: LevelBuckets::ArityPower,
                 min_samples_per_bucket: 40,
-                reuse_target_router: arm == Arm::E1,
+                reuse_target_router: arm != Arm::E1R,
+                imbalance_retrain: (arm == Arm::E1T).then_some(
+                    crate::collection_manager::dli_schedule::ImbalanceRetrain::POSTGRES_FROZEN,
+                ),
             },
             RoutingPolicy::ModelDrivenNormalizedCode,
         ),
@@ -1996,6 +2003,7 @@ async fn emma_level_rule_and_router_reuse_in_configured_collection() {
             buckets: LevelBuckets::ArityPower,
             min_samples_per_bucket: 4,
             reuse_target_router: reuse,
+            imbalance_retrain: None,
         };
         dli.model = LmiConfig {
             n_buckets: A,
@@ -2097,6 +2105,170 @@ async fn emma_level_rule_and_router_reuse_in_configured_collection() {
     }
 }
 
+/// Imbalance-triggered retraining (research/dli/uniform/Q5) in a configured collection.
+/// * A trigger that can never fire is identical to E1: same routers, populations and
+///   search results at every batch.
+/// * A trigger that always fires (threshold 1.0x) retrains every occupied destination at
+///   level 2 or deeper and keeps the router of an occupied level 1.
+/// * Every compaction into an occupied destination logs exactly one decision whose census
+///   is that destination's live population, bucket count and router before compaction.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn imbalance_trigger_off_equals_e1_and_on_retrains_eligible_levels() {
+    let _scope = common::ambient::test_guard();
+    use rand::{RngExt, SeedableRng};
+    use crate::collection_manager::dli_bucket_plan::RoutingPolicy;
+    use crate::collection_manager::dli_schedule::{
+        HierarchyConfig, ImbalanceRetrain, LevelBuckets, LevelModelPolicy, MaintenancePolicy,
+    };
+    const B: usize = 40;
+    const A: usize = 4;
+    const BATCHES: usize = 22;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(20261127);
+    let centers: Vec<Vec<f32>> = (0..8)
+        .map(|_| (0..DIMENSIONS).map(|_| rng.random_range(-1.0f32..1.0)).collect())
+        .collect();
+    let rows: Vec<Vec<f32>> = (0..B * BATCHES)
+        .map(|i| {
+            centers[i % centers.len()]
+                .iter()
+                .map(|c| c + rng.random_range(-0.3f32..0.3))
+                .collect()
+        })
+        .collect();
+    let queries: Vec<Vec<f32>> = (0..6)
+        .map(|i| centers[i].iter().map(|c| c + rng.random_range(-0.3f32..0.3)).collect())
+        .collect();
+    let never = ImbalanceRetrain {
+        min_level: 2,
+        ratio_permille: u32::MAX,
+    };
+    let always = ImbalanceRetrain {
+        min_level: 2,
+        ratio_permille: 1_000,
+    };
+    type Trace = Vec<std::collections::BTreeMap<usize, (u64, usize)>>;
+    let mut traces: Vec<(Trace, Vec<Vec<(String, u32)>>)> = Vec::new();
+    for (mode, rule) in [("e1", None), ("never", Some(never)), ("always", Some(always))] {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = collection_config(true);
+        let dli = config.dli_experimental.as_mut().unwrap();
+        dli.buffer_capacity = B;
+        dli.arity = A;
+        dli.candidate_budget = usize::MAX / 2;
+        dli.routing_policy = RoutingPolicy::ModelDrivenNormalizedCode;
+        dli.level_model = LevelModelPolicy {
+            buckets: LevelBuckets::ArityPower,
+            min_samples_per_bucket: 4,
+            reuse_target_router: true,
+            imbalance_retrain: rule,
+        };
+        dli.model = LmiConfig {
+            n_buckets: A,
+            sample_size: 64,
+            hidden_dim: 8,
+            epochs: 2,
+            batch_size: 16,
+            routing_batch_size: 16,
+            kmeans_iterations: 3,
+            nprobe: 1,
+            seed: 5,
+            reuse_router: None,
+        };
+        let collection = create_collection_with_config("trigger", root.path(), config).await;
+        let local = replica(&collection).await;
+        let hierarchy = HierarchyConfig {
+            buffer_capacity: B,
+            arity: A,
+            policy: MaintenancePolicy::Geometric,
+        };
+        let mut counts: Vec<usize> = Vec::new();
+        let mut previous = learned_members(&collection, root.path()).await;
+        let mut trace: Trace = Vec::new();
+        let mut expected = Vec::new(); // (level, live before, buckets, router before)
+        let (mut kept, mut retrained) = (0, 0);
+        for batch in 0..BATCHES {
+            let points = (batch * B..(batch + 1) * B)
+                .map(|row| PointStructPersisted {
+                    id: ((row + 1) as u64).into(),
+                    vector: VectorStructPersisted::Single(rows[row].clone()),
+                    payload: None,
+                })
+                .collect();
+            apply_points(&collection, points).await;
+            wait_for_dli_publications(&local, batch + 1).await;
+            let plan = hierarchy.plan(B, &counts).unwrap().unwrap();
+            counts.resize(counts.len().max(plan.target_level), 0);
+            for level in &plan.source_levels {
+                counts[level - 1] = 0;
+            }
+            counts[plan.target_level - 1] = plan.output_points;
+            let current = learned_members(&collection, root.path()).await;
+            if plan.target_existing_points > 0 {
+                let before = previous[&plan.target_level];
+                let after = current[&plan.target_level];
+                expected.push((plan.target_level, before.3, before.2, before.1));
+                let should_retrain = mode == "always" && plan.target_level >= 2;
+                if should_retrain {
+                    assert_ne!(before.1, after.1, "{mode}: level {} must retrain", plan.target_level);
+                    retrained += 1;
+                } else {
+                    assert_eq!(before.1, after.1, "{mode}: level {} must reuse", plan.target_level);
+                    kept += 1;
+                }
+            }
+            trace.push(current.iter().map(|(l, m)| (*l, (m.1, m.3))).collect());
+            previous = current;
+        }
+        let diagnostics = local.local_dli_diagnostics_for_test().await.unwrap();
+        assert!(diagnostics.4.is_empty(), "maintenance errors: {diagnostics:?}");
+        let decisions = local.local_dli_trigger_decisions_for_test().await.unwrap();
+        if rule.is_none() {
+            assert!(decisions.is_empty(), "E1 must not take a census");
+        } else {
+            assert_eq!(decisions.len(), expected.len(), "{mode}: one decision per occupied target");
+            for (d, (level, live, buckets, router)) in decisions.iter().zip(&expected) {
+                assert_eq!(
+                    (d.target_level, d.target_live, d.buckets, d.target_router.clone()),
+                    (*level, *live, *buckets, format!("{router:016x}")),
+                    "{mode}: decision census must be the destination before compaction"
+                );
+                assert_eq!(d.retrain, mode == "always" && *level >= 2, "{mode}: {d:?}");
+            }
+        }
+        if mode == "always" {
+            assert!(retrained >= 2 && kept >= 2, "fixture must exercise both branches: {retrained} {kept}");
+        }
+        let mut hits = Vec::new();
+        for query in &queries {
+            let result = collection
+                .search(
+                    CoreSearchRequest {
+                        query: QueryEnum::Nearest(NamedQuery::default_dense(query.clone())),
+                        filter: None,
+                        params: None,
+                        limit: 10,
+                        offset: 0,
+                        with_payload: None,
+                        with_vector: None,
+                        score_threshold: None,
+                    },
+                    None,
+                    None,
+                    &ShardSelectorInternal::All,
+                    None,
+                )
+                .await
+                .unwrap();
+            hits.push(result.iter().map(|h| (format!("{:?}", h.id), h.score.to_bits())).collect());
+        }
+        println!("TRIGGER_TEST mode={mode} kept={kept} retrained={retrained} decisions={}", decisions.len());
+        traces.push((trace, hits));
+        collection.stop_gracefully().await;
+    }
+    assert_eq!(traces[0], traces[1], "a trigger that never fires must be identical to E1");
+    assert_ne!(traces[0].0, traces[2].0, "a firing trigger must change some router");
+}
+
 /// Drives maintenance to a fixed point after deletes: re-plans without an update (rebuild
 /// cascades have none) and waits until nothing is scheduled or running. Fails on any
 /// optimizer error or after `limit`.
@@ -2176,6 +2348,7 @@ async fn greedy_rebuild_after_deletes_in_configured_collection() {
             buckets: LevelBuckets::ArityPower,
             min_samples_per_bucket: 4,
             reuse_target_router: true,
+            imbalance_retrain: None,
         };
         dli.model = LmiConfig {
             n_buckets: A,
@@ -2332,6 +2505,7 @@ async fn vacuum_rebuild_after_deletes_in_configured_collection() {
             buckets: LevelBuckets::ArityPower,
             min_samples_per_bucket: 4,
             reuse_target_router: true,
+            imbalance_retrain: None,
         };
         dli.model = LmiConfig {
             n_buckets: A,
@@ -2489,6 +2663,7 @@ async fn dli_best_maintenance_and_proportional_serving_in_configured_collection(
             buckets: LevelBuckets::ArityPower,
             min_samples_per_bucket: 4,
             reuse_target_router: true,
+            imbalance_retrain: None,
         };
         dli.model = LmiConfig {
             n_buckets: A,
@@ -2878,6 +3053,18 @@ async fn dli_phase3_workload() {
     let mut log = std::fs::File::create(output.join("batches.jsonl")).unwrap();
     let started = Instant::now();
     let batches = plan["batches"].as_array().unwrap();
+    let mut decisions_before = 0usize;
+    // research/dli/uniform/Q4(b): `DLI_P3_DRAIN_ALIGN=global` cuts insert chunks at global
+    // multiples of the buffer capacity, so every drain holds exactly `buffer_capacity`
+    // points across batch boundaries (PostgreSQL's drain schedule). Unset keeps the Phase 3
+    // per-batch chunking unchanged.
+    let global_drain = match std::env::var("DLI_P3_DRAIN_ALIGN").as_deref() {
+        Err(_) => false,
+        Ok("global") => true,
+        Ok(other) => panic!("DLI_P3_DRAIN_ALIGN must be global or unset, got {other}"),
+    };
+    assert!(!(global_drain && static_system), "drain alignment applies to DLI only");
+    let mut inserted_total = 0usize;
     for batch in batches.iter().take(max_batches) {
         let index = batch["index"].as_u64().unwrap() as usize;
         let dir = plan_dir.join(format!("batch_{index:02}"));
@@ -2886,7 +3073,21 @@ async fn dli_phase3_workload() {
         let inserts = read_u32(dir.join("insert.u32"));
         // DLI drains synchronously after every buffer-sized chunk (Phase 3 protocol); the
         // static system lets Qdrant's optimizers run concurrently and settles at batch end.
-        for chunk in inserts.chunks(buffer_capacity) {
+        let chunks: Vec<&[u32]> = if global_drain {
+            let mut out = Vec::new();
+            let mut rest = &inserts[..];
+            while !rest.is_empty() {
+                let room = buffer_capacity - inserted_total % buffer_capacity;
+                let (head, tail) = rest.split_at(room.min(rest.len()));
+                out.push(head);
+                inserted_total += head.len();
+                rest = tail;
+            }
+            out
+        } else {
+            inserts.chunks(buffer_capacity).collect()
+        };
+        for chunk in chunks {
             apply_points(&collection, read_rows(chunk)).await;
             if !static_system {
                 settle_dli_maintenance(&local, Duration::from_secs(4 * 3600)).await;
@@ -2914,6 +3115,11 @@ async fn dli_phase3_workload() {
         } else {
             local.local_dli_publication_events_for_test().await.unwrap()
         };
+        let decisions = if static_system {
+            Vec::new()
+        } else {
+            local.local_dli_trigger_decisions_for_test().await.unwrap()
+        };
         let members = learned_members(&collection, root.path()).await;
         let segments = segment_topology(&collection).await;
         let mut record = serde_json::json!({
@@ -2924,6 +3130,11 @@ async fn dli_phase3_workload() {
             "levels": members.iter().map(|(l, (_, fp, b, n))| serde_json::json!({
                 "level": l, "live": n, "buckets": b, "router": format!("{fp:016x}")})).collect::<Vec<_>>(),
         });
+        // Only the trigger arm takes a census, so E1 and E1R records keep their fields.
+        if decisions.len() > decisions_before {
+            record["trigger_decisions"] = serde_json::json!(&decisions[decisions_before..]);
+        }
+        decisions_before = decisions.len();
         if eval.as_ref().is_none_or(|e| e.contains(&index)) {
             local.force_flush_local_for_test().await;
             let copy = scratch.join(format!("frozen-{index:02}"));

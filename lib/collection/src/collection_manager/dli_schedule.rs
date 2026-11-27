@@ -41,6 +41,44 @@ pub struct LevelModelPolicy {
     /// Compaction into a non-empty target reuses the target's trained router instead
     /// of training (Sommerová's naive insert); an empty target is trained fresh.
     pub reuse_target_router: bool,
+    /// Exception to `reuse_target_router`: retrain an occupied destination whose bucket
+    /// census is too imbalanced. `None` (the default) is plain reuse; it is not
+    /// serialized, so existing configurations keep their bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imbalance_retrain: Option<ImbalanceRetrain>,
+}
+
+/// Imbalance-triggered retraining, ported from the PostgreSQL rule frozen in
+/// `PREREGISTRATION_DLI_IMBALANCE_TRIGGER.md` (research/dli/uniform/Q5). At a
+/// compaction into an occupied destination at level `min_level` or deeper, retrain if
+/// the destination's largest live bucket divided by the mean live bucket size over
+/// all allocated buckets is at least `ratio_permille / 1000`; otherwise reuse.
+/// Shallower occupied levels always reuse; empty destinations always train.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImbalanceRetrain {
+    pub min_level: usize,
+    pub ratio_permille: u32,
+}
+
+impl ImbalanceRetrain {
+    /// PostgreSQL's frozen rule: level 2 or deeper, threshold 8.0.
+    pub const POSTGRES_FROZEN: Self = Self {
+        min_level: 2,
+        ratio_permille: 8_000,
+    };
+
+    /// Whether an occupied destination at `level` with live bucket sizes `sizes`
+    /// (one entry per allocated bucket, empty buckets included) is retrained. The
+    /// comparison max / (total / buckets) >= ratio / 1000 is done exactly in integers.
+    pub fn retrain(&self, level: usize, sizes: &[usize]) -> bool {
+        let total: u128 = sizes.iter().map(|&s| s as u128).sum();
+        if level < self.min_level || sizes.is_empty() || total == 0 {
+            return false;
+        }
+        let max = sizes.iter().copied().max().unwrap_or(0) as u128;
+        max * sizes.len() as u128 * 1_000 >= u128::from(self.ratio_permille) * total
+    }
 }
 
 /// Largest sample the LMI configuration accepts.
@@ -436,6 +474,45 @@ mod tests {
     }
 
     #[test]
+    fn imbalance_retrain_matches_the_frozen_postgres_rule() {
+        let rule = ImbalanceRetrain::POSTGRES_FROZEN;
+        // 10 buckets, total 100, mean 10: a largest bucket of 80 is exactly 8.0x.
+        let exact = [80usize, 20, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert!(rule.retrain(2, &exact), "8.0x retrains (>=)");
+        let below = [79usize, 21, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert!(!rule.retrain(2, &below), "7.9x reuses");
+        // Empty buckets count in the mean (all allocated buckets): 10 / (20 / 10) = 5.0x.
+        let sparse = [10usize, 10, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert!(!rule.retrain(2, &sparse));
+        assert!(!rule.retrain(1, &exact), "level 1 always reuses");
+        assert!(rule.retrain(3, &exact), "deeper levels are eligible");
+        assert!(!rule.retrain(2, &[0, 0, 0]), "an empty census never retrains");
+        assert!(!rule.retrain(2, &[]));
+    }
+
+    #[test]
+    fn imbalance_retrain_off_keeps_the_serialized_policy() {
+        let e1 = LevelModelPolicy {
+            buckets: LevelBuckets::ArityPower,
+            min_samples_per_bucket: 40,
+            reuse_target_router: true,
+            imbalance_retrain: None,
+        };
+        let text = serde_json::to_string(&e1).unwrap();
+        assert_eq!(
+            text,
+            r#"{"buckets":"ArityPower","min_samples_per_bucket":40,"reuse_target_router":true}"#
+        );
+        assert_eq!(serde_json::from_str::<LevelModelPolicy>(&text).unwrap(), e1);
+        let trigger = LevelModelPolicy {
+            imbalance_retrain: Some(ImbalanceRetrain::POSTGRES_FROZEN),
+            ..e1
+        };
+        let text = serde_json::to_string(&trigger).unwrap();
+        assert_eq!(serde_json::from_str::<LevelModelPolicy>(&text).unwrap(), trigger);
+    }
+
+    #[test]
     fn level_model_policy_sizes_buckets_and_samples_per_level() {
         let base = segment::index::lmi_index::LmiConfig {
             n_buckets: 548,
@@ -449,6 +526,7 @@ mod tests {
             buckets: LevelBuckets::ArityPower,
             min_samples_per_bucket: 40,
             reuse_target_router: true,
+            imbalance_retrain: None,
         };
         let level1 = emma.fresh_config(base, 10, 1).unwrap();
         assert_eq!(

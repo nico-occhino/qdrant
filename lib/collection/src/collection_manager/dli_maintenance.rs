@@ -343,6 +343,27 @@ pub struct DliPublicationEvent {
     pub published_output_points: usize,
     pub optimizer_micros: u128,
 }
+/// One imbalance-trigger decision (research/dli/uniform/Q5), taken when a compaction
+/// into an occupied destination is scheduled. The census is the destination's serving
+/// generation before compaction: live points per allocated bucket.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct DliTriggerDecision {
+    /// Value of `scheduled` for the job this decision belongs to.
+    pub job: usize,
+    pub target_level: usize,
+    pub target_uuid: Uuid,
+    pub target_live: usize,
+    pub buckets: usize,
+    pub max_bucket: usize,
+    /// max_bucket / (target_live / buckets), for reporting only (the rule is exact).
+    pub max_over_mean: f64,
+    pub retrain: bool,
+    /// Fingerprint of the router the destination would reuse.
+    pub target_router: String,
+    /// Time spent reading the census (decision-path overhead).
+    pub census_micros: u64,
+}
+
 #[cfg(test)]
 pub struct DliBeforeNativeHook {
     pub entered: std::sync::mpsc::Sender<()>,
@@ -374,6 +395,8 @@ pub struct DliMaintenance {
     pub published: AtomicUsize,
     pub published_uuids: Mutex<Vec<Uuid>>,
     pub publication_events: Mutex<Vec<DliPublicationEvent>>,
+    /// Imbalance-trigger decisions; stays empty unless the trigger is enabled.
+    pub trigger_decisions: Mutex<Vec<DliTriggerDecision>>,
     pub optimizer_errors: Mutex<Vec<String>>,
     pub scheduled: AtomicUsize,
     pub builds: Mutex<Vec<PrivateBuild>>,
@@ -579,6 +602,7 @@ impl DliMaintenance {
             published: AtomicUsize::new(0),
             published_uuids: Mutex::new(Vec::new()),
             publication_events: Mutex::new(Vec::new()),
+            trigger_decisions: Mutex::new(Vec::new()),
             optimizer_errors: Mutex::new(Vec::new()),
             scheduled: AtomicUsize::new(0),
             builds: Mutex::new(Vec::new()),
@@ -620,14 +644,18 @@ impl DliMaintenance {
     /// Model for the destination of `plan`. With router reuse and a non-empty target,
     /// this is the target's own configuration naming the target's router, so the build
     /// routes the merged data without training; otherwise a fresh per-level model.
+    /// With the imbalance trigger enabled, an occupied target at an eligible level whose
+    /// live bucket census crosses the threshold is trained fresh instead; the decision
+    /// is returned (without its job index) for the caller to record once per job.
     fn destination_model(
         &self,
         captured: &[LockedSegment],
         roles: &HashMap<Uuid, usize>,
         plan: &CompactionPlan,
-    ) -> Result<LmiConfig, String> {
+    ) -> Result<(LmiConfig, Option<DliTriggerDecision>), String> {
         let policy = *self.level_model.lock();
         if policy.reuse_target_router && plan.target_existing_points > 0 {
+            let census = policy.imbalance_retrain.is_some();
             let mut targets = captured.iter().filter_map(|locked| {
                 let LockedSegment::Original(segment) = locked else {
                     return None;
@@ -651,23 +679,74 @@ impl DliMaintenance {
                     let VectorIndexEnum::Lmi(lmi) = &*index else {
                         return None;
                     };
-                    let fingerprint = lmi.routing_state()?.router().fingerprint();
-                    model.map(|model| LmiConfig {
-                        reuse_router: Some(fingerprint),
-                        ..model
+                    let state = lmi.routing_state()?;
+                    let fingerprint = state.router().fingerprint();
+                    // Live points per allocated bucket, read only when the trigger needs it.
+                    let sizes = census.then(|| {
+                        let started = std::time::Instant::now();
+                        use segment::id_tracker::IdTrackerRead as _;
+                        let tracker = guard.id_tracker.borrow();
+                        let postings = state.postings();
+                        let sizes = (0..postings.len())
+                            .map(|bucket| {
+                                postings.get(bucket).map_or(0, |list| {
+                                    list.iter().filter(|&&o| !tracker.is_deleted_point(o)).count()
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        (sizes, started.elapsed().as_micros() as u64)
+                    });
+                    model.map(|model| {
+                        (
+                            LmiConfig {
+                                reuse_router: Some(fingerprint),
+                                ..model
+                            },
+                            guard.uuid,
+                            sizes,
+                        )
                     })
                 })?
             });
-            let target = targets
+            let (target, target_uuid, sizes) = targets
                 .next()
                 .ok_or("non-empty target level has no trained LMI member")?;
             if targets.next().is_some() {
                 return Err("router reuse needs exactly one target member".into());
             }
-            return Ok(target);
+            let (Some(rule), Some((sizes, census_micros))) = (policy.imbalance_retrain, sizes) else {
+                return Ok((target, None));
+            };
+            let retrain = rule.retrain(plan.target_level, &sizes);
+            let live: usize = sizes.iter().sum();
+            let max_bucket = sizes.iter().copied().max().unwrap_or(0);
+            let decision = DliTriggerDecision {
+                job: 0,
+                target_level: plan.target_level,
+                target_uuid,
+                target_live: live,
+                buckets: sizes.len(),
+                max_bucket,
+                max_over_mean: if live == 0 {
+                    0.0
+                } else {
+                    max_bucket as f64 * sizes.len() as f64 / live as f64
+                },
+                retrain,
+                target_router: format!("{:016x}", target.reuse_router.unwrap_or_default()),
+                census_micros,
+            };
+            if !retrain {
+                return Ok((target, Some(decision)));
+            }
+            let fresh = policy
+                .fresh_config(self.model, self.hierarchy.arity, plan.target_level)
+                .map_err(|e| format!("{e:?}"))?;
+            return Ok((fresh, Some(decision)));
         }
         policy
             .fresh_config(self.model, self.hierarchy.arity, plan.target_level)
+            .map(|config| (config, None))
             .map_err(|e| format!("{e:?}"))
     }
 
@@ -729,7 +808,7 @@ impl DliMaintenance {
             return;
         };
         fingerprints.retain(|(uuid, _, _)| plan_selects(&plan, roles_snapshot[uuid]));
-        let job_model = match self.destination_model(&captured, &roles_snapshot, &plan) {
+        let (job_model, decision) = match self.destination_model(&captured, &roles_snapshot, &plan) {
             Ok(model) => model,
             Err(error) => {
                 self.optimizer_errors
@@ -754,7 +833,12 @@ impl DliMaintenance {
             .zip(roles)
             .filter_map(|(s, l)| plan_selects(&plan, l).then_some(s))
             .collect();
-        self.scheduled.fetch_add(1, Ordering::Relaxed);
+        let job = self.scheduled.fetch_add(1, Ordering::Relaxed);
+        if let Some(decision) = decision {
+            self.trigger_decisions
+                .lock()
+                .push(DliTriggerDecision { job, ..decision });
+        }
         let state = self.clone();
         let job_holder = holder.clone();
         let (worker_start, worker_ready) = std::sync::mpsc::channel();

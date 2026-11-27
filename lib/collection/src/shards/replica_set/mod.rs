@@ -490,6 +490,18 @@ impl ShardReplicaSet {
     }
 
     #[cfg(all(test, feature = "dli-research"))]
+    pub async fn local_dli_trigger_decisions_for_test(
+        &self,
+    ) -> Option<Vec<crate::collection_manager::dli_maintenance::DliTriggerDecision>> {
+        use crate::shards::shard::Shard;
+        let local = self.local.read().await;
+        let Some(Shard::Local(local)) = local.as_ref() else {
+            return None;
+        };
+        let maintenance = local.update_tracker.dli_maintenance.read().clone()?;
+        Some(maintenance.trigger_decisions.lock().clone())
+    }
+
     pub async fn local_dli_publication_events_for_test(
         &self,
     ) -> Option<Vec<crate::collection_manager::dli_maintenance::DliPublicationEvent>> {
