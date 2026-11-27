@@ -1,7 +1,8 @@
 # Q5. The imbalance trigger in Qdrant (preregistration)
 
-**Status: DRAFT.** It is frozen by a commit recorded in `STATUS.md` before any run on the plans below. Local gate
-runs (§6) use separate fixtures and plan prefixes and are labelled as gates.
+**Status: FROZEN 2026-11-27**, by the commit that carries this line (recorded in `STATUS.md`), before any run on
+the plans below. Gates 1–3 passed locally (`evidence/q5-local-gates/`). Later changes are dated amendments that say
+whether they came before or after data.
 
 This is the Qdrant port of PostgreSQL's frozen imbalance-trigger rule (`PREREGISTRATION_DLI_IMBALANCE_TRIGGER.md`,
 pinned in `PINS.md`). The rule, arms, estimand and decision criteria are copied. Every departure is forced by engine

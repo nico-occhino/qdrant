@@ -1,0 +1,11 @@
+{
+ "decisions": 23,
+ "retrain_decisions": 0,
+ "reuse_builds": 23,
+ "trained_builds": 4,
+ "first_fits": 4,
+ "problems": [],
+ "pass": true,
+ "max_ratio_eligible": 2.5947026486756624,
+ "fired": []
+}
