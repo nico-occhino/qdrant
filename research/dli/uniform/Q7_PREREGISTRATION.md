@@ -59,9 +59,23 @@ For each, we record:
   NumPy model of the stored vectors) agree on ids up to exact ties.
 - **No returned id may be duplicate or non-qualifying.**
 - **ExactMatches must give Recall@30 = 1.0 (ties aside),** with scored work equal to the qualifying count.
-- **Work counters must be monotone** in `nprobe` and `ef` (widening restarts are listed, as in final-benchmark A3).
+- **Work counters must be monotone** in `nprobe` and `ef`, with one exception, as in final-benchmark A3. A drop from
+  n to 2n is accepted when the routed plan widened to fill k and the per-query drop is below the restarted first
+  pass. All drops are listed.
+  - **Why the exception is needed.** The local smoke showed S-LMI at the 1% predicate scoring 98 vectors at
+    nprobe 1 but 84 at nprobe 16.
+- **Exact ties.** Gold ties at the rank-30 boundary are classified per query (`s30`, `s31`), and a shortfall of the
+  exact arms is admitted only as such a tie. In the smoke, DLI exact at 50% gave 0.999; it will be classified in the
+  full run.
 
-## 6. Execution
+## 6. Local smoke (2026-11-27; runner check, not data)
+- **What ran.** `Q7_ROWS=6000`, which gives DLI = level 1 (ids 1–5,000) plus a 1,000-row buffer. It produced 4,224
+  records, with no duplicate or non-qualifying ids.
+- **What it confirmed.** S-LMI's exact path scored exactly the qualifying count. On 6,000 rows, HNSW sits below its
+  full-scan threshold, so it searched exactly; the full fixture exercises the graph.
+- **A runtime setting.** Builds need `QDRANT_LMI_SAMPLE_BUDGET_BYTES=2000000000`, as the Phase 3 jobs set.
+
+## 7. Execution
 - **Where.** One local smoke on a 6,000-row prefix of the fixture, with separate labels. Then one MetaCentrum job (8
   CPUs, ≤ 4 h) on the full fixture, staged from a pushed commit.
 - **Implementation.** `lib/segment/tests/` plus the collection harness, adapted from `lmi_filter_probing_sisap300k.rs`.
