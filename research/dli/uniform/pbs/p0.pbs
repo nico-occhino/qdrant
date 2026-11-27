@@ -1,0 +1,31 @@
+#!/bin/bash
+#PBS -N p0-mem
+#PBS -l select=1:ncpus=2:mem=8gb:scratch_ssd=40gb
+#PBS -j oe
+#
+# P0.1–P0.3 infrastructure preflight (SCALE_SHARED_SPEC.md §P0). Not data.
+#   qsub -l walltime=00:45:00 -v IN=<staged dir> p0.pbs
+set -euo pipefail
+: "${PBS_JOBID:?must run under PBS}" "${SCRATCHDIR:?scratch_ssd required}" "${IN:?}"
+U=/storage/budejovice1/home/nico/lmi-metacentrum/uniform-20261127
+OUT="$U/results/p0-mem-$PBS_JOBID"
+mkdir -p "$U/results"; mkdir "$OUT"
+exec > >(tee "$OUT/job.log") 2>&1
+echo "START $(date -u +%FT%TZ) host=$(hostname) job=$PBS_JOBID commit=$(cat "$IN/native.commit")"
+( cd "$IN" && sha256sum -c inputs.sha256 )
+{ uname -a; cat /proc/self/cgroup; python3 --version; free -g; df -h "$SCRATCHDIR"; swapon --show || true; } > "$OUT/environment.txt" 2>&1
+CG=/sys/fs/cgroup/$(sed -n 's/^0:://p' /proc/self/cgroup)
+for f in cgroup.controllers memory.max memory.swap.max memory.high memory.events; do
+  echo "== $f"; cat "$CG/$f" 2>&1 || true
+done > "$OUT/cgroup-start.txt"
+# P0.1–P0.3: a 12 GiB file through the page cache and mmap under an 8 GiB limit.
+python3 -I "$IN/preflight_p0.py" --scratch "$SCRATCHDIR" --out "$OUT/p0.json" --file-gib 12 || echo "preflight_p0 exit $?"
+# P0.1 anon: 10 GiB of touched anonymous memory must be OOM-killed (hard-killed after 300 s if it swaps instead).
+cat "$CG/memory.events" > "$OUT/anon-events-before.txt" 2>&1 || true
+set +e
+timeout -s KILL 300 python3 -I -c "x = b'\1' * (10 << 30); print('allocated', len(x))" > "$OUT/anon-child.txt" 2>&1
+echo "anon child exit $?" | tee -a "$OUT/anon-child.txt"
+set -e
+cat "$CG/memory.events" > "$OUT/anon-events-after.txt" 2>&1 || true
+( cd "$OUT" && find . -type f ! -name SHA256SUMS ! -name job.log -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS )
+echo "DONE $(date -u +%FT%TZ)"

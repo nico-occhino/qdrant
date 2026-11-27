@@ -1,0 +1,32 @@
+#!/bin/bash
+#PBS -N p0-net
+#PBS -l select=2:ncpus=1:mem=4gb
+#PBS -l place=scatter
+#PBS -j oe
+#
+# P0.4 multi-node reachability preflight (SCALE_SHARED_SPEC.md §P0). Not data.
+#   qsub -l walltime=00:30:00 -v IN=<staged dir> p0net.pbs
+set -euo pipefail
+: "${PBS_JOBID:?must run under PBS}" "${IN:?}"
+U=/storage/budejovice1/home/nico/lmi-metacentrum/uniform-20261127
+OUT="$U/results/p0-net-$PBS_JOBID"
+mkdir -p "$U/results"; mkdir "$OUT"
+exec > >(tee "$OUT/job.log") 2>&1
+echo "START $(date -u +%FT%TZ) host=$(hostname) job=$PBS_JOBID commit=$(cat "$IN/native.commit")"
+( cd "$IN" && sha256sum -c inputs.sha256 )
+sort -u "$PBS_NODEFILE" > "$OUT/nodes.txt"; cat "$OUT/nodes.txt"
+A=$(hostname -f); B=$(grep -v -x -e "$A" -e "$(hostname)" "$OUT/nodes.txt" | head -1)
+test -n "$B" || { echo "only one node allocated"; exit 1; }
+SRV="python3 -I $IN/preflight_net.py server --ports 6333,6335 --seconds 600"
+LAUNCH=none
+if ssh -o BatchMode=yes -o ConnectTimeout=20 "$B" true 2>"$OUT/ssh.err"; then
+  LAUNCH=ssh; ssh -o BatchMode=yes "$B" "$SRV" > "$OUT/server.log" 2>&1 &
+elif command -v pbsdsh >/dev/null; then
+  LAUNCH=pbsdsh; pbsdsh -h "$B" -- /bin/bash -c "$SRV" > "$OUT/server.log" 2>&1 &
+fi
+echo "launch=$LAUNCH server=$B" | tee "$OUT/launch.txt"
+[[ $LAUNCH != none ]] || exit 1
+python3 -I "$IN/preflight_net.py" client --host "$B" --ports 6333,6335 --mib 1024 --out "$OUT/p0net.json" || echo "client exit $?"
+wait || true
+( cd "$OUT" && find . -type f ! -name SHA256SUMS ! -name job.log -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS )
+echo "DONE $(date -u +%FT%TZ)"
