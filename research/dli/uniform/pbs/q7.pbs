@@ -1,0 +1,94 @@
+#!/bin/bash
+#PBS -N q7
+#PBS -l select=1:ncpus=8:mem=64gb:scratch_ssd=40gb:cpu_vendor=amd
+#PBS -j oe
+#
+# Q7 shared filtered-search fixture (research/dli/uniform/Q7_PREREGISTRATION.md).
+#   qsub -l walltime=04:00:00 -v IN=<staged dir> q7.pbs
+set -euo pipefail
+: "${PBS_JOBID:?must run under PBS}" "${SCRATCHDIR:?scratch_ssd required}" "${IN:?}"
+ROOT=/storage/budejovice1/home/nico/lmi-metacentrum
+U="$ROOT/uniform-20261127"
+BINCACHE="$ROOT/dli-emma-path-20261120/bin-cache"
+CORPUS10M="$ROOT/results/sisap23-matched-final-20261028-01/corpus.f16le"
+EXPECTED_COMMIT=$(cat "$IN/native.commit")
+LABEL=q7-fixture
+OUT="$U/results/$LABEL-$PBS_JOBID"
+mkdir -p "$U/results"; mkdir "$OUT"
+exec > >(tee "$OUT/job.log") 2>&1
+W="$SCRATCHDIR/work"
+phase=start
+finish() {
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    printf '{"job":"%s","label":"%s","phase":"%s","exit":%d,"utc":"%s"}\n' \
+      "$PBS_JOBID" "$LABEL" "$phase" "$rc" "$(date -u +%FT%TZ)" > "$OUT/FAILED.json"
+    [[ -f "$W/run.log" ]] && cp -n "$W/run.log" "$OUT/partial-run.log" || true
+  fi
+  rm -rf "$W"
+  exit $rc
+}
+trap finish EXIT
+echo "START $(date -u +%FT%TZ) host=$(hostname) job=$PBS_JOBID label=$LABEL commit=$EXPECTED_COMMIT"
+{ lscpu; free -g; df -h "$SCRATCHDIR"; } > "$OUT/hardware.txt"
+phase=verify_inputs
+( cd "$IN" && sha256sum -c inputs.sha256 )
+phase=environment
+source "$ROOT/development-search-timeout-24900597-20261026/sisap23-build-environment-v1.sh"
+sisap23_export_build_environment
+sisap23_load_build_modules
+sisap23_check_build_environment | tee "$OUT/toolchain.txt"
+PY="$SISAP23_PYTHON_ENV/bin/python"
+phase=stage
+git() { command git -c filter.lfs.smudge= -c filter.lfs.clean= -c filter.lfs.process= -c filter.lfs.required=false "$@"; }
+export GIT_LFS_SKIP_SMUDGE=1
+mkdir -p "$W"
+git clone --quiet --no-checkout "$IN/source.bundle" "$W/qdrant"
+git -C "$W/qdrant" checkout --quiet --detach "$EXPECTED_COMMIT"
+test "$(git -C "$W/qdrant" rev-parse HEAD)" = "$EXPECTED_COMMIT"
+test -z "$(git -C "$W/qdrant" status --porcelain)"
+HERE="$W/qdrant/research/dli/uniform"
+"$PY" -I "$HERE/test_analyze_q7.py" > "$OUT/python-tests.log"
+phase=fixture
+# The fixture script checks the slice, query and rank hashes and the first five ranked ids (the spec's values).
+"$PY" -I "$HERE/q7_fixture.py" --corpus "$CORPUS10M" --out "$W/fixture" | tee "$OUT/fixture.txt"
+cp "$W/fixture/predicates.json" "$OUT/"
+phase=build
+tar -C "$W" -xf "$IN/vendor.tar"
+mkdir -p "$W/qdrant/.cargo"
+sed "s|__VENDOR_DIR__|$W/vendor|" "$IN/cargo-config.toml" > "$W/qdrant/.cargo/config.toml"
+cd "$W/qdrant"
+SRC_KEY=$(git rev-parse HEAD:lib HEAD:src HEAD:Cargo.toml HEAD:Cargo.lock | sha256sum | cut -c1-24)
+CACHE="$BINCACHE/$SRC_KEY-q7"
+echo "source key $SRC_KEY" | tee "$OUT/source-key.txt"
+if [[ -f "$CACHE/q7.sha256" ]] && ( cd "$CACHE" && sha256sum -c --quiet q7.sha256 ); then
+  BIN="$W/q7-cached"; cp "$CACHE/q7" "$BIN"
+else
+  export CARGO_TARGET_DIR="$W/target" CARGO_BUILD_JOBS=$NCPUS
+  /usr/bin/time -v cargo test --locked --offline --profile perf -p segment --features testing,lmi-training \
+      --test q7_filter_fixture --no-run > "$OUT/build.stdout" 2> "$OUT/build.stderr"
+  BIN=$(ls -t "$W/target/perf/deps"/q7_filter_fixture-* | grep -v '\.d$' | head -1)
+  mkdir -p "$CACHE.tmp-$PBS_JOBID"; cp "$BIN" "$CACHE.tmp-$PBS_JOBID/q7"
+  ( cd "$CACHE.tmp-$PBS_JOBID" && sha256sum q7 > q7.sha256 )
+  [[ -e "$CACHE" ]] || mv "$CACHE.tmp-$PBS_JOBID" "$CACHE"
+fi
+sha256sum "$BIN" | tee "$OUT/binary.sha256"
+"$BIN" --exact q7_hierarchy_matches_the_bentley_saxe_schedule > "$OUT/unit-tests.log" 2>&1
+grep -q "test result: ok. 1 passed" "$OUT/unit-tests.log"
+phase=run
+QDRANT_LMI_SAMPLE_BUDGET_BYTES=2000000000 Q7_INPUTS="$W/fixture" Q7_OUT="$W/out" Q7_THREADS="$NCPUS" \
+    /usr/bin/time -v "$BIN" --ignored --exact q7_filter_fixture --nocapture > "$W/run.log" 2>&1
+cp "$W/run.log" "$OUT/"
+for f in rows.jsonl gold.jsonl topology.json summary.json; do cp "$W/out/$f" "$OUT/"; done
+phase=analysis
+GATE_OK=1
+"$PY" -I "$HERE/analyze_q7.py" --run "$OUT" --out "$OUT/analysis.json" > "$OUT/analysis.txt" || true
+"$PY" -I -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))['pass'] else 1)" "$OUT/analysis.json" || GATE_OK=0
+phase=persist
+( cd "$OUT" && find . -type f ! -name SHA256SUMS ! -name job.log -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS )
+( cd "$OUT" && sha256sum -c --quiet SHA256SUMS )
+[[ $GATE_OK = 1 ]] || { phase=gates_failed; echo "a gate failed; data kept"; exit 1; }
+printf '{"job":"%s","label":"%s","commit":"%s","utc":"%s","status":"COMPLETED (not ACCEPTED until reviewed)"}\n' \
+  "$PBS_JOBID" "$LABEL" "$EXPECTED_COMMIT" "$(date -u +%FT%TZ)" > "$OUT/COMPLETE.json"
+phase=done
+echo "COMPLETE $(date -u +%FT%TZ)"

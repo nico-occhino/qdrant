@@ -38,7 +38,13 @@ Updated 2026-11-27. Branch `research/uniform-questions-20261127` (worktree `~/wo
   - **Author action.** Ask the PostgreSQL side (Codex) to export them.
 
 ## Q7. Filtering
-- The fixture spec is frozen at PostgreSQL 3ec4041. Implementation has not started.
+- **Fixture.** `q7_fixture.py` reproduces every value of PostgreSQL's spec (3ec4041).
+- **Harness.** `lib/segment/tests/q7_filter_fixture.rs` runs S-LMI (250 buckets), the reconstructed E1 DLI members,
+  and HNSW (m 16), counting per-query scored work.
+- **Analysis.** `analyze_q7.py`, with its known-answer test, and the job script `pbs/q7.pbs`.
+- **The local smoke (6,000 rows) passed the runner gates.** No bad ids; exact work = the qualifying count; the one
+  exact shortfall is a gold tie; 24 widening restarts.
+- **Next.** Freeze the preregistration and submit, after Q5 S1 validates (author brief).
 
 ## Inputs prepared locally (`~/research-admin/experiments/2026-11-27-uniform/`)
 - **The S1 plan** `plans/S1-shift-20261121/`: copied from PostgreSQL R3 job 25910367's plan. Its 205 file hashes
