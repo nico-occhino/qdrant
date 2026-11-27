@@ -24,12 +24,16 @@ CHUNK = 64 << 20
 
 
 def cgroup_dir():
+    """The memory controller's cgroup. A hybrid host (MetaCentrum: P0 job 26075041) lists a v2 `0::` line but
+    accounts memory under v1 (`N:memory:/pbs_jobs.service/jobid/<job>`), so the v1 memory line wins when present."""
     lines = Path("/proc/self/cgroup").read_text().splitlines()
+    mem = [l.split(":", 2)[2] for l in lines if l.split(":")[1:2] == ["memory"]]
+    if mem and (Path("/sys/fs/cgroup/memory") / mem[0].lstrip("/")).is_dir():
+        return "v1", Path("/sys/fs/cgroup/memory") / mem[0].lstrip("/")
     v2 = [l for l in lines if l.startswith("0::")]
-    if v2:
+    if v2 and (Path("/sys/fs/cgroup") / v2[0][3:].lstrip("/") / "memory.max").exists():
         return "v2", Path("/sys/fs/cgroup") / v2[0][3:].lstrip("/")
-    mem = [l for l in lines if ":memory:" in l]
-    return "v1", (Path("/sys/fs/cgroup/memory") / mem[0].split(":", 2)[2].lstrip("/")) if mem else None
+    return None, None
 
 
 def read(p):
@@ -65,7 +69,7 @@ class Cg:
         return int(v) if v.isdigit() else v
 
     def stat(self):
-        return kv(self.f("memory.stat"))
+        return kv(self.f("memory.stat")) if self.dir else {}
 
     def events(self):
         return kv(self.f("memory.events", "memory.oom_control"))
@@ -75,7 +79,15 @@ class Cg:
                 "stat_file": self.stat().get("file", self.stat().get("total_cache")),
                 "stat_anon": self.stat().get("anon", self.stat().get("total_rss")),
                 "stat_file_mapped": self.stat().get("file_mapped", self.stat().get("total_mapped_file")),
-                "pressure": self.f("memory.pressure"), "events": self.events(), "io_stat": self.f("io.stat")}
+                "pressure": self.pressure(), "events": self.events(), "io_stat": self.io()}
+
+    def pressure(self):
+        # v1 has no per-cgroup PSI; the host-wide /proc/pressure/memory is recorded and labelled as such.
+        return self.f("memory.pressure") if self.version == "v2" else "HOST " + read("/proc/pressure/memory")
+
+    def io(self):
+        # v1 here has blkio at the root (no per-job counter); the process's own /proc/self/io is recorded instead.
+        return self.f("io.stat") if self.version == "v2" else "PROCESS " + read("/proc/self/io")
 
 
 def majflt():

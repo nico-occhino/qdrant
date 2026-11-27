@@ -13,19 +13,25 @@ mkdir -p "$U/results"; mkdir "$OUT"
 exec > >(tee "$OUT/job.log") 2>&1
 echo "START $(date -u +%FT%TZ) host=$(hostname) job=$PBS_JOBID commit=$(cat "$IN/native.commit")"
 ( cd "$IN" && sha256sum -c inputs.sha256 )
-{ uname -a; cat /proc/self/cgroup; python3 --version; free -g; df -h "$SCRATCHDIR"; swapon --show || true; } > "$OUT/environment.txt" 2>&1
-CG=/sys/fs/cgroup/$(sed -n 's/^0:://p' /proc/self/cgroup)
-for f in cgroup.controllers memory.max memory.swap.max memory.high memory.events; do
+{ uname -a; cat /proc/self/cgroup; grep cgroup /proc/self/mountinfo; python3 --version; free -g; df -h "$SCRATCHDIR"; } > "$OUT/environment.txt" 2>&1
+# Hybrid hosts account memory under cgroup v1 (P0 job 26075041); fall back to v2 only if there is no v1 memory line.
+V1=$(awk -F: '$2=="memory"{print $3}' /proc/self/cgroup)
+if [[ -n "$V1" && -d /sys/fs/cgroup/memory$V1 ]]; then CG=/sys/fs/cgroup/memory$V1; EV=memory.oom_control
+else CG=/sys/fs/cgroup/$(sed -n 's/^0:://p' /proc/self/cgroup); EV=memory.events; fi
+echo "CG=$CG" > "$OUT/cgroup-start.txt"
+for f in cgroup.controllers memory.max memory.swap.max memory.events memory.limit_in_bytes memory.memsw.limit_in_bytes \
+         memory.max_usage_in_bytes memory.oom_control memory.failcnt memory.swappiness; do
+  [[ -e "$CG/$f" ]] || continue
   echo "== $f"; cat "$CG/$f" 2>&1 || true
-done > "$OUT/cgroup-start.txt"
+done >> "$OUT/cgroup-start.txt"
 # P0.1–P0.3: a 12 GiB file through the page cache and mmap under an 8 GiB limit.
 python3 -I "$IN/preflight_p0.py" --scratch "$SCRATCHDIR" --out "$OUT/p0.json" --file-gib 12 || echo "preflight_p0 exit $?"
 # P0.1 anon: 10 GiB of touched anonymous memory must be OOM-killed (hard-killed after 300 s if it swaps instead).
-cat "$CG/memory.events" > "$OUT/anon-events-before.txt" 2>&1 || true
+cat "$CG/$EV" > "$OUT/anon-events-before.txt" 2>&1 || true
 set +e
 timeout -s KILL 300 python3 -I -c "x = b'\1' * (10 << 30); print('allocated', len(x))" > "$OUT/anon-child.txt" 2>&1
 echo "anon child exit $?" | tee -a "$OUT/anon-child.txt"
 set -e
-cat "$CG/memory.events" > "$OUT/anon-events-after.txt" 2>&1 || true
+cat "$CG/$EV" "$CG/memory.max_usage_in_bytes" > "$OUT/anon-events-after.txt" 2>&1 || true
 ( cd "$OUT" && find . -type f ! -name SHA256SUMS ! -name job.log -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS )
 echo "DONE $(date -u +%FT%TZ)"
