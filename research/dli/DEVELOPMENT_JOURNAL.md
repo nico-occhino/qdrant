@@ -552,3 +552,25 @@ The separate static-vs-DLI Pilot 2 diagnosis is recorded at `1a1e5253b`.
 Its D-only discrepancies were exact duplicate ties at the top-30 cutoff.
 Storage rounding explains most of the shared discrepancies in the reference
 rescore. See [the audit and evidence paths](emma_path/PHASE3_PRIMARY_JOB_AUDIT_2026-11-23.md).
+
+## 2026-11-27 — Uniform questions: the imbalance trigger is ported and S1 is submitted
+- **The branch.** `research/uniform-questions-20261127` answers PostgreSQL's shared question set from the Qdrant side
+  (`research/dli/uniform/`).
+- **Q5, the PostgreSQL imbalance trigger, now runs in native Qdrant DLI.**
+  - **The rule.** `ImbalanceRetrain::POSTGRES_FROZEN`, arm `E1T`: at an occupied destination of level 2 or deeper,
+    the router is retrained when the largest live bucket is ≥ 8.0× the mean over all allocated buckets.
+  - **The decision log.** One census decision is logged per scheduled job.
+  - **E1 is unchanged.** A trigger that never fires reproduces E1 bit for bit in a configured collection. On one
+    machine, E1 from the base revision and E1 from the new code are identical (gate 2).
+- **The plans.** Q5 runs on three plans:
+  - S1, Phase 3 Shift (the shared protocol; in-sample for the threshold);
+  - S2, PostgreSQL's fresh Shift stream (out-of-sample, the same inputs as PostgreSQL's run);
+  - I1, Insert-only (descriptive).
+  - S1 is job 26053393. The freeze is `f5fb54c16`.
+- **Q4 setup.**
+  - **The digests.** Qdrant's live-ID digests equal PostgreSQL's at every Shift snapshot.
+  - **The schedule.** Exact 5,000-point drains reproduce all 117 PostgreSQL publications. So
+    `DLI_P3_DRAIN_ALIGN=global` replays PostgreSQL's schedule in Qdrant, with the ledger as its known answer.
+  - **The blocker.** Arm (c) needs PostgreSQL's router weights.
+- **A harness fix.** The Phase 3 snapshot `copy_dir` now tolerates files that Qdrant deletes mid-copy. The first
+  local gate attempt hit that race.
