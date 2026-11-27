@@ -155,14 +155,14 @@
     "workload": "W2",
     "seed": 20261202,
     "walltime": "06:00:00",
-    "status": "submitted"
+    "status": "completed 2026-11-27"
    },
    {
     "job": "26042048.pbs-m1.metacentrum.cz",
     "workload": "W3",
     "seed": 20261202,
     "walltime": "06:00:00",
-    "status": "submitted"
+    "status": "completed 2026-11-27"
    }
   ],
   "arms": [
@@ -172,7 +172,7 @@
     "arm": "E1",
     "walltime": "12:00:00",
     "depend": "afterok on its plan job",
-    "status": "submitted"
+    "status": "completed 2026-11-27, all gates pass, SHA256SUMS verified"
    },
    {
     "job": "26042044.pbs-m1.metacentrum.cz",
@@ -180,7 +180,7 @@
     "arm": "DLI-best",
     "walltime": "12:00:00",
     "depend": "afterok on its plan job",
-    "status": "submitted"
+    "status": "completed 2026-11-27, all gates pass, SHA256SUMS verified"
    },
    {
     "job": "26042045.pbs-m1.metacentrum.cz",
@@ -188,7 +188,7 @@
     "arm": "S-LMI",
     "walltime": "24:00:00",
     "depend": "afterok on its plan job",
-    "status": "submitted",
+    "status": "completed 2026-11-27, all gates pass, SHA256SUMS verified",
     "cfg": 10000
    },
    {
@@ -197,7 +197,7 @@
     "arm": "IVF",
     "walltime": "24:00:00",
     "depend": "afterok on its plan job",
-    "status": "submitted",
+    "status": "completed 2026-11-27, all gates pass, SHA256SUMS verified",
     "cfg": 10000
    },
    {
@@ -206,7 +206,7 @@
     "arm": "HNSW",
     "walltime": "12:00:00",
     "depend": "afterok on its plan job",
-    "status": "submitted",
+    "status": "completed 2026-11-27, all gates pass, SHA256SUMS verified",
     "cfg": 16
    },
    {
@@ -215,7 +215,7 @@
     "arm": "E1",
     "walltime": "12:00:00",
     "depend": "afterok on its plan job",
-    "status": "submitted"
+    "status": "completed 2026-11-27, all gates pass, SHA256SUMS verified"
    },
    {
     "job": "26042050.pbs-m1.metacentrum.cz",
@@ -223,7 +223,8 @@
     "arm": "DLI-best",
     "walltime": "12:00:00",
     "depend": "afterok on its plan job",
-    "status": "submitted"
+    "status": "cancelled 2026-11-27 (author-authorised): stuck in PBS dependency hold (substate 22, Hold_Types s) after plan 26042048 exited 0; never ran",
+    "replaced_by": "26044025.pbs-m1.metacentrum.cz"
    },
    {
     "job": "26042051.pbs-m1.metacentrum.cz",
@@ -231,8 +232,9 @@
     "arm": "S-LMI",
     "walltime": "24:00:00",
     "depend": "afterok on its plan job",
-    "status": "submitted",
-    "cfg": 10000
+    "status": "cancelled 2026-11-27 (author-authorised): stuck in PBS dependency hold (substate 22, Hold_Types s) after plan 26042048 exited 0; never ran",
+    "cfg": 10000,
+    "replaced_by": "26044026.pbs-m1.metacentrum.cz"
    },
    {
     "job": "26042052.pbs-m1.metacentrum.cz",
@@ -240,8 +242,9 @@
     "arm": "IVF",
     "walltime": "24:00:00",
     "depend": "afterok on its plan job",
-    "status": "submitted",
-    "cfg": 10000
+    "status": "cancelled 2026-11-27 (author-authorised): stuck in PBS dependency hold (substate 22, Hold_Types s) after plan 26042048 exited 0; never ran",
+    "cfg": 10000,
+    "replaced_by": "26044027.pbs-m1.metacentrum.cz"
    },
    {
     "job": "26042053.pbs-m1.metacentrum.cz",
@@ -249,6 +252,42 @@
     "arm": "HNSW",
     "walltime": "12:00:00",
     "depend": "afterok on its plan job",
+    "status": "cancelled 2026-11-27 (author-authorised): stuck in PBS dependency hold (substate 22, Hold_Types s) after plan 26042048 exited 0; never ran",
+    "cfg": 16,
+    "replaced_by": "26044028.pbs-m1.metacentrum.cz"
+   },
+   {
+    "job": "26044025.pbs-m1.metacentrum.cz",
+    "workload": "W3",
+    "arm": "DLI-best",
+    "walltime": "12:00:00",
+    "depend": "none (plan W3-20261202 already published)",
+    "status": "submitted"
+   },
+   {
+    "job": "26044026.pbs-m1.metacentrum.cz",
+    "workload": "W3",
+    "arm": "S-LMI",
+    "walltime": "24:00:00",
+    "depend": "none (plan W3-20261202 already published)",
+    "status": "submitted",
+    "cfg": 10000
+   },
+   {
+    "job": "26044027.pbs-m1.metacentrum.cz",
+    "workload": "W3",
+    "arm": "IVF",
+    "walltime": "24:00:00",
+    "depend": "none (plan W3-20261202 already published)",
+    "status": "submitted",
+    "cfg": 10000
+   },
+   {
+    "job": "26044028.pbs-m1.metacentrum.cz",
+    "workload": "W3",
+    "arm": "HNSW",
+    "walltime": "12:00:00",
+    "depend": "none (plan W3-20261202 already published)",
     "status": "submitted",
     "cfg": 16
    }
