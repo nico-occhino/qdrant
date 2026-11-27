@@ -488,3 +488,50 @@ Authorised by the author ("accept, write A2 and push"). This resolves A1.3.
     exactly when W is `upper_bound`.
   - **Implementation.** `analyze_final.bound_adjust`, with known-answer tests in `test_analyze_final.py`. Point
     estimates and intervals are unchanged; only the decision label changes.
+
+### A3 (2026-11-27, after the A1 jobs' validation data; validation panels only, no test panel read)
+Authorised by the author ("analyze, document and try again"). Details are in `RESULTS_SELECTION_W1.md`.
+
+- **A3.1 What happened to the A1 jobs.**
+  - **DLI-best rerun (26027409).** It completed and passed every gate in 46 min on another host. The EBADF in
+    26011819 did not recur, so it is recorded as a one-off on that host (A1.1). No further amendment is needed.
+  - **The 10,000-bucket jobs (26027410 S-LMI, 26027411 IVF)** failed only the monotone-work gate (§6.6). Every other
+    gate and the oracle check passed. Their data were kept (§12).
+- **A3.2 The cause is a production code path, not a counter defect.**
+  - **The mechanism.** When the probed buckets hold fewer than `top` = 30 points, Qdrant's static LMI widens:
+    `widen_until_filled` in `lib/segment/src/index/lmi_index/mod.rs` doubles nprobe and rescores the widened set
+    from scratch. So a query that widens at nprobe n costs work(n) = s(n) + work(min(2n, B)), where the first pass
+    s(n) < 30.
+  - **What this predicts.** Every per-query drop in work from n to min(2n, B) is between 1 and 29 vectors.
+  - **What the data show:**
+    - 486 drops in the two jobs, all between 1 and 29 (maximum 29);
+    - all at nprobe 1, 2 and 4, mostly in the early batches, where 10,000 buckets hold about 5–10 points each;
+    - W@0.90 always falls between nprobe 8 and 128, where there is no drop;
+    - the passing 3,162-bucket runs show 67 such per-query drops, too few to move a batch mean.
+- **A3.3 Gate amendment (applies to every job, before and after this one).** A drop in batch-mean work between
+  adjacent knobs is accepted as a widening restart only when all three hold:
+  - the arm is S-LMI or IVF;
+  - the step is n → min(2n, B);
+  - every query whose work falls on that step falls by fewer than K = 30 vectors.
+
+  Accepted drops are listed in `widening_restart_points`. Any other drop fails the gate and is listed in
+  `non_monotone_points`, which §6.6 always required to be listed. This is implemented in
+  `analyze_final.widening_restart`, with known-answer tests.
+  - **The direction of this change.** It admits a stronger baseline configuration, so it cannot favour DLI-best.
+  - **The rerun.** Re-evaluated on the kept data, all 12 W1 runs pass.
+  - **Stage 2 and the primary** run this gate inside the job, from a new staging of this revision.
+- **A3.4 The choice (§8, recorded here as §8 requires):**
+
+  | Arm | Choice | Candidates, mean validation W@0.90 over W1 batches 1–20 |
+  |---|---|---|
+  | S-LMI | **10,000** buckets | 250: 15,357; 1,000: 9,051; 3,162: 6,333; 10,000: 3,307 |
+  | IVF | **10,000** buckets | 250: 14,501; 1,000: 6,634; 3,162: 3,857; 10,000: 1,686 |
+  | HNSW | **m = 16** (A2.1) | 16: 4,698; 32: 5,714 (upper bound) |
+
+  - **Both static choices sit at the edge of the grid.** Per A1.2, decided before these data, the grid is not
+    extended further, and this is reported as a limitation.
+  - **Bracketing.** Every static candidate brackets 0.90 in every batch. HNSW is handled by A2.
+- **A3.5 Walltimes.**
+  - **What the pilot showed.** Static 10,000-bucket runs are dominated by Qdrant's per-batch index build: S-LMI took
+    10.2 h of its 12 h walltime and IVF 6.6 h. Primary panels have 1,000 queries instead of 64.
+  - **What we set.** Stage 2 and the primary request 24 h for the static arms, and 12 h for the others.

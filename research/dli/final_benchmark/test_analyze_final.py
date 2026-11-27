@@ -139,4 +139,28 @@ with tempfile.TemporaryDirectory() as tmp:
               "dir": write_run(ubr, 1, arm, plan, scale=sc)} for arm, sc in (("DLI-best", None), ("HNSW", 300))]
     ub_b = A.analyze({"runs": uruns}, resamples=50)["family_B"]["W1/1/test/HNSW"]["work"]
     assert ub_b["decision"] == "worse" and ub_b["upper_bound_batches"]["B"] == [1, 2], ub_b
+    # Amendment A3: the widening-restart exception to the monotone-work gate.
+    # Batch 1 of a static run: every query widens at nprobe 300 (first pass 20 < K vectors), so
+    # work(300) = 20 + work(600) and the batch mean falls from 620 to 600.
+    def widen_run(arm, extra, tag):
+        r = {"workload": "W1", "seed": 3, "arm": arm, "plan": str(root / "plan.json"),
+             "dir": write_run(root / "widen", 3, arm, plan, tag=tag)}
+        rows = Path(r["dir"]) / "batch_01" / "rows.jsonl"
+        out = []
+        for line in rows.read_text().splitlines():
+            x = json.loads(line)
+            if x["budget"] == 300 and x["policy"] != "hnsw_exact":
+                x["scored_total"] = 600 + extra
+            out.append(json.dumps(x))
+        rows.write_text("\n".join(out) + "\n")
+        return r
+    (root / "widen").mkdir()
+    ok = A.gates(widen_run("S-LMI", 20, "-ok"), ["test"])
+    assert ok["monotone_work"] and ok["pass"] and not ok["non_monotone_points"], ok
+    assert ok["widening_restart_points"] == [{"panel": "test", "batch": 1, "knobs": [300, 600],
+                                              "mean_work": [620.0, 600.0]}], ok["widening_restart_points"]
+    big = A.gates(widen_run("S-LMI", 2000, "-big"), ["test"])      # a drop of >= K is not a restart
+    assert not big["monotone_work"] and big["non_monotone_points"][0]["knobs"] == [300, 600], big
+    other = A.gates(widen_run("HNSW", 20, "-hnsw"), ["test"])     # only static arms widen
+    assert not other["monotone_work"], other
 print("analyze_final known-answer test: OK")

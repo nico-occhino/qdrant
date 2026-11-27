@@ -235,6 +235,22 @@ def bound_adjust(r):
 
 # ---------- gates ----------
 
+def widening_restart(arm, x, i):
+    """Amendment A3: whether a drop in batch-mean work from knob i to knob i+1 is Qdrant's static-LMI widening
+    restart. When the probed buckets hold fewer than `top` points, `widen_until_filled`
+    (lib/segment/src/index/lmi_index/mod.rs) doubles nprobe (capped at the bucket count) and rescores the widened
+    set from scratch. So for a query that widens at nprobe n: work(n) = s(n) + work(min(2n, B)), where
+    s(n) < K is the underfilled first pass. The drop is accepted only for S-LMI and IVF, only on a step
+    n -> min(2n, B), and only if every query whose work falls on that step falls by fewer than K vectors."""
+    if arm not in ("S-LMI", "IVF"):
+        return False
+    b = x["budgets"]
+    if b[i + 1] != min(2 * b[i], b[-1]):
+        return False
+    drop = x["work"][:, i] - x["work"][:, i + 1]
+    return bool(np.all(drop[drop > 0] < K))
+
+
 def gates(run, panels):
     d = Path(run["dir"])
     g = {}
@@ -244,12 +260,20 @@ def gates(run, panels):
         x["live_sha256"] == m["live_sha256"] and x["live"] == m["live_count"] for x, m in zip(log, plan["batches"]))
     policy = ARM_POLICY[run["arm"]]
     known, mono, complete = [], True, True
+    non_mono, restarts = [], []
     for p in panels:
         data = load_rows(d, "rows.jsonl", policy, p)
         complete &= len(data) == len(plan["batches"])
         for t, x in data.items():
             mean_w = np.nanmean(x["work"], axis=0)
-            mono &= bool(np.all(np.diff(mean_w) >= -1e-9))
+            for i in np.flatnonzero(np.diff(mean_w) < -1e-9):
+                point = {"panel": p, "batch": t, "knobs": [x["budgets"][i], x["budgets"][i + 1]],
+                         "mean_work": [float(mean_w[i]), float(mean_w[i + 1])]}
+                if widening_restart(run["arm"], x, i):
+                    restarts.append(point)
+                else:
+                    mono = False
+                    non_mono.append(point)
             if run["arm"] != "HNSW":
                 known.append(float(x["recall"][:, -1].mean()))
         if run["arm"] == "HNSW":
@@ -257,6 +281,8 @@ def gates(run, panels):
             known += [float(x["recall"][:, 0].mean()) for x in exact.values()]
     g["completeness"] = bool(complete)
     g["monotone_work"] = bool(mono)
+    g["non_monotone_points"] = non_mono
+    g["widening_restart_points"] = restarts
     g["known_answer_min"] = min(known) if known else None
     g["known_answer"] = bool(known) and min(known) >= KNOWN
     if run["arm"] == "DLI-best":

@@ -97,7 +97,7 @@
     "status": "completed 2026-11-26; COMPLETE.json, SHA256SUMS verified, all gates pass"
    }
   ],
-  "selection_result": "analyze_final.selection on the 9 completed arms: S-LMI 3162, IVF 3162, HNSW 16 (provisional: the HNSW ef grid gives upper_bound W in batch 0 for m=16 and in 10 batches for m=32, so per \u00a78 the grid must be extended before stage 2). Not yet an amendment.",
+  "selection_result": "final (A3.4): S-LMI 10000, IVF 10000, HNSW 16; see RESULTS_SELECTION_W1.md",
   "archive": "C: Research-Results/2026-11-26-final-benchmark-stage1 (884 files, STORAGE_SHA256.txt verified)"
  },
  "resources": "8 CPUs, 96 GB, 100 GB scratch SSD, AMD (fb.pbs header)",
@@ -117,7 +117,7 @@
     "why": "A1.1 rerun, unchanged",
     "staging": "native-52347112c7c2",
     "walltime": "12:00:00",
-    "status": "submitted"
+    "status": "completed 2026-11-26T22:33Z, all gates pass (SHA256SUMS verified); A1.1 resolved as a one-off"
    },
    {
     "job": "26027410.pbs-m1.metacentrum.cz",
@@ -126,7 +126,7 @@
     "why": "A1.2",
     "staging": "native-b69819de05c1",
     "walltime": "12:00:00",
-    "status": "submitted"
+    "status": "FAILED gate monotone_work in job (2026-11-27T08:03Z, 10.3 h); data kept; passes under A3.3; files verified against storage"
    },
    {
     "job": "26027411.pbs-m1.metacentrum.cz",
@@ -135,8 +135,9 @@
     "why": "A1.2",
     "staging": "native-b69819de05c1",
     "walltime": "12:00:00",
-    "status": "submitted"
+    "status": "FAILED gate monotone_work in job (2026-11-27T04:25Z, 6.6 h); data kept; passes under A3.3; files verified against storage"
    }
-  ]
+  ],
+  "archive": "C: Research-Results/2026-11-26-final-benchmark-a1 (283 files, STORAGE_SHA256.txt verified)"
  }
 }
