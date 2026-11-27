@@ -1,0 +1,36 @@
+Linux elmo1-4.hw.elixir-czech.cz 6.12.117+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.117-1+zs1 (2026-11-15) x86_64 GNU/Linux
+13:misc:/
+12:blkio:/
+11:pids:/system.slice/pbs.service
+10:memory:/pbs_jobs.service/jobid/26075063.pbs-m1.metacentrum.cz
+9:rdma:/
+8:net_cls,net_prio:/
+7:perf_event:/
+6:cpu,cpuacct:/pbs_jobs.service/jobid/26075063.pbs-m1.metacentrum.cz
+5:freezer:/
+4:devices:/pbs_jobs.service/jobid/26075063.pbs-m1.metacentrum.cz
+3:hugetlb:/
+2:cpuset:/pbs_jobs.service/jobid/26075063.pbs-m1.metacentrum.cz
+1:name=systemd:/pbs_jobs.service/jobid/26075063.pbs-m1.metacentrum.cz
+0::/system.slice/pbs.service
+34 24 0:29 / /sys/fs/cgroup ro,nosuid,nodev,noexec shared:11 - tmpfs tmpfs ro,size=4096k,nr_inodes=1024,mode=755,inode64
+35 34 0:30 / /sys/fs/cgroup/unified rw,nosuid,nodev,noexec,relatime shared:12 - cgroup2 cgroup2 rw,nsdelegate
+36 34 0:31 / /sys/fs/cgroup/systemd rw,nosuid,nodev,noexec,relatime shared:13 - cgroup cgroup rw,xattr,name=systemd
+37 34 0:32 / /sys/fs/cgroup/cpuset rw,nosuid,nodev,noexec,relatime shared:14 - cgroup cgroup rw,cpuset
+38 34 0:33 / /sys/fs/cgroup/hugetlb rw,nosuid,nodev,noexec,relatime shared:15 - cgroup cgroup rw,hugetlb
+39 34 0:34 / /sys/fs/cgroup/devices rw,nosuid,nodev,noexec,relatime shared:16 - cgroup cgroup rw,devices
+40 34 0:35 / /sys/fs/cgroup/freezer rw,nosuid,nodev,noexec,relatime shared:17 - cgroup cgroup rw,freezer
+41 34 0:36 / /sys/fs/cgroup/cpu,cpuacct rw,nosuid,nodev,noexec,relatime shared:18 - cgroup cgroup rw,cpu,cpuacct
+42 34 0:37 / /sys/fs/cgroup/perf_event rw,nosuid,nodev,noexec,relatime shared:19 - cgroup cgroup rw,perf_event
+43 34 0:38 / /sys/fs/cgroup/net_cls,net_prio rw,nosuid,nodev,noexec,relatime shared:20 - cgroup cgroup rw,net_cls,net_prio
+44 34 0:39 / /sys/fs/cgroup/rdma rw,nosuid,nodev,noexec,relatime shared:21 - cgroup cgroup rw,rdma
+45 34 0:40 / /sys/fs/cgroup/memory rw,nosuid,nodev,noexec,relatime shared:22 - cgroup cgroup rw,memory
+46 34 0:41 / /sys/fs/cgroup/pids rw,nosuid,nodev,noexec,relatime shared:23 - cgroup cgroup rw,pids
+47 34 0:42 / /sys/fs/cgroup/blkio rw,nosuid,nodev,noexec,relatime shared:24 - cgroup cgroup rw,blkio
+48 34 0:43 / /sys/fs/cgroup/misc rw,nosuid,nodev,noexec,relatime shared:25 - cgroup cgroup rw,misc
+Python 3.13.5
+               total        used        free      shared  buff/cache   available
+Mem:             754         111         559           0          87         643
+Swap:             15           0          15
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/md3        893G   25G  868G   3% /scratch/local.ssd

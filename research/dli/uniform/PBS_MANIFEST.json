@@ -9,12 +9,63 @@
  },
  "q5": {
   "freeze": "f5fb54c16a969d939b0c118711a956c7c8243980",
-  "staging": {"dir": "native-f5fb54c16a96", "source_bundle_sha256": "ac60f7689931a069363240d6237e9060f431c569ed3ce16963ba347d71630bcb",
-              "q5_pbs_sha256": "b894f547ee742426c05fa4c01b2ad6efedbe4de82c13107031984a86037b0688",
-              "vendor": "copied from final-benchmark native-52347112c7c2 (Cargo.lock unchanged), hashes verified",
-              "source_key": "6b8101ff5d02a637552c4bed (cache miss: the S1 job builds it)"},
+  "staging": {
+   "dir": "native-f5fb54c16a96",
+   "source_bundle_sha256": "ac60f7689931a069363240d6237e9060f431c569ed3ce16963ba347d71630bcb",
+   "q5_pbs_sha256": "b894f547ee742426c05fa4c01b2ad6efedbe4de82c13107031984a86037b0688",
+   "vendor": "copied from final-benchmark native-52347112c7c2 (Cargo.lock unchanged), hashes verified",
+   "source_key": "6b8101ff5d02a637552c4bed (cache miss: the S1 job builds it)"
+  },
   "jobs": [
-   {"job": "26053393.pbs-m1.metacentrum.cz", "plan": "S1", "walltime": "24:00:00", "submitted_utc": "2026-11-27", "status": "submitted"}
+   {
+    "job": "26053393.pbs-m1.metacentrum.cz",
+    "plan": "S1",
+    "walltime": "24:00:00",
+    "submitted_utc": "2026-11-27",
+    "status": "finished; raw gate 4 failed (FAILED.json); preregistered rounding classification: 0 unexplained; validated",
+    "archive": "C:/Users/nicoo/Workspace/Research-Results/2026-11-27-uniform-q5-S1 (223 files)",
+    "rounding_check_sha256": "3d1df90420877129d71cf120fc85bc27745a241fae27f866fb96310a9e5d29cb"
+   },
+   {
+    "job": "26075075.pbs-m1.metacentrum.cz",
+    "plan": "S2",
+    "walltime": "24:00:00",
+    "submitted_utc": "2026-11-27",
+    "status": "queued"
+   },
+   {
+    "job": "(auto, after 26075042)",
+    "plan": "I1",
+    "walltime": "24:00:00",
+    "status": "pending submission"
+   }
+  ]
+ },
+ "p0": {
+  "spec": "SCALE_SHARED_SPEC.md \u00a7P0",
+  "staging": [
+   "preflight-96d8f9e2ed8c",
+   "preflight-ada82c94d440"
+  ],
+  "jobs": [
+   {
+    "job": "26075041.pbs-m1.metacentrum.cz",
+    "what": "memory",
+    "commit": "96d8f9e2ed8cb272f230fd69a61ca2cc669a9873",
+    "status": "script defect: cgroup v2 path on v1-memory host; no counters"
+   },
+   {
+    "job": "26075042.pbs-m1.metacentrum.cz",
+    "what": "network",
+    "commit": "96d8f9e2ed8cb272f230fd69a61ca2cc669a9873",
+    "status": "pass; hangs at final wait until walltime"
+   },
+   {
+    "job": "26075063.pbs-m1.metacentrum.cz",
+    "what": "memory (one rerun after fix)",
+    "commit": "ada82c94d440ad91459a8003d08e3b3a17743eb8",
+    "status": "pass"
+   }
   ]
  }
 }

@@ -1,7 +1,7 @@
 # Q7. Filtered search on the shared fixture (preregistration)
 
-**Status: DRAFT.** It is frozen before any measured run. Per the author brief, it is submitted only after Q5's first
-job validates.
+**Status: FROZEN (2026-11-27)**, at the commit that adds this line, before any measured run. Q5's first job (S1,
+26053393) validated the same day, so this is submitted when a job slot frees (cap of 4).
 
 This is the Qdrant side of PostgreSQL's frozen shared fixture `FILTER_FIXTURE_SPEC.md` (3ec4041, pinned in
 `PINS.md`). The fixture is implemented exactly as specified, by `q7_fixture.py`. That script checks every published

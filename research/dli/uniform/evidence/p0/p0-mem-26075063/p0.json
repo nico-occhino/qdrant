@@ -1,0 +1,105 @@
+{
+ "host": "elmo1-4.hw.elixir-czech.cz",
+ "kernel": "6.12.117+deb13-amd64",
+ "cgroup_version": "v1",
+ "cgroup_dir": "/sys/fs/cgroup/memory/pbs_jobs.service/jobid/26075063.pbs-m1.metacentrum.cz",
+ "memory_max": 8589934592,
+ "controllers": "ERROR FileNotFoundError",
+ "start": {
+  "current": 8134656,
+  "peak": "14585856",
+  "stat_file": 65536,
+  "stat_anon": 7409664,
+  "stat_file_mapped": 0,
+  "pressure": "HOST some avg10=0.00 avg60=0.00 avg300=0.00 total=213464416\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=209131680",
+  "events": {
+   "oom_kill_disable": 0,
+   "under_oom": 0,
+   "oom_kill": 0
+  },
+  "io_stat": "PROCESS rchar: 1012727\nwchar: 0\nsyscr: 130\nsyscw: 0\nread_bytes: 0\nwrite_bytes: 0\ncancelled_write_bytes: 0"
+ },
+ "phases": {
+  "write": {
+   "seconds": 15.6957426071167,
+   "after": {
+    "current": 8588230656,
+    "peak": "8588230656",
+    "stat_file": 8512348160,
+    "stat_anon": 74530816,
+    "stat_file_mapped": 0,
+    "pressure": "HOST some avg10=0.08 avg60=0.02 avg300=0.00 total=213511077\nfull avg10=0.08 avg60=0.02 avg300=0.00 total=209178217",
+    "events": {
+     "oom_kill_disable": 0,
+     "under_oom": 0,
+     "oom_kill": 0
+    },
+    "io_stat": "PROCESS rchar: 1019964\nwchar: 12884901909\nsyscr: 536\nsyscw: 193\nread_bytes: 0\nwrite_bytes: 12884901888\ncancelled_write_bytes: 0"
+   }
+  },
+  "read": {
+   "seconds": 14.62040638923645,
+   "after": {
+    "current": 8520904704,
+    "peak": "8589934592",
+    "stat_file": 8445235200,
+    "stat_anon": 74551296,
+    "stat_file_mapped": 0,
+    "pressure": "HOST some avg10=0.01 avg60=0.02 avg300=0.00 total=213516373\nfull avg10=0.01 avg60=0.02 avg300=0.00 total=209183252",
+    "events": {
+     "oom_kill_disable": 0,
+     "under_oom": 0,
+     "oom_kill": 0
+    },
+    "io_stat": "PROCESS rchar: 12885929554\nwchar: 12884901929\nsyscr: 1137\nsyscw: 194\nread_bytes: 12884901888\nwrite_bytes: 12884901888\ncancelled_write_bytes: 0"
+   },
+   "majflt": 0
+  },
+  "fadvise_dontneed": {
+   "file_before": 8445235200,
+   "file_after": 8192
+  },
+  "mmap_touch": {
+   "seconds": 11.933923721313477,
+   "after": {
+    "current": 8588394496,
+    "peak": "8589934592",
+    "stat_file": 8512348160,
+    "stat_anon": 74563584,
+    "stat_file_mapped": 0,
+    "pressure": "HOST some avg10=0.00 avg60=0.01 avg300=0.00 total=213519185\nfull avg10=0.00 avg60=0.01 avg300=0.00 total=209185885",
+    "events": {
+     "oom_kill_disable": 0,
+     "under_oom": 0,
+     "oom_kill": 0
+    },
+    "io_stat": "PROCESS rchar: 12885940962\nwchar: 12884901987\nsyscr: 1555\nsyscw: 196\nread_bytes: 25769803776\nwrite_bytes: 12884901888\ncancelled_write_bytes: 0"
+   },
+   "majflt": 1
+  }
+ },
+ "peak_sampled": 8588201984,
+ "end": {
+  "current": 76054528,
+  "peak": "8589934592",
+  "stat_file": 8192,
+  "stat_anon": 74571776,
+  "stat_file_mapped": 0,
+  "pressure": "HOST some avg10=0.00 avg60=0.01 avg300=0.00 total=213519185\nfull avg10=0.00 avg60=0.01 avg300=0.00 total=209185885",
+  "events": {
+   "oom_kill_disable": 0,
+   "under_oom": 0,
+   "oom_kill": 0
+  },
+  "io_stat": "PROCESS rchar: 12885946462\nwchar: 12884901987\nsyscr: 1579\nsyscw: 196\nread_bytes: 25769803776\nwrite_bytes: 12884901888\ncancelled_write_bytes: 0"
+ },
+ "checks": {
+  "p0_1_limit_readable": true,
+  "p0_1_file_exceeds_limit": true,
+  "p0_1_peak_within_limit": true,
+  "p0_1_survived_file_and_mmap": true,
+  "p0_2_counters": true,
+  "p0_3_fadvise_lowers_file": true
+ },
+ "pass": true
+}

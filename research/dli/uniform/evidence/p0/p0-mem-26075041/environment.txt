@@ -1,0 +1,22 @@
+Linux elmo1-4.hw.elixir-czech.cz 6.12.117+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.117-1+zs1 (2026-11-15) x86_64 GNU/Linux
+13:misc:/
+12:blkio:/
+11:pids:/system.slice/pbs.service
+10:memory:/pbs_jobs.service/jobid/26075041.pbs-m1.metacentrum.cz
+9:rdma:/
+8:net_cls,net_prio:/
+7:perf_event:/
+6:cpu,cpuacct:/pbs_jobs.service/jobid/26075041.pbs-m1.metacentrum.cz
+5:freezer:/
+4:devices:/pbs_jobs.service/jobid/26075041.pbs-m1.metacentrum.cz
+3:hugetlb:/
+2:cpuset:/pbs_jobs.service/jobid/26075041.pbs-m1.metacentrum.cz
+1:name=systemd:/pbs_jobs.service/jobid/26075041.pbs-m1.metacentrum.cz
+0::/system.slice/pbs.service
+Python 3.13.5
+               total        used        free      shared  buff/cache   available
+Mem:             754         111         535           0         111         643
+Swap:             15           0          15
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/md3        893G   25G  868G   3% /scratch/local.ssd
+/var/spool/pbs/mom_priv/jobs/26075041.pbs-m1.metacentrum.cz.SC: line 16: swapon: command not found

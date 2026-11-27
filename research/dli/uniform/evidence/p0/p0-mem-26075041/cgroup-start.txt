@@ -1,0 +1,10 @@
+== cgroup.controllers
+cat: /sys/fs/cgroup//system.slice/pbs.service/cgroup.controllers: No such file or directory
+== memory.max
+cat: /sys/fs/cgroup//system.slice/pbs.service/memory.max: No such file or directory
+== memory.swap.max
+cat: /sys/fs/cgroup//system.slice/pbs.service/memory.swap.max: No such file or directory
+== memory.high
+cat: /sys/fs/cgroup//system.slice/pbs.service/memory.high: No such file or directory
+== memory.events
+cat: /sys/fs/cgroup//system.slice/pbs.service/memory.events: No such file or directory

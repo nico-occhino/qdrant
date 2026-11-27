@@ -583,3 +583,22 @@ rescore. See [the audit and evidence paths](emma_path/PHASE3_PRIMARY_JOB_AUDIT_2
 - **Batch 10.** The schedule matters (+8.85 pp), but at Qdrant's topology PostgreSQL still leads by 10.4 pp. That
   residual depends on the topology and awaits PostgreSQL's routers (arm c).
 - **Full search.** Shortfalls (0.997–0.998) are stored-representation rounding, the same in both arms.
+
+## 2026-11-27 — Q5 S1 meets the trigger criteria; scale preflight passes
+- **Q5 S1 (job 26053393; in-sample).** The frozen PostgreSQL trigger, run in native Qdrant, fired twice at level 2,
+  at batches 4 (8.06×) and 15 (9.84×), as stated before data.
+  - **Estimates.** E1T − E1 = +7.89 pp [7.63, 8.15] at 50K on mq, 69% of E1R's +11.44 pp, at 0.277× E1R's trainer
+    walltime (23 vs 180 trained builds). Both criteria hold: verdict met. See
+    [RESULTS_Q5.md](uniform/RESULTS_Q5.md).
+  - **The imbalance trajectory.** E1's level 2 sat at 10–11× from batch 4 to batch 10 and reached 15.7× at batch 19.
+- **Gate 4.** The raw full-search known answer was 0.994–0.997, below 0.999, identical in every arm. The job
+  script judged it raw; the preregistered tie/rounding classification (`q5_rounding_check.py`, which reuses the Q4
+  stored-representation rule) explains every miss as Float16 storage rounding.
+- **Q10/Q11.**
+  - **The spec.** A shared draft spec with PostgreSQL ([SCALE_SHARED_SPEC.md](uniform/SCALE_SHARED_SPEC.md)), plus
+    I1 shard-membership hashes.
+  - **P0 on MetaCentrum.** Memory is cgroup v1 per job, with swap inside the limit. Page cache is charged and
+    reclaimed, over-limit anonymous memory is OOM-killed, fadvise eviction works, and inter-node ssh and ports
+    work. Per-job PSI and blkio are not available, so four amendments are proposed.
+  - **The rerun.** The first memory preflight misread the cgroup layout; that was a script defect, with one rerun.
+- **Q7.** Frozen after S1 validated. It is submitted when a slot frees.

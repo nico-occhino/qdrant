@@ -1,0 +1,15 @@
+CG=/sys/fs/cgroup/memory/pbs_jobs.service/jobid/26075063.pbs-m1.metacentrum.cz
+== memory.limit_in_bytes
+8589934592
+== memory.memsw.limit_in_bytes
+8589934592
+== memory.max_usage_in_bytes
+14585856
+== memory.oom_control
+oom_kill_disable 0
+under_oom 0
+oom_kill 0
+== memory.failcnt
+0
+== memory.swappiness
+1

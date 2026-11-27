@@ -1,0 +1,85 @@
+{
+ "host": "elmo1-4.hw.elixir-czech.cz",
+ "kernel": "6.12.117+deb13-amd64",
+ "cgroup_version": "v2",
+ "cgroup_dir": "/sys/fs/cgroup/system.slice/pbs.service",
+ "memory_max": "ERROR FileNotFoundError",
+ "controllers": "ERROR FileNotFoundError",
+ "start": {
+  "current": null,
+  "peak": "ERROR FileNotFoundError",
+  "stat_file": null,
+  "stat_anon": null,
+  "stat_file_mapped": null,
+  "pressure": "ERROR FileNotFoundError",
+  "events": {},
+  "io_stat": "ERROR FileNotFoundError"
+ },
+ "phases": {
+  "write": {
+   "seconds": 15.608832836151123,
+   "after": {
+    "current": null,
+    "peak": "ERROR FileNotFoundError",
+    "stat_file": null,
+    "stat_anon": null,
+    "stat_file_mapped": null,
+    "pressure": "ERROR FileNotFoundError",
+    "events": {},
+    "io_stat": "ERROR FileNotFoundError"
+   }
+  },
+  "read": {
+   "seconds": 14.559378623962402,
+   "after": {
+    "current": null,
+    "peak": "ERROR FileNotFoundError",
+    "stat_file": null,
+    "stat_anon": null,
+    "stat_file_mapped": null,
+    "pressure": "ERROR FileNotFoundError",
+    "events": {},
+    "io_stat": "ERROR FileNotFoundError"
+   },
+   "majflt": 0
+  },
+  "fadvise_dontneed": {
+   "file_before": null,
+   "file_after": null
+  },
+  "mmap_touch": {
+   "seconds": 11.916642904281616,
+   "after": {
+    "current": null,
+    "peak": "ERROR FileNotFoundError",
+    "stat_file": null,
+    "stat_anon": null,
+    "stat_file_mapped": null,
+    "pressure": "ERROR FileNotFoundError",
+    "events": {},
+    "io_stat": "ERROR FileNotFoundError"
+   },
+   "majflt": 1
+  }
+ },
+ "peak_sampled": null,
+ "end": {
+  "current": null,
+  "peak": "ERROR FileNotFoundError",
+  "stat_file": null,
+  "stat_anon": null,
+  "stat_file_mapped": null,
+  "pressure": "ERROR FileNotFoundError",
+  "events": {},
+  "io_stat": "ERROR FileNotFoundError"
+ },
+ "checks": {
+  "p0_1_limit_readable": false,
+  "p0_1_file_exceeds_limit": false,
+  "p0_1_peak_within_limit": false,
+  "p0_1_survived_file_and_mmap": true,
+  "p0_2_counters": false,
+  "p0_3_fadvise_lowers_file": false
+ },
+ "pass": false
+}

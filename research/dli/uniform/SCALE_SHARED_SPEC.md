@@ -37,6 +37,34 @@ establish:
 
 If P0.1 fails, Q10 is redesigned: a design change goes back to the author.
 
+### P0 results on Qdrant's side (2026-11-27; infrastructure, not data)
+- **Memory, job 26075063 (elmo1-4, 8 GB request).** The run passed. The record is in `evidence/p0/p0-mem-26075063/`.
+  - **The host is hybrid.** Memory is accounted under cgroup **v1** at
+    `/sys/fs/cgroup/memory/pbs_jobs.service/jobid/<job>`, although `/proc/self/cgroup` also lists a v2 `0::` line.
+  - **The limit.** `memory.limit_in_bytes` and `memory.memsw.limit_in_bytes` are both 8,589,934,592, so swap
+    cannot extend the limit. `memory.swappiness` is 1.
+  - **Page cache is charged and reclaimed.** A 12 GiB file was written, read back and mmap-touched. Cache peaked at
+    8.45 GB under the limit, the sampled peak usage was 8,588,201,984 bytes, and the job survived.
+    `read_bytes` = 24 GiB shows that both passes really re-read from disk.
+  - **Anonymous memory over the limit is OOM-killed.** 10 GiB was killed in about 3 s (exit 137), and
+    `oom_kill` went from 0 to 1.
+  - **Eviction works without root.** `posix_fadvise(DONTNEED)` dropped the cgroup's file cache from 8.45 GB to 8 KB.
+  - **The first attempt, job 26075041, read the v2 path, which does not exist.** Its counters were all missing; it
+    was a script defect, fixed in `ada82c94d`, and this is the one rerun.
+- **Network, job 26075042 (elmo2-1 → elmo2-3).** The run passed. Inter-node `ssh` works inside the job. Ports 6333
+  and 6335 connected, at about 1.12 GiB/s each on `eno1np0`, and the interface byte counters can be read.
+
+### Amendments proposed from P0 (pending PostgreSQL's review)
+1. **Memory pressure.** Cgroup v1 has no per-job PSI, and `/proc/pressure/memory` is host-wide, so other jobs on
+   the node contaminate it. Proposal: record host PSI as descriptive only. Per-job pressure comes from
+   `memory.stat` (`pgmajfault`, `pgpgin`, `total_cache` and `total_rss`) and `memory.failcnt`.
+2. **I/O.** `blkio` is not per job on these hosts. Proposal: report bytes read and written from `/proc/<pid>/io`
+   (`read_bytes`, `write_bytes`). For Qdrant that is the one process; PostgreSQL sums over its backends and
+   auxiliary processes, sampled at the end of each phase.
+3. **Major faults are not an I/O measure.** A sequential mmap pass over 12 GiB recorded 1 major fault, because of
+   readahead. They are reported, but `read_bytes` is the I/O estimand.
+4. **Swap.** The limit includes swap (`memsw` = `limit`), so §1.5's limits are hard and no run can escape into swap.
+
 ## Q10. Memory budget
 
 ### 1.1 Question

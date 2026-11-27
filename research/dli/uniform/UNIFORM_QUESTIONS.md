@@ -15,7 +15,7 @@ This is the Qdrant side of `CROSS_ENGINE_SYNTHESIS.md` (PostgreSQL, pinned in [P
 | Q2 | Retraining under drift | **done** (Phase 3) | Shift MQ, E1R − E1 = +11.44 pp at 50K. Level-2 max/mean reached 10–16× with reuse, ≈2× with retraining. Job 25859944 |
 | Q3 | Insert-only and Constant-R | **done** (Phase 3) | Insert-only E1R +0.54 pp; consolidation W ratio 0.841 [0.831, 0.852]; Constant-R E1V +1.20 pp [1.15, 1.24]. `research/dli/emma_path/` |
 | Q4 | Snapshot parity | **(a)/(a′)/(b) done; (c) blocked** | Batch 11: Qdrant at PostgreSQL's schedule falls 91.35% → 67.19% (S = −24.17 pp [−33.65, −15.31]); the remaining gap to PostgreSQL is +1.67 pp [−8.44, +11.35]. [RESULTS_Q4.md](RESULTS_Q4.md) |
-| Q5 | Imbalance trigger | **implemented; gates running** | [Q5_PREREGISTRATION.md](Q5_PREREGISTRATION.md) |
+| Q5 | Imbalance trigger | **S1 met (in-sample); S2 and I1 running** | E1T − E1 = +7.89 pp [7.63, 8.15], recovery 0.690, 0.277× E1R trainer time; fired at batches 4 and 15. [RESULTS_Q5.md](RESULTS_Q5.md) |
 | Q6 | Maintenance under load | **descriptive only** | Concurrency report at 2bbb962b: busy fraction 2–14.9% (16-dimensional exhaustive fixture). Not ported (different publication semantics) |
 | Q7 | Filtering | **to prepare** | The shared fixture `FILTER_FIXTURE_SPEC.md` (3ec4041) is frozen; [Q7 plan](#q7-filtering) |
 | Q8 | DLI-best vs E1 | **done** (pilot) | Ratios 0.614–0.909 on validation; criterion 3 fails on Float16 rounding. `research/dli/dli_best/RESULTS_INTEGRATION_PILOT.md` |
