@@ -41,6 +41,9 @@ gold, in native Qdrant DLI.
   This is the gold PostgreSQL used.
 - **Budget grid.** The R3 grid of 17 settings: 1,000; 2,000; 3,500; 5,000; 7,000; 10,000; 14,000; 20,000; 28,000;
   40,000; 50,000; 56,000; 80,000; 113,000; 160,000; 226,000; 320,000.
+  - **One gate-only setting is added.** 2,000,000 is a full search for gate 4's known answer. It is excluded from
+    every estimand and curve (`analyze_q5.r3_grid`), so W@0.90 is never interpolated beyond 320K; a curve that
+    does not reach 0.90 by 320K is reported as not attained, as in PostgreSQL's R3.
 - **In-sample caution (S1).** The 8.0 threshold was motivated on this stream. PostgreSQL's E1 reached 14.15× in
   R3, and Qdrant's E1 reached 8.06× at batch 3 and 15.72× at batch 19 in job 25859944.
   - So S1 is not an independent test of the threshold.
@@ -117,7 +120,7 @@ gold, in native Qdrant DLI.
    - plan and live-ID ledger hashes;
    - completeness;
    - monotone work in the budget;
-   - full-budget (2M) known answer ≥ 0.999 on every batch and panel, using plan gold. The tie and rounding slack
+   - full-search (the gate-only 2M setting) known answer ≥ 0.999 on every batch and panel, using plan gold. The tie and rounding slack
      from the DLI-best pilot applies, so a shortfall is classified with the tie check before the gate is judged;
    - decision/build agreement as in gate 3.
 

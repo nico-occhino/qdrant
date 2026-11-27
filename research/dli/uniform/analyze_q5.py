@@ -141,8 +141,20 @@ def check_decisions(decs, builds, first_fits):
             "trained_builds": trained, "first_fits": first_fits, "problems": problems, "pass": not problems}
 
 
+GATE_ONLY = 2_000_000   # full-search point for the known-answer gate; not part of the R3 grid
+
+
+def r3_grid(rows):
+    """Drop the gate-only full-search column, so the estimands use PostgreSQL's R3 grid."""
+    out = {}
+    for t, (budgets, rec, wrk, q) in rows.items():
+        keep = [i for i, b in enumerate(budgets) if b != GATE_ONLY]
+        out[t] = ([budgets[i] for i in keep], rec[:, keep], wrk[:, keep], q)
+    return out
+
+
 def analyze(runs, set_name, resamples_seed=SEED):
-    data = {arm: load_rows(d, set_name) for arm, d in runs.items()}
+    data = {arm: r3_grid(load_rows(d, set_name)) for arm, d in runs.items()}
     rng = np.random.default_rng(resamples_seed)
     out = {"set": set_name, "budget": BUDGET}
     nq = min(x[1].shape[0] for x in data["E1"].values())

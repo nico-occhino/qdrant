@@ -2858,15 +2858,43 @@ async fn live_id_digest(collection: &Collection) -> (usize, String) {
     (ids.len(), hex)
 }
 
+/// Snapshot copy of a live storage directory. Qdrant may delete obsolete files (for example an
+/// old segment after publication) while the copy runs; such an entry is skipped and logged
+/// (`COPY_DIR_VANISHED`), because only `dli_hierarchy.json` members are loaded from the copy.
+/// Any other error still fails.
 fn copy_dir(from: &Path, to: &Path) {
+    let vanished = |e: &std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
     std::fs::create_dir_all(to).unwrap();
-    for entry in std::fs::read_dir(from).unwrap() {
-        let entry = entry.unwrap();
+    let entries = match std::fs::read_dir(from) {
+        Ok(entries) => entries,
+        Err(e) if vanished(&e) => {
+            println!("COPY_DIR_VANISHED {}", from.display());
+            return;
+        }
+        Err(e) => panic!("read_dir {}: {e}", from.display()),
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) if vanished(&e) => continue,
+            Err(e) => panic!("read_dir entry in {}: {e}", from.display()),
+        };
         let target = to.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
+        let is_dir = match entry.file_type() {
+            Ok(t) => t.is_dir(),
+            Err(e) if vanished(&e) => {
+                println!("COPY_DIR_VANISHED {}", entry.path().display());
+                continue;
+            }
+            Err(e) => panic!("file_type {}: {e}", entry.path().display()),
+        };
+        if is_dir {
             copy_dir(&entry.path(), &target);
-        } else {
-            std::fs::copy(entry.path(), &target).unwrap();
+        } else if let Err(e) = std::fs::copy(entry.path(), &target) {
+            if !vanished(&e) {
+                panic!("copy {}: {e}", entry.path().display());
+            }
+            println!("COPY_DIR_VANISHED {}", entry.path().display());
         }
     }
 }
