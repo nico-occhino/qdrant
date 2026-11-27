@@ -139,5 +139,119 @@
    }
   ],
   "archive": "C: Research-Results/2026-11-26-final-benchmark-a1 (283 files, STORAGE_SHA256.txt verified)"
+ },
+ "selection_pilot_stage2": {
+  "authorised": "author, 2026-11-27 ('push and submit stage 2')",
+  "staging": {
+   "remote_input": "/storage/budejovice1/home/nico/lmi-metacentrum/final-benchmark-20261126/native-30271d364902",
+   "commit": "30271d364902 (A3)",
+   "source_bundle_sha256": "dfb171d1212ba4885cfabacb25443b788cd9b579ba4184d7c6f3755c5c74acec",
+   "vendor_and_cargo_config": "copied from native-52347112c7c2, hashes verified",
+   "source_key": "d298fc79d33f894793a910ed (cache hit)"
+  },
+  "plans": [
+   {
+    "job": "26042042.pbs-m1.metacentrum.cz",
+    "workload": "W2",
+    "seed": 20261202,
+    "walltime": "06:00:00",
+    "status": "submitted"
+   },
+   {
+    "job": "26042048.pbs-m1.metacentrum.cz",
+    "workload": "W3",
+    "seed": 20261202,
+    "walltime": "06:00:00",
+    "status": "submitted"
+   }
+  ],
+  "arms": [
+   {
+    "job": "26042043.pbs-m1.metacentrum.cz",
+    "workload": "W2",
+    "arm": "E1",
+    "walltime": "12:00:00",
+    "depend": "afterok on its plan job",
+    "status": "submitted"
+   },
+   {
+    "job": "26042044.pbs-m1.metacentrum.cz",
+    "workload": "W2",
+    "arm": "DLI-best",
+    "walltime": "12:00:00",
+    "depend": "afterok on its plan job",
+    "status": "submitted"
+   },
+   {
+    "job": "26042045.pbs-m1.metacentrum.cz",
+    "workload": "W2",
+    "arm": "S-LMI",
+    "walltime": "24:00:00",
+    "depend": "afterok on its plan job",
+    "status": "submitted",
+    "cfg": 10000
+   },
+   {
+    "job": "26042046.pbs-m1.metacentrum.cz",
+    "workload": "W2",
+    "arm": "IVF",
+    "walltime": "24:00:00",
+    "depend": "afterok on its plan job",
+    "status": "submitted",
+    "cfg": 10000
+   },
+   {
+    "job": "26042047.pbs-m1.metacentrum.cz",
+    "workload": "W2",
+    "arm": "HNSW",
+    "walltime": "12:00:00",
+    "depend": "afterok on its plan job",
+    "status": "submitted",
+    "cfg": 16
+   },
+   {
+    "job": "26042049.pbs-m1.metacentrum.cz",
+    "workload": "W3",
+    "arm": "E1",
+    "walltime": "12:00:00",
+    "depend": "afterok on its plan job",
+    "status": "submitted"
+   },
+   {
+    "job": "26042050.pbs-m1.metacentrum.cz",
+    "workload": "W3",
+    "arm": "DLI-best",
+    "walltime": "12:00:00",
+    "depend": "afterok on its plan job",
+    "status": "submitted"
+   },
+   {
+    "job": "26042051.pbs-m1.metacentrum.cz",
+    "workload": "W3",
+    "arm": "S-LMI",
+    "walltime": "24:00:00",
+    "depend": "afterok on its plan job",
+    "status": "submitted",
+    "cfg": 10000
+   },
+   {
+    "job": "26042052.pbs-m1.metacentrum.cz",
+    "workload": "W3",
+    "arm": "IVF",
+    "walltime": "24:00:00",
+    "depend": "afterok on its plan job",
+    "status": "submitted",
+    "cfg": 10000
+   },
+   {
+    "job": "26042053.pbs-m1.metacentrum.cz",
+    "workload": "W3",
+    "arm": "HNSW",
+    "walltime": "12:00:00",
+    "depend": "afterok on its plan job",
+    "status": "submitted",
+    "cfg": 16
+   }
+  ]
  }
 }
