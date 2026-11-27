@@ -1,0 +1,20 @@
+{
+ "study": "research/dli/uniform (Q4, Q5, Q7)",
+ "authorisation": "standing (author brief, 2026-11-27): at most 4 jobs from this worktree, <= 8 CPUs, 192 GiB, 400 GiB scratch, 24 h",
+ "storage_root": "/storage/budejovice1/home/nico/lmi-metacentrum/uniform-20261127",
+ "inputs": {
+  "S1": "inputs/S1/plan: Phase 3 shift seed 20261121, 205 files verified; corpus = 10M corpus prefix (6e1c7237...)",
+  "S2": "inputs/S2/plan + corpus.f16le: PostgreSQL fresh shift seed 20261127, rows 1,000,001-2,000,000; corpus 8bbebf02..., manifest 90f117f8...",
+  "I1": "inputs/I1/plan: Phase 3 insert_only seed 20261121, 130 files verified"
+ },
+ "q5": {
+  "freeze": "f5fb54c16a969d939b0c118711a956c7c8243980",
+  "staging": {"dir": "native-f5fb54c16a96", "source_bundle_sha256": "ac60f7689931a069363240d6237e9060f431c569ed3ce16963ba347d71630bcb",
+              "q5_pbs_sha256": "b894f547ee742426c05fa4c01b2ad6efedbe4de82c13107031984a86037b0688",
+              "vendor": "copied from final-benchmark native-52347112c7c2 (Cargo.lock unchanged), hashes verified",
+              "source_key": "6b8101ff5d02a637552c4bed (cache miss: the S1 job builds it)"},
+  "jobs": [
+   {"job": "26053393.pbs-m1.metacentrum.cz", "plan": "S1", "walltime": "24:00:00", "submitted_utc": "2026-11-27", "status": "submitted"}
+  ]
+ }
+}
