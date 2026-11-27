@@ -3,7 +3,9 @@
 Updated 2026-11-27. Branch `research/uniform-questions-20261127` (worktree `~/work/qdrant-uniform`).
 
 ## Author actions
-- None needed right now. MetaCentrum Kerberos is valid; if it expires, the `kinit` is written here.
+- Optional, for Q4(c): ask Codex to export PostgreSQL's level routers (LMI1) at Shift batches 10–12, for both
+  schedules.
+- Otherwise none. MetaCentrum Kerberos is valid; if it expires, the `kinit` is written here.
 
 ## Running jobs (this worktree; cap of 4)
 - `26053393` Q5 S1 (Phase 3 Shift, seed 20261121; E1, E1R and E1T), 24 h, submitted 2026-11-27. It builds the binary (source key `6b8101ff…`).
@@ -27,8 +29,13 @@ Updated 2026-11-27. Branch `research/uniform-questions-20261127` (worktree `~/wo
 - **Next.** S2 and I1 are submitted after S1's gates pass and its runtime is known (§8).
 
 ## Q4. Snapshot parity
-- (a) and (b) are planned as local replays.
-- **(c) is blocked:** it needs PostgreSQL's level-router weights at batches 10–12.
+- **(a), (a′) and (b) are done:** [RESULTS_Q4.md](RESULTS_Q4.md). (b) reproduces PostgreSQL's 117-publication ledger
+  and its snapshot topologies exactly.
+  - **Batch 11.** The schedule explains the gap: S = −24.17 pp, with +1.67 pp remaining.
+  - **Batch 10.** A topology-dependent residual remains (+10.42 pp at Qdrant's schedule).
+- **(c) is blocked.**
+  - **What it needs.** PostgreSQL's level-router weights (LMI1) at batches 10–12, for both schedules.
+  - **Author action.** Ask the PostgreSQL side (Codex) to export them.
 
 ## Q7. Filtering
 - The fixture spec is frozen at PostgreSQL 3ec4041. Implementation has not started.

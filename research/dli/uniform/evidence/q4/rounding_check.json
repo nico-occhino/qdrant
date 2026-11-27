@@ -1,0 +1,39 @@
+{
+ "a1/10": {
+  "queries": 32,
+  "misses": 3,
+  "unreachable_gold": 0,
+  "unexplained": []
+ },
+ "b/10": {
+  "queries": 32,
+  "misses": 3,
+  "unreachable_gold": 0,
+  "unexplained": []
+ },
+ "a1/11": {
+  "queries": 32,
+  "misses": 3,
+  "unreachable_gold": 1,
+  "unexplained": []
+ },
+ "b/11": {
+  "queries": 32,
+  "misses": 3,
+  "unreachable_gold": 1,
+  "unexplained": []
+ },
+ "a1/12": {
+  "queries": 32,
+  "misses": 2,
+  "unreachable_gold": 1,
+  "unexplained": []
+ },
+ "b/12": {
+  "queries": 32,
+  "misses": 2,
+  "unreachable_gold": 1,
+  "unexplained": []
+ },
+ "pass": true
+}

@@ -574,3 +574,12 @@ rescore. See [the audit and evidence paths](emma_path/PHASE3_PRIMARY_JOB_AUDIT_2
   - **The blocker.** Arm (c) needs PostgreSQL's router weights.
 - **A harness fix.** The Phase 3 snapshot `copy_dir` now tolerates files that Qdrant deletes mid-copy. The first
   local gate attempt hit that race.
+
+## 2026-11-27 — Q4: the publication schedule explains batch 11 from the Qdrant side too
+- **What ran.** A local replay of Qdrant E1 at PostgreSQL's drain schedule (`DLI_P3_DRAIN_ALIGN=global`). It
+  reproduced PostgreSQL's 117 publications and its snapshot topologies exactly.
+- **Batch 11.** Recall at 50K falls from 91.35% to 67.19% (−24.17 pp), within +1.67 pp of PostgreSQL. The mirror
+  contrast reproduces PostgreSQL's own 0.21 pp.
+- **Batch 10.** The schedule matters (+8.85 pp), but at Qdrant's topology PostgreSQL still leads by 10.4 pp. That
+  residual depends on the topology and awaits PostgreSQL's routers (arm c).
+- **Full search.** Shortfalls (0.997–0.998) are stored-representation rounding, the same in both arms.
