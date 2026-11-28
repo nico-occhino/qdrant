@@ -55,8 +55,8 @@ MARGIN = (0.95, 1.05)
 KNOWN = 0.999
 ARM_POLICY = {"E1": "mdn_code", "DLI-best": "proportional_native", "S-LMI": "static_nprobe", "IVF": "static_nprobe",
               "HNSW": "hnsw_ef"}
-PANELS = {"W1": ["test"], "W2": ["test"], "W3": ["mq", "ids", "ood"]}
-PILOT_PANELS = {"W1": ["val"], "W2": ["val"], "W3": ["mq_val", "ids_val", "ood_val"]}
+PANELS = {"W1": ["test"], "W2": ["test"], "W3": ["mq", "ids", "ood"], "W4": ["test"], "W5": ["test"]}  # W4/W5: A6
+PILOT_PANELS = {"W1": ["val"], "W2": ["val"], "W3": ["mq_val", "ids_val", "ood_val"], "W4": ["val"], "W5": ["val"]}
 FAMILY_B = ["S-LMI", "IVF", "HNSW"]
 FAMILY_A_SIZE = 5  # panel decisions
 FAMILY_B_SIZE = len(FAMILY_B) * 5 * 2  # baselines x panels x (work, latency)

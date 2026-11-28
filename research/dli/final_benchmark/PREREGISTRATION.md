@@ -576,3 +576,26 @@ Authorised by the author ("analyze, document and try again"). Details are in `RE
     on seed 20261202's validation panels, as in §8; the replay-buffer size; the fine-tune cadence; and the
     hyperparameters, from thesis Table 3.2, following the thesis where `cli_ablation` disagrees (A4–A7 of the
     audit).
+
+### A6 (2026-11-28, before any W4/W5 data): the delete-rate sweep
+- **A6.1 Why.** The supervisor's benchmark list (Task 4.3) includes "varying update/delete rate". The primary has 0%
+  (W1) and 100% (W2) deletes per batch, relative to inserts. A6 adds two intermediate rates with the existing planner
+  (`fb_plan.uniform_batches`; no planner code changes):
+  - **W4** = `heavy_r`: 4,500 random deletes per 45,000-insert batch (10%), ending at 910,000 live;
+  - **W5** = `medium_r`: 22,500 per batch (50%), ending at 550,000 live.
+  - **The rest is as W1 and W2:** the same corpus, panels (test 1,000; val 64), G1 gold, 21 snapshots and batches
+    1–20 eligible.
+- **A6.2 Runs.**
+  - **One plan seed only:** 20261201, the primary seed. There is no replication seed and no selection pilot.
+  - **The arms and configurations** are those already selected: E1, DLI-best, S-LMI 10,000, IVF 10,000 and HNSW 16.
+  - **Walltimes,** as W1: 24 h for the static arms, 12 h for the others.
+  - **The jobs.** Two plan jobs, then ten arm jobs, each submitted when its plan has completed (A4.4). The staging is
+    the commit that carries this amendment; its source key and binary are unchanged.
+  - **CLI.** The CLI arms (and the centroid-routed CLI variant, by its own amendment) join later on the same plans.
+- **A6.3 Estimands.**
+  - **Per workload:** the §5 contrasts, computed exactly as for W1 and W2. Single seed, so the verdicts are
+    descriptive, not replicated.
+  - **The sweep itself:** each arm's mean W@0.90 and R@30 at 50K, against the delete rate ∈ {0, 10, 50, 100}%. That
+    is W1, W4, W5 and W2, all on seed 20261201, with the paired-bootstrap intervals of §5. Reported as a descriptive
+    trend; no new hypothesis.
+- **A6.4 Gates:** §6, unchanged.

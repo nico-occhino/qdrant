@@ -10,7 +10,7 @@
 #   arm:   qsub -l walltime=HH:MM:SS -W depend=afterok:<plan job> \
 #               -v MODE=pilot|primary,WORKLOAD=W1,SEED=20261202,ARM=S-LMI,CFG=1000,IN=<staged dir> fb.pbs
 #
-# WORKLOAD: W1 insert_only, W2 constant_r, W3 shift. SEED: 20261202 selection pilot, 20261201 primary,
+# WORKLOAD: W1 insert_only, W2 constant_r, W3 shift, W4 heavy_r and W5 medium_r (A6). SEED: 20261202 selection pilot, 20261201 primary,
 # 20261205 replication. ARM: E1 | DLI-best | S-LMI | IVF | HNSW. CFG: bucket count (S-LMI, IVF) or m (HNSW),
 # unused for E1 and DLI-best. pilot reads validation panels only; primary reads test panels only.
 set -euo pipefail
@@ -28,6 +28,9 @@ case "$WORKLOAD" in
   W1) SCENARIO=insert_only; VAL=val;                     TEST=test ;;
   W2) SCENARIO=constant_r;  VAL=val;                     TEST=test ;;
   W3) SCENARIO=shift;       VAL=mq_val,ids_val,ood_val;  TEST=mq,ids,ood ;;
+  # Amendment A6, the delete-rate sweep: 10% and 50% deletes per batch (W1 = 0%, W2 = 100%).
+  W4) SCENARIO=heavy_r;     VAL=val;                     TEST=test ;;
+  W5) SCENARIO=medium_r;    VAL=val;                     TEST=test ;;
   *) echo "unknown WORKLOAD $WORKLOAD"; exit 2 ;;
 esac
 case "$SEED" in 20261201|20261202|20261205) ;; *) echo "SEED is not a preregistered plan seed"; exit 2 ;; esac
