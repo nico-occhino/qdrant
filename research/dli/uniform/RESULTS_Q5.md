@@ -25,7 +25,7 @@ frozen at `f5fb54c16`.
   `ae6121df…`, source key `6b8101ff5d02a637552c4bed`). The job started at 14:47 UTC. Building the binary plus E1 took
   2 h 18 min, E1R 1 h 46 min and E1T 1 h 34 min, 5 h 38 min in all. PBS reported 12.5 GB in use at 5 h 03 min;
   that is one reading, not a peak.
-- **The archive.** `C:\Users\nicoo\Workspace\Research-Results\2026-11-27-uniform-q5-S1\` (223 files,
+- **The archive.** `Research-Results/2026-11-27-uniform-q5-S1\` (223 files,
   `STORAGE_SHA256.txt` verified, job `SHA256SUMS` verified).
 
 ### Gates (§6.4)

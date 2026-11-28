@@ -23,7 +23,7 @@
     "walltime": "24:00:00",
     "submitted_utc": "2026-11-27",
     "status": "finished; raw gate 4 failed (FAILED.json); preregistered rounding classification: 0 unexplained; validated",
-    "archive": "C:/Users/nicoo/Workspace/Research-Results/2026-11-27-uniform-q5-S1 (223 files)",
+    "archive": "Research-Results/2026-11-27-uniform-q5-S1 (223 files)",
     "rounding_check_sha256": "3d1df90420877129d71cf120fc85bc27745a241fae27f866fb96310a9e5d29cb"
    },
    {
@@ -32,7 +32,7 @@
     "walltime": "24:00:00",
     "submitted_utc": "2026-11-27",
     "status": "finished; raw gate 4 failed (FAILED.json); rounding classification 0 unexplained; validated",
-    "archive": "C:/Users/nicoo/Workspace/Research-Results/2026-11-27-uniform-q5-S2 (222 files)",
+    "archive": "Research-Results/2026-11-27-uniform-q5-S2 (222 files)",
     "rounding_check_sha256": "bb049f9f16d6830d1ed4b87c8067e256e3f6bd40b80e4b48c0972384950d0c7e"
    },
    {
@@ -41,7 +41,7 @@
     "walltime": "24:00:00",
     "status": "finished; raw gate 4 failed (FAILED.json); rounding classification 0 unexplained; validated",
     "submitted_utc": "2026-11-27",
-    "archive": "C:/Users/nicoo/Workspace/Research-Results/2026-11-27-uniform-q5-I1 (231 files)",
+    "archive": "Research-Results/2026-11-27-uniform-q5-I1 (231 files)",
     "rounding_check_sha256": "fc83232a89e87cba80dd85a51229c3abaa46ab81c56c2c3ef014f39698f663d0"
    }
   ]
@@ -87,7 +87,7 @@
     "walltime": "04:00:00",
     "submitted_utc": "2026-11-28",
     "status": "finished; gate monotone_work failed (FAILED.json: gates_failed); data kept; provisional results",
-    "archive": "C:/Users/nicoo/Workspace/Research-Results/2026-11-28-uniform-q7 (21 files)",
+    "archive": "Research-Results/2026-11-28-uniform-q7 (21 files)",
     "rows_sha256": "1b011c6dddaeef1e7e4e359da352530d7227b201478df8656fa66d44ef0997bf"
    }
   ]

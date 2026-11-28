@@ -9,7 +9,7 @@ it the gate passes, with 20 admitted restarts, and no reported number changes (`
   Addendum A1 (`a6b067075`, before results).
 - **The job.** 26076922 (8 CPUs): binary `c357b0b5…`, source key `eeed84f487969debf1a053eb`. Search took 8.2 s,
   build plus search under 1 min, and peak RSS was 1.4 GB.
-- **The archive.** `C:\Users\nicoo\Workspace\Research-Results\2026-11-28-uniform-q7\` (21 files,
+- **The archive.** `Research-Results/2026-11-28-uniform-q7\` (21 files,
   `STORAGE_SHA256.txt` verified). `rows.jsonl` SHA-256 `1b011c6d…97bf`, `analysis.json` `949e92dd…7306`.
 - **The PostgreSQL side.** `FILTER_FIXTURE_PG_RESULTS.md` at `04863df` (pinned).
 
