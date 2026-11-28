@@ -222,3 +222,28 @@ pinned by commit and SHA-256.
   - **The scope.** An offline replay on one uniform and one Shift plan, on validation panels, reported descriptively.
     It answers whether the neural router adds value beyond the maintenance structure. §3.6 allows at most one
     benchmark variant, which is CLI-I.
+
+## Addendum C1 (2026-11-28, after the v3 freeze): the exploratory centroid-routed variant C-CLI (both engines)
+- **Status.** An author decision. This addendum adds a variant and changes nothing in frozen v3 §0–§8. The variant
+  is labelled exploratory wherever it is reported. Its motivation is the descriptive Stage A centroid control
+  (`RESULTS_CENTROID_CONTROL.md`).
+- **The router.** Each bucket b has a unit centroid c_b (Float32, the normalized spherical k-means centre). The logit
+  of b for a normalized input x is the dot product x · c_b. Argmax, and the bucket order for search, use ties by the
+  lower bucket id. Everything in §1 (whole-bucket soft budget, visibility, gold) applies unchanged.
+- **The build** follows §2, except steps 4 and 6. There is no MLP training: the centroids are the k-means centres of
+  step 3, and points are inserted by argmax of x · c_b. There is no H_init.
+- **Maintenance.** The same cadence, census and paths as §4 and v3 §0, with these exceptions:
+  - **The trigger is growth only.** Entropy is undefined for this router, and CLI-I's imbalance rule is not part of
+    C-CLI.
+  - **Splitting (§4.2).** The parent keeps its id, and its centroid is replaced by child centre 0. Child centres
+    1..k−1 are appended as new ids in order. There is no fine-tune and no replay. The affected points are reinserted
+    by argmax over all centroids, and every untouched assignment is preserved.
+  - **DEDRIFT (§4.3, v3 §0 rules).** Cluster centre j goes to the j-th selected id in ascending order, then to new ids.
+    No donor is needed. There is no fine-tune; the pooled points are reinserted by argmax.
+  - **Lazy removal of empty buckets** as in §3, removing their centroids.
+- **b_max.** Chosen by the C-CLI pilot (`CLI_PILOT_PREREGISTRATION.md` §7), by the §4 rule on W1. It is recorded
+  there and shared by both engines.
+- **The record (§7).** Unchanged, except that the fine-tune and L_route fields are empty, and growth is the only
+  trigger flag.
+- **Reference implementation.** Qdrant's `cli_core.rs` with `RoutingKind::Centroid`, at the pilot staging
+  `878a8b3c7`.
