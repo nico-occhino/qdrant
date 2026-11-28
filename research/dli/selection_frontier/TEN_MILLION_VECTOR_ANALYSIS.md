@@ -523,7 +523,7 @@ These are proposals only; nothing was launched.
 ## 12. Locations
 
 **Immutable raw results** (local copy, read-only, manifest `hpc-results-25677858.SHA256SUMS`, 37 files):
-`/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/hpc-results-25677858/`
+`<admin>/experiments/2026-11-12-dli-architecture/hpc-results-25677858/`
 - `frontier-10m-25677858.pbs-m1.metacentrum.cz/`: the full job output directory, copied byte-for-byte.
 - `smoke-25677616.pbs-m1.metacentrum.cz/`.
 - `pbs-stdout/`.

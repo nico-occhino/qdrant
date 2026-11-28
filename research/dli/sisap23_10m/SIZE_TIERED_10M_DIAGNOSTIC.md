@@ -6,7 +6,7 @@ The principal finding is a **storage-mode control failure**: the two active lear
 
 ## Evidence and counter reconciliation
 
-Let **R** be `/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-25/size-tiered-10120191/` and **D** its sibling `size-tiered-diagnosis/`. Inputs are `R/{summary.json,native-events.jsonl,build-events.jsonl,query-events.jsonl,run.log}` and the retained `R/collection/`. Derived checks, hashes, statistics and reconstruction are in `D/{diagnostic.json,query_reconstruction.csv,native_publications.csv,active_members.json,provenance-check.json,comparisons.json,input-artifact-hashes.json}`. Reproduce the bounded, non-scoring analysis with `OPENBLAS_NUM_THREADS=2 /home/nicoo/miniconda3/envs/lmi-rust-inspect/bin/python D/analyze.py` after expanding D.
+Let **R** be `<admin>/experiments/2026-11-12-dli-architecture/continuation-25/size-tiered-10120191/` and **D** its sibling `size-tiered-diagnosis/`. Inputs are `R/{summary.json,native-events.jsonl,build-events.jsonl,query-events.jsonl,run.log}` and the retained `R/collection/`. Derived checks, hashes, statistics and reconstruction are in `D/{diagnostic.json,query_reconstruction.csv,native_publications.csv,active_members.json,provenance-check.json,comparisons.json,input-artifact-hashes.json}`. Reproduce the bounded, non-scoring analysis with `OPENBLAS_NUM_THREADS=2 $CONDA_ENV/lmi-rust-inspect/bin/python D/analyze.py` after expanding D.
 
 `local_dli_search_metrics_for_test` in `lib/collection/src/shards/replica_set/mod.rs` at the executed SHA defines this exact tuple:
 

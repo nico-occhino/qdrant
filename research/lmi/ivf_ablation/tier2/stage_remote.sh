@@ -8,8 +8,8 @@ SOCK="$HOME/.ssh/metacentrum-control"; TARGET=nico@perian.metacentrum.cz
 S=(ssh -F /dev/null -S "$SOCK" -o BatchMode=yes "$TARGET")
 ssh -F /dev/null -S "$SOCK" -O check "$TARGET"
 ROOT=/storage/budejovice1/home/nico/lmi-metacentrum/static-lmi-ivf-20261118
-E=/home/nicoo/research-admin/experiments/2026-11-18-static-lmi-ivf
-WT=/home/nicoo/worktrees/qdrant-static-lmi-ivf
+E=${ADMIN:?}/experiments/2026-11-18-static-lmi-ivf
+WT=${WORKTREES:?}/qdrant-static-lmi-ivf
 L=$E/remote-staging-$COMMIT; mkdir -p "$L"
 git -C "$WT" archive --format=tar "$COMMIT" research/lmi/ivf_ablation > "$L/code.tar"
 echo "$COMMIT" > "$L/code.commit"

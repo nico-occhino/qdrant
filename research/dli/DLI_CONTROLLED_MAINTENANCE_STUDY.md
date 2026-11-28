@@ -1,6 +1,6 @@
 # Native maintenance policy comparison — continuation 24
 
-Source revision: `2e175df23dda5634d020197c7aa72e3781d9b45b` (build code). Starting revision: `06bce2a1d31bef3ed6b792230b2b1017fd20145d`. Raw artifacts: `/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-24/`. Previous first-run/post-update reports are preserved.
+Source revision: `2e175df23dda5634d020197c7aa72e3781d9b45b` (build code). Starting revision: `06bce2a1d31bef3ed6b792230b2b1017fd20145d`. Raw artifacts: `<admin>/experiments/2026-11-12-dli-architecture/continuation-24/`. Previous first-run/post-update reports are preserved.
 
 ## Main finding
 

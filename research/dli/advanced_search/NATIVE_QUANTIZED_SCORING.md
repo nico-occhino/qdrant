@@ -1,6 +1,6 @@
 # Native quantized candidate scoring — continuation 30
 
-Starting revision: 2a8d78749. Source changes: `lib/segment/src/index/candidate_scoring.rs`, `lib/segment/tests/candidate_scoring_v120.rs`. Raw logs: `/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-30/`.
+Starting revision: 2a8d78749. Source changes: `lib/segment/src/index/candidate_scoring.rs`, `lib/segment/tests/candidate_scoring_v120.rs`. Raw logs: `<admin>/experiments/2026-11-12-dli-architecture/continuation-30/`.
 
 ## Implemented native slice
 
@@ -39,7 +39,7 @@ Reproduce with validated environment and existing target:
 
 ```bash
 cargo test --locked --offline -p segment --test candidate_scoring_v120 --features 'testing,lmi-training,lmi-research' -- --nocapture
-DLI_TEACHER_CONTROL=/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-28/teacher-control cargo test --locked --offline -p segment --test candidate_scoring_v120 --features 'testing,lmi-training,lmi-research' native_quantized_sisap_subset -- --ignored --exact --nocapture
+DLI_TEACHER_CONTROL=<admin>/experiments/2026-11-12-dli-architecture/continuation-28/teacher-control cargo test --locked --offline -p segment --test candidate_scoring_v120 --features 'testing,lmi-training,lmi-research' native_quantized_sisap_subset -- --ignored --exact --nocapture
 ```
 
 Initial command incorrectly requested collection-only `dli-research` from segment; corrected to segment's `lmi-research`, failure preserved. No correctness protections removed and no new persistent index format introduced.

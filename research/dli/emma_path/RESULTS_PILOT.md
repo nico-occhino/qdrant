@@ -13,7 +13,7 @@ hypotheses.
 | Data | first 300,000 rows of the verified 10,120,191-row corpus (`f5868d6e…`) |
 | Gold | exact prefix gold from `prefix_gold.py`. In preflight 25801978 the same tool reproduced the official SISAP23 top-30 on the full corpus for **every** row (val 32/32, test 256/256). |
 | Queries | validation rows 900–931 (32), test rows 9000–9255 (256) |
-| Evidence | remote `dli-emma-path-20261120/results/pilot-25813227…/`; local copy `C:\Users\nicoo\Workspace\Research-Results\2026-11-20-dli-emma-path\pilot-25813227\`. All `SHA256SUMS` verify except `job.log`, the known case where `tee` appends the `COMPLETE` line after hashing (verified: hash of the file minus its last line matches). |
+| Evidence | remote `dli-emma-path-20261120/results/pilot-25813227…/`; local copy `Research-Results/2026-11-20-dli-emma-path/pilot-25813227/`. All `SHA256SUMS` verify except `job.log`, the known case where `tee` appends the `COMPLETE` line after hashing (verified: hash of the file minus its last line matches). |
 
 ## Gate (§4, E1)
 

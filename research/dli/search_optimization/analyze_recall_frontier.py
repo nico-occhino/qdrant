@@ -1,5 +1,6 @@
 """Native executed frontier with exact-control separation and shared strict oracle."""
 import argparse,csv,json,subprocess,sys
+import os
 from pathlib import Path
 import numpy as np
 p=argparse.ArgumentParser();p.add_argument('run',type=Path);a=p.parse_args();run=a.run
@@ -30,7 +31,7 @@ for c in control[1:]:
   assert {h['id']:(h['score'],h['version']) for h in aa['hits']}=={h['id']:(h['score'],h['version']) for h in bb['hits']}
   comparisons+=1
 # Native exact physically scores full population: report its official-gold recall.
-e=exact[0];base=Path('/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-25/data')
+e=exact[0];base=Path(os.environ['ADMIN'], 'experiments/2026-11-12-dli-architecture/continuation-25/data')
 vectors=np.memmap(base/'vectors.f16',mode='r',dtype='<f2',shape=(10120191,768));qvec=np.memmap(base/'queries.f32',mode='r',dtype='<f4',shape=(10000,768));maxerr=0.
 for i in range(e['query_count']):
  q=queries[e['ordinal_begin']+i];assert q['scored_vectors']==10120191

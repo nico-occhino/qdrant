@@ -6,9 +6,10 @@ Bucket coverage is an oracle inclusion statistic, not native recall or latency.
 Only insertion-only numeric-ID populations in this artifact are supported.
 """
 import json,struct,math,statistics,csv,hashlib
+import os
 from pathlib import Path
 import numpy as np
-root=Path('/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture')
+root=Path(os.environ['ADMIN'], 'experiments/2026-11-12-dli-architecture')
 r=root/'continuation-25/geometric-10120191';out=root/'continuation-26/geometric-routing';out.mkdir(parents=True,exist_ok=True)
 s=json.loads((r/'summary.json').read_text());q=[json.loads(l) for l in (r/'query-events.jsonl').read_text().splitlines()];e=[json.loads(l) for l in (r/'native-events.jsonl').read_text().splitlines()];b=[json.loads(l) for l in (r/'build-events.jsonl').read_text().splitlines()]
 assert len(q)==100 and [x['query'] for x in q]==list(range(100))

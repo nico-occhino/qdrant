@@ -8,12 +8,12 @@ start=${4:-0}
 test ! -e "$output/rounds.json"
 mkdir -p "$output"
 export CARGO_BUILD_JOBS=2
-export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/cargo-target}
+export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-${ADMIN:?}/experiments/2026-11-12-dli-architecture/cargo-target}
 export LIBTORCH_USE_PYTORCH=1
-export PATH=/home/nicoo/miniconda3/envs/lmi-rust-inspect/bin:$PATH
-export LD_LIBRARY_PATH=/home/nicoo/miniconda3/envs/lmi-rust-inspect/lib/python3.11/site-packages/torch/lib
-export DLI_REOPEN_COLLECTION_ROOT=/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-25/geometric-10120191/collection
-export DLI_SISAP_INPUTS=/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-25/data
+export PATH=${CONDA_ENV:?}/lmi-rust-inspect/bin:$PATH
+export LD_LIBRARY_PATH=${CONDA_ENV:?}/lmi-rust-inspect/lib/python3.11/site-packages/torch/lib
+export DLI_REOPEN_COLLECTION_ROOT=${ADMIN:?}/experiments/2026-11-12-dli-architecture/continuation-25/geometric-10120191/collection
+export DLI_SISAP_INPUTS=${ADMIN:?}/experiments/2026-11-12-dli-architecture/continuation-25/data
 export DLI_SISAP_OUTPUT="$output"
 export DLI_ORACLE_POPULATION=10120191
 export DLI_PROFILE_QUERY_COUNT="$count"

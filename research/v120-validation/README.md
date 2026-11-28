@@ -28,7 +28,7 @@ No router, posting, scoring or result semantics were changed. The counter is not
 
 - `md5sum` of the three original 300K HDF5 files: all matched the historical handoff.
 - `sha256sum` of historical 300K config, result file, state, router and postings: recorded in `validation-contract.json`.
-- `cargo run --locked --package qdrant --features service_debug --bin schema_generator > /tmp/qdrant-v120-lmi-definitions.json`: **pass**, Rust schema contains LMI. Cached target `/home/nicoo/work/qdrant-v120-port-target`; two Cargo jobs; existing LibTorch environment.
+- `cargo run --locked --package qdrant --features service_debug --bin schema_generator > /tmp/qdrant-v120-lmi-definitions.json`: **pass**, Rust schema contains LMI. Cached target `<work>/qdrant-v120-port-target`; two Cargo jobs; existing LibTorch environment.
 - `cargo test --locked -p collection --features lmi-training --lib tests::lmi_lifecycle::native_segment_delta::native_lmi_mixed_segments_mutation_restart_and_optimizer -- --exact --nocapture`: **1 passed**, route/fallback/selected-offset observations through mutation, restart and optimizer replacement.
 - `cargo test --locked -p segment --features lmi-training --test lmi_shell_v120 exact_filter_and_nondefault_params_use_plain -- --exact`: **1 passed**, three Plain fallbacks and zero selected learned candidates.
 - `cargo check --locked -p segment -p collection`: **pass** without the training feature.
