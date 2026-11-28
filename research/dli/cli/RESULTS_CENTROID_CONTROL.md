@@ -22,7 +22,7 @@ both routings score the same normalized f32 vectors.
   ⌊n_init / 20⌋, which is 5,000 on I1 and 2,251 on S1; seed 42; the entropy trigger at +0.3 bits; growth at
   10 × |B|_last.
 - **Budgets.** The Phase 3 grid, 1K–320K.
-- **The archive.** `C:\Users\nicoo\Workspace\Research-Results\2026-11-28-cli-centroid-control\` (17 files,
+- **The archive.** `Research-Results/2026-11-28-cli-centroid-control\` (17 files,
   `STORAGE_SHA256.txt` verified).
 - **Gate G2.** `check_membership` passed inside every maintenance of all four runs: no run aborted.
 
