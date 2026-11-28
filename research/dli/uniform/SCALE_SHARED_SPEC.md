@@ -193,7 +193,7 @@ splitting are separated from the costs of the network.
 - **The cost of placement.** p95 at 2 and at 4 nodes, each relative to 1 node, within the engine.
 - **Cross-engine.** Work ratios and recall only.
 
-### 2.6 Minimum Q11 for the 2027-03-10 deadline (Qdrant proposal, 2026-11-28; for the author to freeze)
+### 2.6 Minimum Q11 for the 2027-03-10 deadline — CUT (author decision, 2026-11-28: Q11 is future work; nothing below is run)
 - **The question this answers.** Does splitting the same 1M index into 4 shards cost a learned index (E1) more
   work at matched recall than it costs HNSW?
   - This is D1 only. D2's multi-node placement becomes at most one descriptive run, or future work: network latency

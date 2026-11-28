@@ -56,8 +56,8 @@ Updated 2026-11-27. Branch `research/uniform-questions-20261127` (worktree `~/wo
 - **The spec** [SCALE_SHARED_SPEC.md](SCALE_SHARED_SPEC.md) is a DRAFT. The author accepted the defaults; it waits
   for PostgreSQL's review.
 - **Shard hashes for I1:** `evidence/q11/shard_hashes_I1.json`.
-- **The minimum Q11** (spec §2.6): 4 shards on one node, E1 vs HNSW, split penalty in vectors scored. No engineering
-  and no scale jobs until PostgreSQL's review (`SCALE_SPEC_PG_REVIEW.md`) exists and the author freezes the spec.
+- **Q11 is cut** (author, 2026-11-28): future work. Q10 waits for PostgreSQL's review (`SCALE_SPEC_PG_REVIEW.md`)
+  and the author's freeze.
 - **P0 passes on Qdrant's side:** cgroup v1 memory, page cache charged and reclaimed, swap inside the limit,
   fadvise eviction, inter-node ssh and ports. Four amendments are proposed from P0 (per-job PSI and blkio are not
   available).

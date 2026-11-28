@@ -21,7 +21,7 @@ This is the Qdrant side of `CROSS_ENGINE_SYNTHESIS.md` (PostgreSQL, pinned in [P
 | Q8 | DLI-best vs E1 | **done** (pilot; both engines) | **Qdrant:** ratios 0.614–0.909 on validation; criterion 3 fails on Float16 rounding. `research/dli/dli_best/RESULTS_INTEGRATION_PILOT.md`. **PostgreSQL** (native pilot, `DLI_BEST_NATIVE_PILOT_RESULTS.md` at `126fb63`, pinned): DLI-best / E1 work at 0.90 = 0.901 [0.852, 0.988] Insert-only val; Shift 0.882 [0.835, 0.930] MQ, 0.779 [0.730, 0.825] IDS, 0.707 [0.684, 0.770] OOD; known answer 1.000; final index 3.72 → 4.27 GiB (Insert-only), +4 fits. PostgreSQL's **Constant-R arm is pending a defect investigation** (exhaustive-work mismatch on both attempts, jobs 26074468 and 26074838) |
 | Q9 | Final benchmark | **running** (another session) | `research/dli/final_benchmark/PREREGISTRATION.md`, amendments A1–A3 |
 | Q10 | Memory budget | **spec draft** (shared) | [SCALE_SHARED_SPEC.md](SCALE_SHARED_SPEC.md) §Q10; awaiting PostgreSQL acceptance and P0 |
-| Q11 | Distributed scale | **spec draft** (shared) | [SCALE_SHARED_SPEC.md](SCALE_SHARED_SPEC.md) §Q11; after Q10's U runs |
+| Q11 | Distributed scale | **cut** (author, 2026-11-28) | Future work; the minimum design stays in [SCALE_SHARED_SPEC.md](SCALE_SHARED_SPEC.md) §2.6 as a proposal |
 
 ## Q4. Snapshot parity
 - **The question.** At the same live IDs, how much of the Shift batch 10–12 cross-engine gap comes from the
