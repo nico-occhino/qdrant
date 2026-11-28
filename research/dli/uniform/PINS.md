@@ -13,6 +13,10 @@ file's content at that commit; the last-touching commit is also given.
 | `docs/research/R3_SHIFT_MQ_RESULTS.md` | eb3381b | `153edd5ada6c32eb8d202e580204e598b0489b95df810d28d5898b0b18141cc0` |
 | `docs/research/FILTER_FIXTURE_SPEC.md` | 3ec4041 (frozen 2026-11-27) | `09d8d537c38745e2901f8b6d5ded703b6023aff44fcf3a0e1cec3227c1afa54f` |
 | `tools/router_parity_audit.py` | bfbd7af | `c3e524cecb5b512c6946b57ff8e5c73650fdd5bb4080f4b2ade81b11b4638ab6` |
+| `docs/research/DLI_BEST_NATIVE_PILOT_RESULTS.md` (Q8) | 126fb63 | `329d9b183c70ac11db7c1622997b733be8ec276865c2236da7d627ce71c1bfac` |
+| `docs/research/FILTER_FIXTURE_PG_RESULTS.md` (Q7) | 04863df | `0cdeef0b74fc10d47fc1c37a657f8ca9d59782c52664d91cf495e4a0dcc9c512` |
+| `docs/research/Q4_ROUTER_EXPORT.md` (Q4c) | c68a606 | `0f218f20f65b7ea049e7c18c000b287486ced8bd45a823cf95dfd36b5b4e637c` |
+| `docs/research/DLI_IMBALANCE_TRIGGER_RESULTS.md` (Q5 S2) | 92e2452 | `810434978eb93cb3788a0a32173958995ee8c0ddf01af7c7207e1e76a9b4f147` |
 
 ## Data pins
 - **The Q5 fresh Shift input.** This is PostgreSQL's independent stream: source rows 1,000,001–2,000,000, seed

@@ -193,6 +193,41 @@ splitting are separated from the costs of the network.
 - **The cost of placement.** p95 at 2 and at 4 nodes, each relative to 1 node, within the engine.
 - **Cross-engine.** Work ratios and recall only.
 
+### 2.6 Minimum Q11 for the 2027-03-10 deadline (Qdrant proposal, 2026-11-28; for the author to freeze)
+- **The question this answers.** Does splitting the same 1M index into 4 shards cost a learned index (E1) more
+  work at matched recall than it costs HNSW?
+  - This is D1 only. D2's multi-node placement becomes at most one descriptive run, or future work: network latency
+    on a shared cluster is not comparable across arms, and the learned-index behaviour inside each shard is identical
+    to D1.
+- **The data.** The I1 final snapshot (1M live), the shard function and shard hashes of §2.2, and the test panel and
+  plan gold of I1.
+- **Arms.** E1 and HNSW m = 16. Static S-LMI 10,000 is added only if E1 and HNSW finish with time to spare.
+- **Shards.** Each shard is an independent collection built by replaying, in plan order, only its own ids.
+  - **The merge.** An explicit coordinator in the harness merges the per-shard top-30 by score, with ties broken by
+    id.
+  - **Why.** This mirrors PostgreSQL's four instances plus coordinator exactly, and it keeps Qdrant's per-query
+    scoring counter per shard.
+  - **Native fan-out.** One cross-check runs Qdrant's native custom-sharding fan-out on HNSW, and it must return the
+    same ids as the explicit merge.
+- **The knob.** The same per-shard knob on all shards, swept:
+  - E1: the per-shard candidate budget, on the Phase 3 grid divided by 4;
+  - HNSW: ef ∈ {30, …, 1,024}.
+- **Estimands.**
+  - **Work.** Total vectors scored (Σ over shards) at merged mean Recall@30 = 0.90 (W@0.90, first measured
+    crossing).
+  - **The split penalty.** P = W@0.90(4 shards) / W@0.90(1 shard) per arm, from a paired query bootstrap with
+    10,000 resamples.
+  - **The contrast.** P(E1) / P(HNSW).
+  - **Descriptive.** The slowest-shard work, and merged recall at 50K total.
+- **Gates.**
+  - **Exact merge.** The exact per-shard top-30 lists, merged, equal the global exact top-30 (ties aside).
+  - **Membership.** Shard hashes equal `evidence/q11/shard_hashes_I1.json` and PostgreSQL's.
+  - **Work accounting.** Σ of per-shard counters equals the merged search's total, query by query.
+  - **Native fan-out** equals the explicit merge (HNSW).
+- **Cost.** About one week of harness work (four builds plus the merge, reusing the Phase 3 driver), then one 8-CPU
+  job per arm of ≤ 12 h.
+- **What it does not answer:** network cost, replication, concurrent writes and resharding.
+
 ## 5. Decisions where the proposals differed
 | Topic | PostgreSQL proposal | Qdrant proposal | Draft decision |
 |---|---|---|---|

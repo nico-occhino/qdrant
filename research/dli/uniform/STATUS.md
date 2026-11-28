@@ -3,8 +3,8 @@
 Updated 2026-11-27. Branch `research/uniform-questions-20261127` (worktree `~/work/qdrant-uniform`).
 
 ## Author actions
-- Optional, for Q4(c): ask Codex to export PostgreSQL's level routers (LMI1) at Shift batches 10–12, for both
-  schedules.
+- None pending. Q4(c) is unblocked: PostgreSQL published `Q4_ROUTER_EXPORT.md` (`c68a606`). Trigger V2 is skipped
+  (author, 2026-11-28).
 - Otherwise none. MetaCentrum Kerberos is valid; if it expires, the `kinit` is written here.
 
 ## Running jobs (this worktree; cap of 4)
@@ -52,6 +52,8 @@ Updated 2026-11-27. Branch `research/uniform-questions-20261127` (worktree `~/wo
 - **The spec** [SCALE_SHARED_SPEC.md](SCALE_SHARED_SPEC.md) is a DRAFT. The author accepted the defaults; it waits
   for PostgreSQL's review.
 - **Shard hashes for I1:** `evidence/q11/shard_hashes_I1.json`.
+- **The minimum Q11** (spec §2.6): 4 shards on one node, E1 vs HNSW, split penalty in vectors scored. No engineering
+  and no scale jobs until PostgreSQL's review (`SCALE_SPEC_PG_REVIEW.md`) exists and the author freezes the spec.
 - **P0 passes on Qdrant's side:** cgroup v1 memory, page cache charged and reclaimed, swap inside the limit,
   fadvise eviction, inter-node ssh and ports. Four amendments are proposed from P0 (per-job PSI and blkio are not
   available).
