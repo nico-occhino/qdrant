@@ -31,14 +31,18 @@
     "plan": "S2",
     "walltime": "24:00:00",
     "submitted_utc": "2026-11-27",
-    "status": "queued"
+    "status": "finished; raw gate 4 failed (FAILED.json); rounding classification 0 unexplained; validated",
+    "archive": "C:/Users/nicoo/Workspace/Research-Results/2026-11-27-uniform-q5-S2 (222 files)",
+    "rounding_check_sha256": "bb049f9f16d6830d1ed4b87c8067e256e3f6bd40b80e4b48c0972384950d0c7e"
    },
    {
     "job": "26075094.pbs-m1.metacentrum.cz",
     "plan": "I1",
     "walltime": "24:00:00",
-    "status": "queued",
-    "submitted_utc": "2026-11-27"
+    "status": "finished; raw gate 4 failed (FAILED.json); rounding classification 0 unexplained; validated",
+    "submitted_utc": "2026-11-27",
+    "archive": "C:/Users/nicoo/Workspace/Research-Results/2026-11-27-uniform-q5-I1 (231 files)",
+    "rounding_check_sha256": "fc83232a89e87cba80dd85a51229c3abaa46ab81c56c2c3ef014f39698f663d0"
    }
   ]
  },
@@ -66,6 +70,23 @@
     "what": "memory (one rerun after fix)",
     "commit": "ada82c94d440ad91459a8003d08e3b3a17743eb8",
     "status": "pass"
+   }
+  ]
+ },
+ "q7": {
+  "freeze": "e85c176f72a71c88908f4ddfa52149ad79a3e0c1",
+  "staging": {
+   "dir": "native-q7-e85c176f72a7",
+   "source_bundle_sha256": "b3695a66a5753998b31f6a68d9ac024d0bf80d51412c9fb20d4d2fd02d6b9a69",
+   "q7_pbs_sha256": "c6f99e9c7339303092f14c1c9ee5b63ae4303837c51f5e0b6e7768ca9fdb8976",
+   "vendor": "copied from native-f5fb54c16a96 (Cargo.lock unchanged), hashes verified"
+  },
+  "jobs": [
+   {
+    "job": "26076922.pbs-m1.metacentrum.cz",
+    "walltime": "04:00:00",
+    "submitted_utc": "2026-11-28",
+    "status": "running"
    }
   ]
  }

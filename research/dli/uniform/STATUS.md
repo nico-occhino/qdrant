@@ -8,12 +8,11 @@ Updated 2026-11-27. Branch `research/uniform-questions-20261127` (worktree `~/wo
 - Otherwise none. MetaCentrum Kerberos is valid; if it expires, the `kinit` is written here.
 
 ## Running jobs (this worktree; cap of 4)
-- `26075075` Q5 S2 (PostgreSQL's fresh Shift, seed 20261127), 24 h, queued 2026-11-27. The binary is cached.
-- `26075094` Q5 I1 (Insert-only), 24 h, queued 2026-11-27.
-- Q7 is submitted automatically when the count of these jobs falls below 4.
-- Also counted against the cap: the final-benchmark W3 jobs `26044026` (S-LMI) and `26044027` (IVF).
+- `26076922` Q7 filtered-search fixture (frozen `e85c176f7`), 4 h, submitted 2026-11-28.
 
 ## Finished jobs
+- `26075075` **Q5 S2: validated.** Verdict not met (recovery 0.213); archived on C:.
+- `26075094` **Q5 I1: validated.** No firing; E1T = E1; archived on C:.
 - `26053393` **Q5 S1: validated.** See [RESULTS_Q5.md](RESULTS_Q5.md); it is archived on C:.
 - `26075041` P0 memory, first attempt: a script defect (it read the v2 path on a v1-memory host); no counters.
 - `26075063` P0 memory, the rerun: **pass**.
@@ -43,8 +42,11 @@ Updated 2026-11-27. Branch `research/uniform-questions-20261127` (worktree `~/wo
   - **Gate 4.** The raw full-search gate failed (0.994–0.997); after the preregistered rounding classification there
     are 0 unexplained misses (`q5_rounding_check.py`).
   - **Runtime.** 5 h 38 min, so each plan fits in one 24 h job.
-- **Next.** Analyse S2 and I1 the same way, including gate-4 classification, then the cross-engine comparison on
-  S2.
+- **S2 (out-of-sample): not met.** E1T − E1 = +0.24 pp [0.10, 0.38], recovery 0.213, trainer 0.228×. One firing
+  (batch 7, 10.58×). PostgreSQL on the same inputs: +1.20 pp, recovery 0.394, also not met.
+- **I1: no firing** (maximum 2.57×), so E1T = E1, as expected.
+- **Done.** See [RESULTS_Q5.md](RESULTS_Q5.md). One open item: PostgreSQL's firing batch (publication 44), for the
+  §5 descriptive expectation.
 
 ## Q10 and Q11. Memory budget and distributed scale (shared with PostgreSQL)
 - **The spec** [SCALE_SHARED_SPEC.md](SCALE_SHARED_SPEC.md) is a DRAFT. The author accepted the defaults; it waits
@@ -70,8 +72,7 @@ Updated 2026-11-27. Branch `research/uniform-questions-20261127` (worktree `~/wo
 - **Analysis.** `analyze_q7.py`, with its known-answer test, and the job script `pbs/q7.pbs`.
 - **The local smoke (6,000 rows) passed the runner gates.** No bad ids; exact work = the qualifying count; the one
   exact shortfall is a gold tie; 24 widening restarts.
-- **The preregistration is FROZEN** (2026-11-27, after Q5 S1 validated). Next: stage that commit and submit
-  `pbs/q7.pbs` (4 h) when a slot frees. The cap is reached by W3 ×2, S2 and I1.
+- **The preregistration is FROZEN** at `e85c176f7`. Job `26076922` is running (staging `native-q7-e85c176f72a7`).
 
 ## Inputs prepared locally (`~/research-admin/experiments/2026-11-27-uniform/`)
 - **The S1 plan** `plans/S1-shift-20261121/`: copied from PostgreSQL R3 job 25910367's plan. Its 205 file hashes

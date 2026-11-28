@@ -602,3 +602,15 @@ rescore. See [the audit and evidence paths](emma_path/PHASE3_PRIMARY_JOB_AUDIT_2
     work. Per-job PSI and blkio are not available, so four amendments are proposed.
   - **The rerun.** The first memory preflight misread the cgroup layout; that was a script defect, with one rerun.
 - **Q7.** Frozen after S1 validated. It is submitted when a slot frees.
+
+## 2026-11-28 — Q5 complete: the 8× trigger does not transfer to an independent stream, on either engine
+- **S2 (job 26075075; PostgreSQL's fresh Shift stream, identical inputs).** One firing, at batch 7 (10.58×).
+  E1T − E1 = +0.24 pp [0.10, 0.38] at 50K, recovery 0.213: not met.
+  - **PostgreSQL on the same stream.** It also fired once at level 2 (9.868×), with +1.20 pp and recovery 0.394:
+    also not met.
+  - **The reading.** Both engines buy a small, positive gain at 12–23% of E1R's training, but the in-sample S1
+    success (+7.89 pp, recovery 0.690) does not replicate out of sample.
+- **I1 (job 26075094).** No firing (2.57×), so E1T = E1, as predicted.
+- **Gate 4.** It failed raw on all plans and passes after the preregistered stored-representation classification.
+  The job script should have run that classification in-job; this is noted for future gates.
+- **Q7.** Submitted (26076922) from the frozen `e85c176f7`.
