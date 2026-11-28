@@ -19,5 +19,5 @@ def run(sizes, b_max):
     cli = types.SimpleNamespace(n_buckets=len(sizes), config={"max_bucket_size": b_max, "recluster_k_fraction": 0.5},
                                 bucket_indices=[torch.zeros(s) for s in sizes])
     captured.clear(); R.DedriftReclusteringStrategy().recluster(cli); return captured.get("a", [])
-for sizes, b in (([80,10,90,5,70,20],100), ([50,60,70,80,300],1000), ([100,100,1,1],50), ([10]*9+[11],1000), ([0,0,0,5],1)):
+for sizes, b in (([80,10,90,5,70,20],100), ([50,60,70,80,300],1000), ([100,100,1,1],50), ([10]*9+[11],1000), ([0,0,0,5],1), ([70,60,50,40,30,20,10],1000)):
     print(sizes, b, run(sizes, b))

@@ -99,8 +99,9 @@ fn round_half_even(x: f64) -> usize {
 }
 
 /// Spec §4.3 step 1, exactly as `DedriftReclusteringStrategy` (`reclustering.py:206–330`): the buckets to
-/// recluster, ascending. Empty if nothing is reclustered (at most k non-empty buckets). Sort ties: largest by lower id,
-/// smallest by higher id (the code's reversed order); `torch.sort` makes no tie promise, so G5 uses distinct sizes.
+/// recluster, ascending. Empty if nothing is reclustered (at most k non-empty buckets). Ties (spec v2 §0): the lower
+/// stable id wins in both the largest and the smallest selection. `torch.sort` makes no tie promise, so G5 parity
+/// with `cli_ablation` is claimed for distinct sizes only.
 pub fn dedrift_select(sizes: &[usize], b_max: usize) -> Vec<usize> {
     let n = sizes.len();
     if n == 0 || sizes.iter().all(|&s| s == 0) {
@@ -120,7 +121,9 @@ pub fn dedrift_select(sizes: &[usize], b_max: usize) -> Vec<usize> {
     let k2 = l1.div_ceil(mu).clamp(k, n);
     let mut selected: std::collections::BTreeSet<usize> = largest.iter().copied().collect();
     let mut added = 0;
-    for &b in order.iter().rev() {
+    let mut ascending: Vec<usize> = (0..n).collect();
+    ascending.sort_by(|&a, &b| sizes[a].cmp(&sizes[b]).then(a.cmp(&b)));
+    for &b in &ascending {
         if added >= k2 - k {
             break;
         }
@@ -271,8 +274,14 @@ mod tests {
         // k2 = 200 -> clamp 4, B2 = 2 smallest = 3, 2. With b_max 50 the overflowing 0, 1 are already in B1.
         assert_eq!(dedrift_select(&[100, 100, 1, 1], 50), vec![0, 1, 2, 3]);
         // A real k2 < n case: sizes [10, 10, 10, 10, 10, 10, 10, 10, 10, 11]: k = 5,
-        // B1 = 9 (11), 0, 1, 2, 3 (10 each); l1 = 51; median 10; k2 = ceil(5.1) = 6; B2 = one smallest not in B1 = 8.
-        assert_eq!(dedrift_select(&[10, 10, 10, 10, 10, 10, 10, 10, 10, 11], 1_000), vec![0, 1, 2, 3, 8, 9]);
+        // B1 = 9 (11), 0, 1, 2, 3 (10 each); l1 = 51; median 10; k2 = ceil(5.1) = 6; B2 = one smallest not in B1.
+        // Ties at size 10 among 4..8: the lower id, 4 (spec v2). cli_ablation's torch.sort happened to give 8; ties
+        // are outside G5 parity.
+        assert_eq!(dedrift_select(&[10, 10, 10, 10, 10, 10, 10, 10, 10, 11], 1_000), vec![0, 1, 2, 3, 4, 9]);
+        // Odd B: k = round_half_even(3.5) = 4, not floor(3.5) = 3 (the PostgreSQL proposal the Qdrant side countered).
+        // sizes 7 distinct: [70, 60, 50, 40, 30, 20, 10]: B1 = 0..3 (sum 220); lower median of 7 values = 40;
+        // k2 = ceil(220 / 40) = 6; B2 = 2 smallest = 6 (10), 5 (20).
+        assert_eq!(dedrift_select(&[70, 60, 50, 40, 30, 20, 10], 1_000), vec![0, 1, 2, 3, 5, 6]);
         // At most k non-empty buckets -> nothing is reclustered, even an overflowing one (the code returns first).
         assert_eq!(dedrift_select(&[0, 0, 0, 5], 1), Vec::<usize>::new());
         assert_eq!(dedrift_select(&[], 1), Vec::<usize>::new());

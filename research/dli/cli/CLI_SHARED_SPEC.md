@@ -1,6 +1,7 @@
 # CLI shared algorithm specification (Qdrant and PostgreSQL)
 
-**Status: DRAFT for cross-engine agreement.** No CLI code or data exists yet. Each engine freezes its own CLI
+**Status: DRAFT v2 for cross-engine agreement** (v2, 2026-11-28: PostgreSQL's review at `e17cd3164` and the Qdrant
+response [CLI_SPEC_QDRANT_RESPONSE.md](CLI_SPEC_QDRANT_RESPONSE.md); §0 supersedes the text below where they differ). No CLI code or data exists yet. Each engine freezes its own CLI
 amendment (Qdrant: final-benchmark §3.6 and A5) only after both sides accept this text, or an amended version
 pinned by commit and SHA-256.
 
@@ -9,6 +10,75 @@ pinned by commit and SHA-256.
 - **Known code defects.** `cli_final` is not a reference: its config keys disable every trigger (audit A1). The audit
   is `CLI_AUDIT_AND_READING_GUIDE.md` (author's notes, 2026-11-23).
 - **Labels.** [T] = the thesis section; [C] = the `cli_ablation` location.
+
+## 0. Version 2: agreed rules (binding where they differ from §1–§7)
+- **§1, search.**
+  - **Gold.** Each engine computes exact gold over its own stored normalized Float16 representation.
+  - **Visibility and budget.** Visibility is resolved before a candidate consumes budget or is scored. All visible
+    members of a chosen bucket are processed, then the soft minimum is checked. If every bucket is exhausted first,
+    the available results are returned and the count is disclosed.
+  - **Ties and counters.** Ties use the stable point id. Logits, physical posting slots, visibility probes and
+    vectors scored are separate counters.
+- **§2, build.**
+  - **The quantities.** B = max(2, ⌊2n / b_max⌋) and S = min(n, ⌊B · b_max / 10⌋), with S distinct ids drawn
+    uniformly from canonical input order.
+  - **Rejection.** A configuration with S < B or S = n (no holdout) is rejected before training.
+  - **The entropy baseline.** H_init is the arithmetic mean entropy, in bits, over the unselected initial points.
+    It is fixed and saved with the initial publication.
+- **§3, operations.**
+  - **Counts.** Every budget and maintenance decision uses visible (live) counts. Retained physical postings and
+    tombstones are tracked separately.
+  - **Removing an empty bucket.** It is removed at a successful maintenance once no retained posting in it can be
+    visible to an older snapshot. In PostgreSQL, publication is deferred otherwise; Qdrant never defers. Deferred
+    removals are reported.
+  - **An all-empty index** is an idle state that keeps the last routing shape.
+- **§4, cadence.**
+  - **When.** Once after every committed plan batch, after its inserts and deletes and before overflow handling or
+    the query sweep.
+  - **What it observes.** Entropy is computed over the batch's inserted vectors, under the pre-maintenance router;
+    an empty insert set has no entropy observation. Size and growth use the post-batch live census. Growth and lazy
+    removal are evaluated even after a delete-only batch.
+  - **The decision.** At most one path is taken, and both trigger flags are recorded.
+- **§4.2, splitting.**
+  - **Order and labels.** Overflowing buckets are processed in ascending id. Sampling is without replacement. The
+    parent keeps its id and row, and the k − 1 new ids are appended in order.
+  - **Replay quotas.** R is split as evenly as possible over the non-affected non-empty buckets. Remainder slots go
+    to ascending ids, and unused quota is redistributed in that order until R or the eligible population is
+    exhausted. Sampling is without replacement within each bucket, with labels = stored assignments.
+  - **Reinsertion.** Affected points are reinserted by argmax over the full new router. Every untouched assignment
+    is preserved, even when an affected point enters an untouched bucket.
+  - **Residual overflow** is reported, and handled at the next batch.
+- **§4.3, DEDRIFT.**
+  - **The selection.**
+    - **The largest.** k = round_half_even(0.5 · B), clamped to [1, B] (as `cli_ablation`). If at most k buckets
+      are non-empty, nothing is done.
+    - **The median.** μ is the **lower** median of the non-empty sizes (as `torch.median`).
+    - **The smallest.** k₂ = clamp(⌈Σ sizes of B1 / μ⌉, k, B). The k₂ − k smallest non-empty buckets not in B1 are
+      added, then every bucket above b_max.
+    - **Ties.** In both the largest and the smallest selection, the **lower** stable id wins. G5 parity with
+      `cli_ablation` is claimed for distinct sizes only.
+  - **Clustering.** k_new = ⌈2N / b_max⌉. The sample is min(N, ⌊0.1 · b_max · k_new⌋), without replacement (as
+    `cli_ablation`). Spherical k-means runs 20 iterations. A configuration with more clusters than sampled vectors is
+    rejected.
+  - **Labels and neurons.** Cluster labels go first to the selected ids in ascending order, then to new ids.
+    Reused rows are kept. Each new row and bias copies the pre-maintenance argmax donor of that cluster's k-means
+    centroid. That is the true centroid: a declared deviation from `cli_ablation`'s sample-mean proxy.
+  - **The baseline reset.** B_last is reset to the final allocated count only after a successful recluster
+    publication.
+- **§5, CLI-I.** max_live · B_allocated · 1000 ≥ 8000 · live, overflow-safe. It is evaluated after the batch's
+  mutations and before splitting or removal, over all allocated buckets including empties. live = 0 never fires.
+- **§6, parameters.**
+  - **Replay size.** R = ⌊n_init / 20⌋, capped by the eligible population.
+  - **Determinism.** Base seed 42, with the sampling, initial-weight, clustering and shuffling streams pinned per
+    engine before the freeze, together with the library versions and thread counts. Each engine is deterministic on
+    its pinned runtime.
+  - **Across engines.** Deterministic parts are compared exactly, and numerical parts within a frozen tolerance.
+- **§7, the record.**
+  - **Correctness.** Membership (every visible id in exactly one bucket; each reassigned point at its argmax;
+    untouched points unchanged; the totals) and exact-oracle coverage are checked separately.
+  - **Engine diagnostics.** Router digest, publication outcome, realized sampling seeds and hashes, and the
+    engine-specific costs (PostgreSQL: slots, invisible postings, tombstones, visibility probes, WAL and phase
+    durations; Qdrant: dead postings, commit and flush durations).
 
 ## 1. The index
 - **Structure.** One flat learned index: an MLP router d → 128 (ReLU) → |B| [T §2.1], over |B| mutable buckets that
@@ -79,11 +149,11 @@ pinned by commit and SHA-256.
    - **The median.** μ is the median of the non-empty sizes, taking the *lower* middle value for an even count (as
      `torch.median` does).
    - **The smallest buckets.** k₂ = clamp(⌈|B1 sizes| / μ⌉, k, |B|). B2 = the k₂ − k smallest non-empty buckets
-     not in B1 (ties by higher bucket id first, as the code iterates the reversed sort).
+     not in B1 (ties: see §0).
    - **The selection.** B1 ∪ B2 ∪ {every bucket with size > b_max}.
 2. **Recluster.** The selected vectors are pooled (N of them) and reclustered by spherical k-means into
-   k_new = ⌈N / (0.5 · b_max)⌉ clusters (thesis Alg. 4 l. 7; the code's default fill ratio is 1.0, and this spec
-   follows the thesis).
+   k_new = ⌈N / (0.5 · b_max)⌉ clusters (thesis Alg. 4 l. 7; `cli_ablation`'s example config sets the same fill
+   ratio, 0.5).
    - **The k-means sample.** min(N, ⌊0.1 · b_max · k_new⌋) vectors (eq. 2.2's ratio, as in the code), seeded.
    - **Labels.** Every pooled vector is labelled by its nearest centroid.
 3. **Initialize the new neurons.** Each new bucket's neuron copies the weights of the bucket that its centroid routes
