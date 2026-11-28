@@ -74,3 +74,27 @@ both routings score the same normalized f32 vectors.
 - Stage A: in memory, with no segment lifecycle and no latency.
 - The control's growth-only trigger is not the same drift policy as the MLP's entropy trigger.
 - Raw-Float16 gold. The routings are compared with each other, not with the final-benchmark arms.
+
+## Addendum: the MLP under spec v3 replay (2% of live), 2026-11-28
+- **The run.** The MLP arm was re-run with R_t = ⌊0.02 · live_t⌋ (code `f8515a9fe`; the binary is the same perf
+  build). The centroid runs above are unchanged, because centroid routing has no replay.
+- **The archive.** `Research-Results/2026-11-28-cli-replay-v3/`, verified.
+
+| Plan | R (centroid / MLP), v2 replay | R, v3 replay | MLP W@0.90 last batch, v2 → v3 | MLP L_route mean, v2 → v3 | MLP reclusters, v2 → v3 | Fine-tune seconds, v2 → v3 |
+|---|---|---|---|---|---|---|
+| I1 Insert-only | 0.508 [0.470, 0.567] | 0.556 [0.489, 0.609] | 12,326 → 10,429 | 0.33 → 0.27 | 0 → 0 | 1,231 → 1,692 |
+| S1 Shift | 0.534 [0.489, 0.595] | **0.351** [0.316, 0.391] | 21,496 → 19,831 | 0.40 → 0.26 | 3 (batches 3–5) → 1 (batch 3) | 210 → 590 |
+
+- **Forgetting.** The larger replay reduces it, as intended: mean L_route falls by 0.06–0.14.
+- **Insert-only.** The MLP gains slightly, but still needs about 1.8× the centroid control's work.
+- **Shift: worse.**
+  - **Fewer reclusters.** With more replay, the router's batch entropy rises less, and the entropy trigger fires
+    only once (batch 3) instead of three times (batches 3–5).
+  - **Work.** Without those reclusters, the MLP's W@0.90 grows to 69–77K in batches 13–17, against 33–38K under
+    v2.
+  - **Batch 18.** The drop there to about 18–22K appears under both replays and for the centroid control, so it
+    is plan-driven, not maintenance.
+- **The reading.** Replay size trades forgetting against the entropy trigger's sensitivity. Under neither setting
+  does the MLP router match centroid routing on these two plans.
+  - **Where the gap comes from.** Its origin is visible already at build: 4.2K vs 3.6K on I1, and 13.9K vs 9.9K on
+    S1. That matches the 1M LMI-versus-IVF routing ablation.
