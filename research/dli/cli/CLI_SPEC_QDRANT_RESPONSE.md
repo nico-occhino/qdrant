@@ -35,3 +35,10 @@
 - **The PostgreSQL-only deferral rule.** Bucket removal and publication are deferred while an invisible posting may
   still be needed by an older snapshot. It is a correctness requirement there, and it is consistent with §3 as
   accepted.
+
+## Author decision (2026-11-28)
+- **Approved:** the PostgreSQL CLI design at `e17cd3164` (`CLI_PG_DESIGN.md`, SHA-256 `ee990f2b…0d4741`). That is
+  one mutable relation, replacement pages plus a new LMI1 model, one transactional selector, publication deferred
+  while an invisible posting may still be needed by an older snapshot, and training out of process.
+- **What it permits.** Native PostgreSQL CLI code may start. There is still no MetaCentrum job, no measured data and
+  no freeze until the author freezes spec v2.
