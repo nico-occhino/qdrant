@@ -534,4 +534,28 @@ Authorised by the author ("analyze, document and try again"). Details are in `RE
 - **A3.5 Walltimes.**
   - **What the pilot showed.** Static 10,000-bucket runs are dominated by Qdrant's per-batch index build: S-LMI took
     10.2 h of its 12 h walltime and IVF 6.6 h. Primary panels have 1,000 queries instead of 64.
-  - **What we set.** Stage 2 and the primary request 24 h for the static arms, and 12 h for the others.
+  - **What we set.** Stage 2 and the primary request 24 h for the static arms, and 12 h for the others. For the W3
+    primary, A4.2 replaces this with 48 h.
+
+### A4 (2026-11-28, after the stage-2 validation data; validation panels only, no test panel read)
+- **A4.1 What stage 2 showed** ([RESULTS_SELECTION_STAGE2.md](RESULTS_SELECTION_STAGE2.md)).
+  - Every gate passes.
+  - The pilot evaluated 64 queries per validation panel; the primary evaluates the 1,000-query test panels.
+  - Per batch, the records separate ingest (`ingest_seconds`) from query evaluation (`frontier_seconds` +
+    `timed_seconds`). Scaling only query evaluation by 1,000/64 projects W3 to 12.6 h (E1), 21.0 h (DLI-best), 25.2 h
+    (S-LMI 10,000), 24.0 h (IVF 10,000) and 3.0 h (HNSW 16).
+  - At A3.5's walltimes (12 h, and 24 h for the static arms), W3 E1, DLI-best and S-LMI would exceed them, and IVF
+    would reach its limit. W1 and W2 project to ≤ 4 h per arm.
+- **A4.2 Walltimes (replaces A3.5 for W3 only).**
+  - **W3:** E1, DLI-best, S-LMI and IVF request **48 h**; HNSW keeps 12 h.
+  - **W1 and W2:** unchanged (24 h static, 12 h otherwise).
+  - **The basis.** §11's rule (1.5× the longest runtime) applied to the projection gives about 19 h, 32 h, 38 h and
+    36 h. 48 h covers each, with margin for host variation: the W3 static arms ran on different node types.
+- **A4.3 Nothing else changes.** Jobs, plans, panels, grids, gates and analysis are as before; only the requested
+  walltime differs. A job that still exceeds 48 h is an infrastructure failure under §6, reported and not silently
+  rerun. Windowed evaluation was considered and rejected: every window replays the stream from batch 0, so the
+  static arms' ingest (12 h for S-LMI) would be paid per window.
+- **A4.4 Submission.** Arm jobs depend on their plan job (`-W depend=afterok:`). Stage 2 met a PBS dependency system
+  hold, so a held arm may be cancelled and resubmitted once its plan job has completed. Each such resubmission is
+  recorded in `PBS_MANIFEST.json`, and every primary submission still needs the author's explicit authorisation
+  (§12).
