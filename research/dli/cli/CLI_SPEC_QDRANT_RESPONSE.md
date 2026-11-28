@@ -42,3 +42,10 @@
   while an invisible posting may still be needed by an older snapshot, and training out of process.
 - **What it permits.** Native PostgreSQL CLI code may start. There is still no MetaCentrum job, no measured data and
   no freeze until the author freezes spec v2.
+
+## Author amendment (2026-11-28): spec v3, replay = 2% of the live index
+- **The rule.** R_t = ⌊0.02 · live_t⌋ at each maintenance, capped by the eligible population. It replaces
+  ⌊n_init / 20⌋; see the spec, §0.
+- **Why.** The Stage A centroid control (`RESULTS_CENTROID_CONTROL.md`).
+- **Timing.** Set after that descriptive diagnostic, before any benchmark data or freeze. PostgreSQL's trainer must
+  take R_t per maintenance from the live census.

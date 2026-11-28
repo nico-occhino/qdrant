@@ -140,6 +140,12 @@ fn cli_stage_a_plan() {
     drop(bytes);
     let mut params = CliParams::thesis(b_max, routing, signal);
     params.threads = std::env::var("CLI_THREADS").map_or(8, |v| v.parse().unwrap());
+    // CLI_REPLAY: "v3" (default, 2% of live) or "v2" (⌊n_init / 20⌋, the rule of the first centroid control).
+    params.replay_permille = match std::env::var("CLI_REPLAY").as_deref().unwrap_or("v3") {
+        "v3" => Some(20),
+        "v2" => None,
+        r => panic!("CLI_REPLAY {r}"),
+    };
     let mut rows = std::fs::File::create(out.join("rows.jsonl")).unwrap();
     let mut log = std::fs::File::create(out.join("batches.jsonl")).unwrap();
     let mut core: Option<CliCore> = None;
@@ -180,7 +186,7 @@ fn cli_stage_a_plan() {
             }
         }
         let record = serde_json::json!({"batch": t, "routing": format!("{routing:?}"), "signal": format!("{signal:?}"),
-            "b_max": b_max, "maintenance": rec, "buckets": c.buckets(), "batch_seconds": started.elapsed().as_secs_f64(),
+            "b_max": b_max, "replay_permille": params.replay_permille, "maintenance": rec, "buckets": c.buckets(), "batch_seconds": started.elapsed().as_secs_f64(),
             "eval_seconds": eval_started.elapsed().as_secs_f64()});
         writeln!(log, "{record}").unwrap();
         println!("CLI_BATCH {record}");

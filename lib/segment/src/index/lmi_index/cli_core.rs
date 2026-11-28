@@ -43,12 +43,14 @@ pub struct CliParams {
     pub routing: RoutingKind,
     /// k-means assignment threads (labels are bit-identical for every thread count).
     pub threads: usize,
+    /// Replay size (spec §0): `Some(20)` = v3's ⌊0.02 · live_t⌋; `None` = v2's ⌊n_init / 20⌋.
+    pub replay_permille: Option<usize>,
 }
 
 impl CliParams {
     /// Spec §2 and Table 3.2 defaults at a given b_max.
     pub fn thesis(b_max: usize, routing: RoutingKind, signal: DriftSignal) -> Self {
-        Self { b_max, hidden: 128, build_epochs: 30, finetune_epochs: 20, batch_size: 256, seed: 42, signal, routing, threads: 8 }
+        Self { b_max, hidden: 128, build_epochs: 30, finetune_epochs: 20, batch_size: 256, seed: 42, signal, routing, threads: 8, replay_permille: Some(20) }
     }
 }
 
@@ -97,7 +99,8 @@ pub struct CliCore<'a> {
     buckets: Vec<Vec<u32>>,
     h_init: f64,
     buckets_last: usize,
-    replay_size: usize,
+    /// v2 replay size, ⌊n_init / 20⌋, used when `params.replay_permille` is `None`.
+    replay_fixed: usize,
     rng: StdRng,
     /// Entropies of the current batch's inserts (MLP only).
     batch_entropy: Vec<f64>,
@@ -193,7 +196,7 @@ impl<'a> CliCore<'a> {
             buckets: vec![Vec::new(); b],
             h_init: 0.0,
             buckets_last: b,
-            replay_size: n / 20,
+            replay_fixed: n / 20,
             rng,
             batch_entropy: Vec::new(),
             stopped: AtomicBool::new(false),
@@ -289,10 +292,15 @@ impl<'a> CliCore<'a> {
     fn replay(&mut self, affected: &[usize]) -> (Vec<u32>, Vec<i64>) {
         let sizes = self.census();
         let eligible: Vec<usize> = (0..sizes.len()).filter(|b| !affected.contains(b) && sizes[*b] > 0).collect();
-        if eligible.is_empty() || self.replay_size == 0 {
+        let live: usize = sizes.iter().sum();
+        let want = match self.params.replay_permille {
+            Some(permille) => live * permille / 1000,
+            None => self.replay_fixed,
+        };
+        if eligible.is_empty() || want == 0 {
             return (Vec::new(), Vec::new());
         }
-        let target = self.replay_size.min(eligible.iter().map(|&b| sizes[b]).sum());
+        let target = want.min(eligible.iter().map(|&b| sizes[b]).sum());
         let mut quota = vec![0usize; eligible.len()];
         let mut left = target;
         while left > 0 {

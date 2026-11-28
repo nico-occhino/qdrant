@@ -1,6 +1,6 @@
 # CLI shared algorithm specification (Qdrant and PostgreSQL)
 
-**Status: DRAFT v2 for cross-engine agreement** (v2, 2026-11-28: PostgreSQL's review at `e17cd3164` and the Qdrant
+**Status: DRAFT v3 for cross-engine agreement** (v3, 2026-11-28: the replay amendment in §0. v2, 2026-11-28: PostgreSQL's review at `e17cd3164` and the Qdrant
 response [CLI_SPEC_QDRANT_RESPONSE.md](CLI_SPEC_QDRANT_RESPONSE.md); §0 supersedes the text below where they differ). No CLI code or data exists yet. Each engine freezes its own CLI
 amendment (Qdrant: final-benchmark §3.6 and A5) only after both sides accept this text, or an amended version
 pinned by commit and SHA-256.
@@ -68,7 +68,14 @@ pinned by commit and SHA-256.
 - **§5, CLI-I.** max_live · B_allocated · 1000 ≥ 8000 · live, overflow-safe. It is evaluated after the batch's
   mutations and before splitting or removal, over all allocated buckets including empties. live = 0 never fires.
 - **§6, parameters.**
-  - **Replay size.** R = ⌊n_init / 20⌋, capped by the eligible population.
+  - **Replay size (v3, author amendment 2026-11-28).** R_t = ⌊0.02 · live_t⌋, where live_t is the live count at
+    that maintenance's census, capped by the eligible population.
+    - **The replay is proportional to the current index, not to the build.** v2's ⌊n_init / 20⌋ stayed fixed, at
+      5,000 on a 100K build, while the index grew to 1M and more than 1,500 buckets.
+    - **Why it changed.** Qdrant's Stage A centroid control (`RESULTS_CENTROID_CONTROL.md`, descriptive) showed
+      routing-accuracy loss of 0.42–0.50 and an MLP that needed about 2× the centroid control's work under v2.
+    - **The comparison with the thesis.** Its 5,000 at 300K is 1.7% of the index. v3 at 1M gives 20,000.
+    - **Disclosure.** It was set after that diagnostic and before any benchmark data or freeze.
   - **Determinism.** Base seed 42, with the sampling, initial-weight, clustering and shuffling streams pinned per
     engine before the freeze, together with the library versions and thread counts. Each engine is deterministic on
     its pinned runtime.
@@ -185,7 +192,7 @@ pinned by commit and SHA-256.
 - **b_max and the budget grid.** b_max is chosen by a selection pilot on seed 20261202's validation panels, from
   {500, 1,000, 2,000}, with the lowest mean validation W@0.90, as the final benchmark's §8. The budget grid is the
   final benchmark's.
-- **R, the replay size.** The thesis uses 5,000 at 300K and the code 50,000. Proposal: R = 0.05 · |D_init|, which is
+- **R, the replay size.** Superseded by §0 (v3): R_t = ⌊0.02 · live_t⌋. Original text: the thesis uses 5,000 at 300K and the code 50,000. Proposal: R = 0.05 · |D_init|, which is
   5,000 at a 100K build.
 - **Seeds.** k-means, sampling and initialisation use seed 42, as the thesis does.
 
