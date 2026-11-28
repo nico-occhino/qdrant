@@ -1,0 +1,109 @@
+#!/bin/bash
+#PBS -N cli
+#PBS -l select=1:ncpus=8:mem=96gb:scratch_ssd=60gb:cpu_vendor=amd
+#PBS -j oe
+#
+# CLI selection pilot (research/dli/cli/CLI_PILOT_PREREGISTRATION.md). One job per (workload, b_max).
+#   qsub -l walltime=24:00:00 -v WORKLOAD=W1|W2|W3,BMAX=500|1000|2000,IN=<staged dir> cli.pbs
+set -euo pipefail
+: "${PBS_JOBID:?must run under PBS}" "${SCRATCHDIR:?scratch_ssd required}" "${WORKLOAD:?}" "${BMAX:?}" "${IN:?}"
+ROOT=/storage/budejovice1/home/nico/lmi-metacentrum
+FB="$ROOT/final-benchmark-20261126"
+CR="$ROOT/cli-20261128"
+BINCACHE="$ROOT/dli-emma-path-20261120/bin-cache"
+CORPUS="$ROOT/results/sisap23-matched-final-20261028-01/corpus.f16le"
+PREFIX_BYTES=1536000000
+PREFIX_SHA=6e1c72378fee6a1018b7c131d9f171e51dd6e167d81e25d62116fb5a229b1df2
+SEED=20261202
+case "$WORKLOAD" in
+  W1) SCENARIO=insert_only; VAL=val ;;
+  W2) SCENARIO=constant_r;  VAL=val ;;
+  W3) SCENARIO=shift;       VAL=mq_val,ids_val,ood_val ;;
+  *) echo "unknown WORKLOAD"; exit 2 ;;
+esac
+case "$BMAX" in 500|1000|2000) ;; *) echo "BMAX is not a preregistered candidate"; exit 2 ;; esac
+EXPECTED_COMMIT=$(cat "$IN/native.commit")
+LABEL="pilot-$WORKLOAD-$SEED-bmax$BMAX"
+OUT="$CR/results/cli-$LABEL-$PBS_JOBID"
+mkdir -p "$CR/results"; mkdir "$OUT"
+exec > >(tee "$OUT/job.log") 2>&1
+W="$SCRATCHDIR/work"
+phase=start
+finish() {
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    printf '{"job":"%s","label":"%s","phase":"%s","exit":%d,"utc":"%s"}\n' "$PBS_JOBID" "$LABEL" "$phase" "$rc" "$(date -u +%FT%TZ)" > "$OUT/FAILED.json"
+    for f in "$W"/out/*.jsonl "$W"/run.log; do [[ -f "$f" ]] && cp -n "$f" "$OUT/partial-$(basename "$f")" || true; done
+  fi
+  rm -rf "$W"
+  exit $rc
+}
+trap finish EXIT
+echo "START $(date -u +%FT%TZ) host=$(hostname) job=$PBS_JOBID label=$LABEL commit=$EXPECTED_COMMIT"
+{ lscpu; free -g; df -h "$SCRATCHDIR"; } > "$OUT/hardware.txt"
+phase=verify_inputs
+( cd "$IN" && sha256sum -c inputs.sha256 )
+phase=environment
+source "$ROOT/development-search-timeout-24900597-20261026/sisap23-build-environment-v1.sh"
+sisap23_export_build_environment
+sisap23_load_build_modules
+sisap23_check_build_environment | tee "$OUT/toolchain.txt"
+PY="$SISAP23_PYTHON_ENV/bin/python"
+phase=stage
+git() { command git -c filter.lfs.smudge= -c filter.lfs.clean= -c filter.lfs.process= -c filter.lfs.required=false "$@"; }
+export GIT_LFS_SKIP_SMUDGE=1
+mkdir -p "$W/data"
+git clone --quiet --no-checkout "$IN/source.bundle" "$W/qdrant"
+git -C "$W/qdrant" checkout --quiet --detach "$EXPECTED_COMMIT"
+test "$(git -C "$W/qdrant" rev-parse HEAD)" = "$EXPECTED_COMMIT"
+test -z "$(git -C "$W/qdrant" status --porcelain)"
+HERE="$W/qdrant/research/dli/cli"
+"$PY" -I "$HERE/test_analyze_pilot.py" > "$OUT/python-tests.log"
+head -c "$PREFIX_BYTES" "$CORPUS" > "$W/data/vectors.f16"
+echo "$PREFIX_SHA  $W/data/vectors.f16" | sha256sum -c -
+cp -r "$FB/plans/$WORKLOAD-$SEED" "$W/plan"; chmod -R u+w "$W/plan"
+"$PY" -I -c "
+import json,sys,hashlib,pathlib
+d=pathlib.Path(sys.argv[1]); m=json.load(open(d/'plan.json'))
+bad=[f for f,h in m['files'].items() if hashlib.sha256((d/f).read_bytes()).hexdigest()!=h]
+assert not bad, bad; assert m['seed']==int(sys.argv[2]) and m['scenario']==sys.argv[3], 'plan identity'
+print('plan verified:', len(m['files']), 'files, seed', m['seed'], m['scenario'])" "$W/plan" "$SEED" "$SCENARIO" | tee "$OUT/plan-check.txt"
+sha256sum "$W/plan/plan.json" | tee "$OUT/plan.json.sha256"
+phase=build
+tar -C "$W" -xf "$IN/vendor.tar"
+mkdir -p "$W/qdrant/.cargo"
+sed "s|__VENDOR_DIR__|$W/vendor|" "$IN/cargo-config.toml" > "$W/qdrant/.cargo/config.toml"
+cd "$W/qdrant"
+SRC_KEY=$(git rev-parse HEAD:lib HEAD:src HEAD:Cargo.toml HEAD:Cargo.lock | sha256sum | cut -c1-24)
+CACHE="$BINCACHE/$SRC_KEY-cli"
+echo "source key $SRC_KEY" | tee "$OUT/source-key.txt"
+if [[ -f "$CACHE/cli.sha256" ]] && ( cd "$CACHE" && sha256sum -c --quiet cli.sha256 ); then
+  BIN="$W/cli-cached"; cp "$CACHE/cli" "$BIN"; echo "binary from cache" | tee -a "$OUT/source-key.txt"
+else
+  export CARGO_TARGET_DIR="$W/target" CARGO_BUILD_JOBS=$NCPUS
+  /usr/bin/time -v cargo test --locked --offline --profile perf -p segment --features testing,lmi-training,cli-research \
+      --test cli_stage_a --no-run > "$OUT/build.stdout" 2> "$OUT/build.stderr"
+  BIN=$(ls -t "$W/target/perf/deps"/cli_stage_a-* | grep -v '\.d$' | head -1)
+  mkdir -p "$CACHE.tmp-$PBS_JOBID"; cp "$BIN" "$CACHE.tmp-$PBS_JOBID/cli"
+  ( cd "$CACHE.tmp-$PBS_JOBID" && sha256sum cli > cli.sha256 )
+  [[ -e "$CACHE" ]] || mv "$CACHE.tmp-$PBS_JOBID" "$CACHE"
+fi
+sha256sum "$BIN" | tee "$OUT/binary.sha256"
+QDRANT_LMI_SAMPLE_BUDGET_BYTES=2000000000 "$BIN" --exact cli_core_synthetic_loop > "$OUT/unit-tests.log" 2>&1
+grep -q "test result: ok. 1 passed" "$OUT/unit-tests.log"
+phase=run
+QDRANT_LMI_SAMPLE_BUDGET_BYTES=2000000000 CLI_PLAN="$W/plan" CLI_CORPUS="$W/data/vectors.f16" CLI_SET="$VAL" CLI_OUT="$W/out" \
+  CLI_ROUTING=mlp CLI_SIGNAL=entropy CLI_BMAX="$BMAX" CLI_REPLAY=v3 CLI_STORED_F16=1 CLI_THREADS="$NCPUS" OMP_NUM_THREADS="$NCPUS" \
+  /usr/bin/time -v "$BIN" --ignored --exact cli_stage_a_plan --nocapture > "$W/run.log" 2>&1
+cp "$W/run.log" "$W/out/rows.jsonl" "$W/out/batches.jsonl" "$OUT/"
+phase=analysis
+GATE_OK=1
+"$PY" -I "$HERE/analyze_pilot.py" --run "$WORKLOAD:$BMAX=$OUT" --out "$OUT/analysis.json" > "$OUT/analysis.txt" || GATE_OK=0
+"$PY" -I -c "import json,sys; r=json.load(open(sys.argv[1])); sys.exit(0 if all(v['gates']['pass'] for v in r['runs'].values()) else 1)" "$OUT/analysis.json" || GATE_OK=0
+phase=persist
+( cd "$OUT" && find . -type f ! -name SHA256SUMS ! -name job.log -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS )
+( cd "$OUT" && sha256sum -c --quiet SHA256SUMS )
+[[ $GATE_OK = 1 ]] || { phase=gates_failed; echo "a gate failed; data kept"; exit 1; }
+printf '{"job":"%s","label":"%s","commit":"%s","utc":"%s","status":"COMPLETED (not ACCEPTED until reviewed)"}\n' "$PBS_JOBID" "$LABEL" "$EXPECTED_COMMIT" "$(date -u +%FT%TZ)" > "$OUT/COMPLETE.json"
+phase=done
+echo "COMPLETE $(date -u +%FT%TZ)"

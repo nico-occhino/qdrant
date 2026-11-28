@@ -8,7 +8,11 @@
 //!   on one validation panel, plus the maintenance record. It is driven by environment variables:
 //!   `CLI_PLAN`, `CLI_CORPUS` (Float16, 768-d, row = id − 1), `CLI_SET`, `CLI_OUT` (must not exist),
 //!   `CLI_ROUTING` (mlp | centroid), `CLI_SIGNAL` (entropy | imbalance), `CLI_BMAX` (default 1000),
-//!   `CLI_MAX_BATCHES` (optional) and `CLI_THREADS` (default 8).
+//!   `CLI_MAX_BATCHES` (optional), `CLI_THREADS` (default 8), `CLI_REPLAY` (v3 | v2) and `CLI_STORED_F16`
+//!   (1: round each normalized row through Float16, Qdrant's stored Cosine representation, which final-benchmark G1
+//!   gold assumes). `CLI_SET` may list several panels, comma-separated. When a panel carries tie sets (final-benchmark
+//!   plans), rows also record `recall30_g1`: distinct returned top-30 ids in the tie set, capped at 30 (final-benchmark
+//!   §2.3). Only the corpus prefix the plan needs is read.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -20,8 +24,11 @@ use segment::index::lmi_index::cli_core::{CliCore, CliParams, RoutingKind};
 
 const DIM: usize = 768;
 const K: usize = 30;
-const BUDGETS: [usize; 17] =
-    [1000, 2000, 3500, 5000, 7000, 10000, 14000, 20000, 28000, 40000, 50000, 56000, 80000, 113000, 160000, 226000, 320000];
+/// The Phase 3 / final-benchmark grid, plus 2,000,000: a gate-only exhaustive budget (the known answer, G1 = 1).
+const BUDGETS: [usize; 18] = [
+    1000, 2000, 3500, 5000, 7000, 10000, 14000, 20000, 28000, 40000, 50000, 56000, 80000, 113000, 160000, 226000, 320000,
+    2_000_000,
+];
 
 fn normalize(v: &mut [f32]) {
     let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -101,7 +108,8 @@ fn cli_stage_a_plan() {
     let plan_dir = PathBuf::from(var("CLI_PLAN"));
     let out = PathBuf::from(var("CLI_OUT"));
     std::fs::create_dir(&out).expect("CLI_OUT must not exist");
-    let set = var("CLI_SET");
+    let sets: Vec<String> = var("CLI_SET").split(',').map(str::to_owned).collect();
+    let stored_f16 = std::env::var("CLI_STORED_F16").as_deref() == Ok("1");
     let routing = match var("CLI_ROUTING").as_str() {
         "mlp" => RoutingKind::Mlp,
         "centroid" => RoutingKind::Centroid,
@@ -126,8 +134,11 @@ fn cli_stage_a_plan() {
         })
         .collect();
     let max_id = streams.iter().flat_map(|(i, _)| i.iter()).copied().max().unwrap() as usize;
-    let bytes = std::fs::read(var("CLI_CORPUS")).unwrap();
-    assert!(bytes.len() >= max_id * DIM * 2, "corpus shorter than the plan's ids");
+    let mut bytes = vec![0u8; max_id * DIM * 2];
+    {
+        use std::io::Read;
+        std::fs::File::open(var("CLI_CORPUS")).unwrap().read_exact(&mut bytes).expect("corpus shorter than the plan's ids");
+    }
     let mut vectors = vec![0f32; (max_id + 1) * DIM];
     for id in 1..=max_id {
         let src = &bytes[(id - 1) * DIM * 2..id * DIM * 2];
@@ -136,6 +147,9 @@ fn cli_stage_a_plan() {
             *d = f16::from_le_bytes([b[0], b[1]]).to_f32();
         }
         normalize(dst);
+        if stored_f16 {
+            dst.iter_mut().for_each(|x| *x = f16::from_f32(*x).to_f32());
+        }
     }
     drop(bytes);
     let mut params = CliParams::thesis(b_max, routing, signal);
@@ -165,28 +179,40 @@ fn cli_stage_a_plan() {
             }
         };
         let c = core.as_ref().unwrap();
-        let spec = &batches[t]["sets"][&set];
-        let qn = spec["n"].as_u64().unwrap() as usize;
-        let qbytes = std::fs::read(plan_dir.join(spec["queries"].as_str().unwrap())).unwrap();
-        let gold: Vec<u64> = std::fs::read(plan_dir.join(spec["gold"].as_str().unwrap()))
-            .unwrap()
-            .chunks_exact(8)
-            .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
-            .collect();
         let eval_started = std::time::Instant::now();
-        for q in 0..qn {
-            let mut query: Vec<f32> =
-                qbytes[q * DIM * 4..(q + 1) * DIM * 4].chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
-            normalize(&mut query);
-            let g: std::collections::HashSet<u64> = gold[q * K..(q + 1) * K].iter().copied().collect();
-            for ((scored, top), budget) in c.search(&query, &BUDGETS, K).into_iter().zip(BUDGETS) {
-                let hit = top.iter().filter(|&&id| g.contains(&(id as u64))).count();
-                writeln!(rows, "{}", serde_json::json!({"batch": t, "set": set, "query": q, "budget": budget,
-                    "scored": scored, "recall30": hit})).unwrap();
+        let read_u64 = |p: &str| -> Vec<u64> {
+            std::fs::read(plan_dir.join(p)).unwrap().chunks_exact(8).map(|b| u64::from_le_bytes(b.try_into().unwrap())).collect()
+        };
+        for set in &sets {
+            let spec = &batches[t]["sets"][set];
+            let qn = spec["n"].as_u64().unwrap() as usize;
+            let qbytes = std::fs::read(plan_dir.join(spec["queries"].as_str().unwrap())).unwrap();
+            let gold = read_u64(spec["gold"].as_str().unwrap());
+            let ties: Option<Vec<std::collections::HashSet<u64>>> = spec["tie"].as_str().map(|tie| {
+                let (ids, off) = (read_u64(tie), read_u64(spec["tie_offsets"].as_str().unwrap()));
+                assert_eq!(off.len(), qn + 1, "{set}: tie offsets");
+                off.windows(2).map(|w| ids[w[0] as usize..w[1] as usize].iter().copied().collect()).collect()
+            });
+            for q in 0..qn {
+                let mut query: Vec<f32> = qbytes[q * DIM * 4..(q + 1) * DIM * 4]
+                    .chunks_exact(4)
+                    .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+                    .collect();
+                normalize(&mut query);
+                let g: std::collections::HashSet<u64> = gold[q * K..(q + 1) * K].iter().copied().collect();
+                for ((scored, top), budget) in c.search(&query, &BUDGETS, K).into_iter().zip(BUDGETS) {
+                    let hit = top.iter().filter(|&&id| g.contains(&(id as u64))).count();
+                    let g1 = ties.as_ref().map(|t| {
+                        let mut seen = std::collections::HashSet::new();
+                        top.iter().take(K).filter(|&&id| t[q].contains(&(id as u64)) && seen.insert(id)).count().min(K)
+                    });
+                    writeln!(rows, "{}", serde_json::json!({"batch": t, "set": set, "query": q, "budget": budget,
+                        "scored": scored, "recall30": hit, "recall30_g1": g1})).unwrap();
+                }
             }
         }
         let record = serde_json::json!({"batch": t, "routing": format!("{routing:?}"), "signal": format!("{signal:?}"),
-            "b_max": b_max, "replay_permille": params.replay_permille, "maintenance": rec, "buckets": c.buckets(), "batch_seconds": started.elapsed().as_secs_f64(),
+            "b_max": b_max, "stored_f16": stored_f16, "live": c.census().iter().sum::<usize>(), "replay_permille": params.replay_permille, "maintenance": rec, "buckets": c.buckets(), "batch_seconds": started.elapsed().as_secs_f64(),
             "eval_seconds": eval_started.elapsed().as_secs_f64()});
         writeln!(log, "{record}").unwrap();
         println!("CLI_BATCH {record}");
