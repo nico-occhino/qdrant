@@ -5,6 +5,8 @@
 mod build;
 #[cfg(feature = "cli-research")]
 pub mod cli;
+#[cfg(all(feature = "cli-research", feature = "lmi-training"))]
+pub mod cli_core;
 mod build_plan;
 mod config;
 pub mod filtered;

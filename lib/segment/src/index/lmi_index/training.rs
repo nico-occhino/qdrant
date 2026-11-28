@@ -521,6 +521,21 @@ fn train_labeled_with_tch(
     dim: usize,
     config: &LmiConfig,
     stopped: &AtomicBool,
+    observer: Option<&mut dyn FnMut(usize, f64, f64, f64)>,
+) -> OperationResult<TrainedRouter> {
+    train_labeled_from(data, labels, dim, config, None, stopped, observer)
+}
+
+/// As [`train_labeled_with_tch`], but optionally starting from `init`'s weights (CLI fine-tuning, spec §4.2 step 3),
+/// which must have shape dim → hidden_dim → n_buckets. `None` is exactly the original seeded random initialisation.
+/// The seeded RNG also drives the epoch shuffles, in both cases.
+pub(super) fn train_labeled_from(
+    data: &[f32],
+    labels: &[i64],
+    dim: usize,
+    config: &LmiConfig,
+    init: Option<&MlpRouter>,
+    stopped: &AtomicBool,
     mut observer: Option<&mut dyn FnMut(usize, f64, f64, f64)>,
 ) -> OperationResult<TrainedRouter> {
     check_process_stopped(stopped)?;
@@ -546,17 +561,39 @@ fn train_labeled_with_tch(
     );
     // Local Rust RNG avoids process-global Torch seeds and cross-build interference.
     let mut rng = StdRng::seed_from_u64(config.seed);
-    for (layer, input, output) in [
+    let init_layers: Option<[(Vec<f32>, Vec<f32>); 2]> = match init {
+        None => None,
+        Some(router) => match router.layers.as_slice() {
+            [RouterLayer::Linear(a), RouterLayer::ReLU, RouterLayer::Linear(b)]
+                if a.in_features == dim
+                    && a.out_features == config.hidden_dim
+                    && b.in_features == config.hidden_dim
+                    && b.out_features == config.n_buckets =>
+            {
+                Some([(a.weights.clone(), a.bias.clone()), (b.weights.clone(), b.bias.clone())])
+            }
+            _ => {
+                return Err(OperationError::service_error(
+                    "LMI fine-tune: initial router shape differs from the configuration",
+                ));
+            }
+        },
+    };
+    for (index, (layer, input, output)) in [
         (&mut first, dim, config.hidden_dim),
         (&mut last, config.hidden_dim, config.n_buckets),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let bound = (1.0 / input as f32).sqrt();
-        let weights: Vec<f32> = (0..input * output)
-            .map(|_| rng.random_range(-bound..bound))
-            .collect();
-        let biases: Vec<f32> = (0..output)
-            .map(|_| rng.random_range(-bound..bound))
-            .collect();
+        let (weights, biases): (Vec<f32>, Vec<f32>) = match &init_layers {
+            Some(layers) => layers[index].clone(),
+            None => (
+                (0..input * output).map(|_| rng.random_range(-bound..bound)).collect(),
+                (0..output).map(|_| rng.random_range(-bound..bound)).collect(),
+            ),
+        };
         tch::no_grad(|| -> Result<(), tch::TchError> {
             layer.ws.f_copy_(
                 &Tensor::f_from_slice(&weights)?.f_reshape([output as i64, input as i64])?,
