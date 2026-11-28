@@ -10,6 +10,10 @@ Updated 2026-11-27. Branch `research/uniform-questions-20261127` (worktree `~/wo
 ## Running jobs (this worktree; cap of 4)
 - `26076922` Q7 filtered-search fixture (frozen `e85c176f7`), 4 h, submitted 2026-11-28.
 
+## Local runs
+- **Q4(c)/(c′)** (Amendment A1, frozen `fda10150c`): replays of (b) and (a′), with snapshots 10–12 also evaluated
+  using PostgreSQL's level routers. Running in `~/research-admin/experiments/2026-11-27-uniform/q4c-local/`.
+
 ## Finished jobs
 - `26075075` **Q5 S2: validated.** Verdict not met (recovery 0.213); archived on C:.
 - `26075094` **Q5 I1: validated.** No firing; E1T = E1; archived on C:.
@@ -63,9 +67,9 @@ Updated 2026-11-27. Branch `research/uniform-questions-20261127` (worktree `~/wo
   and its snapshot topologies exactly.
   - **Batch 11.** The schedule explains the gap: S = −24.17 pp, with +1.67 pp remaining.
   - **Batch 10.** A topology-dependent residual remains (+10.42 pp at Qdrant's schedule).
-- **(c) is blocked.**
-  - **What it needs.** PostgreSQL's level-router weights (LMI1) at batches 10–12, for both schedules.
-  - **Author action.** Ask the PostgreSQL side (Codex) to export them.
+- **(c) and (c′): unblocked.** PostgreSQL exported its routers (`Q4_ROUTER_EXPORT.md`, `c68a606`). Amendment A1
+  adds the router import (known answer: export → import → rebuild reproduces every posting). The local run is in
+  progress.
 
 ## Q7. Filtering
 - **Fixture.** `q7_fixture.py` reproduces every value of PostgreSQL's spec (3ec4041).
@@ -75,6 +79,8 @@ Updated 2026-11-27. Branch `research/uniform-questions-20261127` (worktree `~/wo
 - **The local smoke (6,000 rows) passed the runner gates.** No bad ids; exact work = the qualifying count; the one
   exact shortfall is a gold tie; 24 widening restarts.
 - **The preregistration is FROZEN** at `e85c176f7`. Job `26076922` is running (staging `native-q7-e85c176f72a7`).
+- **Addendum A1** (`a6b067075`, before any result) defines the descriptive exact-vs-routed switch point.
+  PostgreSQL's is m\* ≈ 12,326 qualifying vectors (≈ 20.5%).
 
 ## Inputs prepared locally (`~/research-admin/experiments/2026-11-27-uniform/`)
 - **The S1 plan** `plans/S1-shift-20261121/`: copied from PostgreSQL R3 job 25910367's plan. Its 205 file hashes
