@@ -1,0 +1,91 @@
+{
+ "mode": "pilot",
+ "runs": [
+  {
+   "workload": "W2",
+   "seed": 20261202,
+   "arm": "DLI-best",
+   "dir": "~/research-admin/experiments/2026-11-26-final-benchmark/stage2/fb-pilot-W2-20261202-DLI-best-26042044.pbs-m1.metacentrum.cz/run",
+   "plan": "~/research-admin/experiments/2026-11-26-final-benchmark/stage2/plan-W2.json",
+   "job": "26042044"
+  },
+  {
+   "workload": "W2",
+   "seed": 20261202,
+   "arm": "E1",
+   "dir": "~/research-admin/experiments/2026-11-26-final-benchmark/stage2/fb-pilot-W2-20261202-E1-26042043.pbs-m1.metacentrum.cz/run",
+   "plan": "~/research-admin/experiments/2026-11-26-final-benchmark/stage2/plan-W2.json",
+   "job": "26042043"
+  },
+  {
+   "workload": "W2",
+   "seed": 20261202,
+   "arm": "HNSW",
+   "dir": "~/research-admin/experiments/2026-11-26-final-benchmark/stage2/fb-pilot-W2-20261202-HNSW-16-26042047.pbs-m1.metacentrum.cz/run",
+   "plan": "~/research-admin/experiments/2026-11-26-final-benchmark/stage2/plan-W2.json",
+   "job": "26042047",
+   "cfg": 16
+  },
+  {
+   "workload": "W2",
+   "seed": 20261202,
+   "arm": "IVF",
+   "dir": "~/research-admin/experiments/2026-11-26-final-benchmark/stage2/fb-pilot-W2-20261202-IVF-10000-26042046.pbs-m1.metacentrum.cz/run",
+   "plan": "~/research-admin/experiments/2026-11-26-final-benchmark/stage2/plan-W2.json",
+   "job": "26042046",
+   "cfg": 10000
+  },
+  {
+   "workload": "W2",
+   "seed": 20261202,
+   "arm": "S-LMI",
+   "dir": "~/research-admin/experiments/2026-11-26-final-benchmark/stage2/fb-pilot-W2-20261202-S-LMI-10000-26042045.pbs-m1.metacentrum.cz/run",
+   "plan": "~/research-admin/experiments/2026-11-26-final-benchmark/stage2/plan-W2.json",
+   "job": "26042045",
+   "cfg": 10000
+  },
+  {
+   "workload": "W3",
+   "seed": 20261202,
+   "arm": "DLI-best",
+   "dir": "~/research-admin/experiments/2026-11-26-final-benchmark/stage2/fb-pilot-W3-20261202-DLI-best-26044025.pbs-m1.metacentrum.cz/run",
+   "plan": "~/research-admin/experiments/2026-11-26-final-benchmark/stage2/plan-W3.json",
+   "job": "26044025"
+  },
+  {
+   "workload": "W3",
+   "seed": 20261202,
+   "arm": "E1",
+   "dir": "~/research-admin/experiments/2026-11-26-final-benchmark/stage2/fb-pilot-W3-20261202-E1-26042049.pbs-m1.metacentrum.cz/run",
+   "plan": "~/research-admin/experiments/2026-11-26-final-benchmark/stage2/plan-W3.json",
+   "job": "26042049"
+  },
+  {
+   "workload": "W3",
+   "seed": 20261202,
+   "arm": "HNSW",
+   "dir": "~/research-admin/experiments/2026-11-26-final-benchmark/stage2/fb-pilot-W3-20261202-HNSW-16-26044028.pbs-m1.metacentrum.cz/run",
+   "plan": "~/research-admin/experiments/2026-11-26-final-benchmark/stage2/plan-W3.json",
+   "job": "26044028",
+   "cfg": 16
+  },
+  {
+   "workload": "W3",
+   "seed": 20261202,
+   "arm": "IVF",
+   "dir": "~/research-admin/experiments/2026-11-26-final-benchmark/stage2/fb-pilot-W3-20261202-IVF-10000-26044027.pbs-m1.metacentrum.cz/run",
+   "plan": "~/research-admin/experiments/2026-11-26-final-benchmark/stage2/plan-W3.json",
+   "job": "26044027",
+   "cfg": 10000
+  },
+  {
+   "workload": "W3",
+   "seed": 20261202,
+   "arm": "S-LMI",
+   "dir": "~/research-admin/experiments/2026-11-26-final-benchmark/stage2/fb-pilot-W3-20261202-S-LMI-10000-26044026.pbs-m1.metacentrum.cz/run",
+   "plan": "~/research-admin/experiments/2026-11-26-final-benchmark/stage2/plan-W3.json",
+   "job": "26044026",
+   "cfg": 10000
+  }
+ ]
+}
