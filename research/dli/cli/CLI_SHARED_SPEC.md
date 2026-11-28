@@ -1,6 +1,6 @@
 # CLI shared algorithm specification (Qdrant and PostgreSQL)
 
-**Status: DRAFT v3 for cross-engine agreement** (v3, 2026-11-28: the replay amendment and the gold clarification in §0. v2, 2026-11-28: PostgreSQL's review at `e17cd3164` and the Qdrant
+**Status: FROZEN v3 (author, 2026-11-28)**, at the commit that adds this line. Before: DRAFT v3 for cross-engine agreement (v3, 2026-11-28: the replay amendment and the gold clarification in §0. v2, 2026-11-28: PostgreSQL's review at `e17cd3164` and the Qdrant
 response [CLI_SPEC_QDRANT_RESPONSE.md](CLI_SPEC_QDRANT_RESPONSE.md); §0 supersedes the text below where they differ). No CLI code or data exists yet. Each engine freezes its own CLI
 amendment (Qdrant: final-benchmark §3.6 and A5) only after both sides accept this text, or an amended version
 pinned by commit and SHA-256.
