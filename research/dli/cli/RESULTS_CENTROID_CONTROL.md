@@ -76,8 +76,8 @@ both routings score the same normalized f32 vectors.
 - Raw-Float16 gold. The routings are compared with each other, not with the final-benchmark arms.
 
 ## Addendum: the MLP under spec v3 replay (2% of live), 2026-11-28
-- **The run.** The MLP arm was re-run with R_t = ⌊0.02 · live_t⌋ (code `f8515a9fe`; the binary is the same perf
-  build). The centroid runs above are unchanged, because centroid routing has no replay.
+- **The run.** The MLP arm was re-run with R_t = ⌊0.02 · live_t⌋ (code `f8515a9fe`; the perf binary was rebuilt from
+  it, `0259a66b…`). The centroid runs above are unchanged, because centroid routing has no replay.
 - **The archive.** `Research-Results/2026-11-28-cli-replay-v3/`, verified.
 
 | Plan | R (centroid / MLP), v2 replay | R, v3 replay | MLP W@0.90 last batch, v2 → v3 | MLP L_route mean, v2 → v3 | MLP reclusters, v2 → v3 | Fine-tune seconds, v2 → v3 |
