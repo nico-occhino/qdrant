@@ -8,7 +8,7 @@ SOCK="$HOME/.ssh/metacentrum-control"; TARGET=nico@perian.metacentrum.cz
 ssh -F /dev/null -S "$SOCK" -O check "$TARGET"
 S=(ssh -F /dev/null -S "$SOCK" -o BatchMode=yes "$TARGET")
 ROOT=/storage/budejovice1/home/nico/lmi-metacentrum/static-lmi-ivf-20261118
-E=/home/nicoo/research-admin/experiments/2026-11-18-static-lmi-ivf; mkdir -p "$E/hpc-submissions"
+E=${ADMIN:?}/experiments/2026-11-18-static-lmi-ivf; mkdir -p "$E/hpc-submissions"
 sub() { # name ncpus mem walltime N lab-args
   local name=$1 ncpu=$2 mem=$3 wall=$4 n=$5 args=$6
   local cmd="cd $ROOT && qsub -N $name -l select=1:ncpus=$ncpu:mem=${mem}gb:scratch_ssd=40gb:cpu_vendor=amd -l walltime=$wall -v CFG_NAME=$name,N=$n,LAB_ARGS='$args' lab-10m.pbs"

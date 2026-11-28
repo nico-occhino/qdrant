@@ -2,7 +2,7 @@
 
 The controlled pilot completed **480 learned queries, zero fallback**, against10120191 retained vectors. No ingestion, training, compaction or hierarchy change occurred. The native study passed in421.06s, after a13m57s optimized build and24 passing release safety tests. Executed repository revision: **1e4d09a23** (native implementation checkpoint d8ad7a8e3). Later priority-cache measurements are a separate experiment, not part of these query timings.
 
-Raw root: `/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-27/`. Native logs/results: `release-study/`. [Protocol and safety gate](06_MATCHED_WORK_RELEASE_STUDY.md), [all case metrics](matched_release_cases.csv). Reproduce with `run_release_matched_study.sh` using a fresh output directory.
+Raw root: `<admin>/experiments/2026-11-12-dli-architecture/continuation-27/`. Native logs/results: `release-study/`. [Protocol and safety gate](06_MATCHED_WORK_RELEASE_STUDY.md), [all case metrics](matched_release_cases.csv). Reproduce with `run_release_matched_study.sh` using a fresh output directory.
 
 ## Actual-work comparison, held-out queries
 

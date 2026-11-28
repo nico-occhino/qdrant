@@ -311,10 +311,10 @@
   },
   "promotion_candidate": "A4occ"
  },
- "evidence_local": "/home/nicoo/research-admin/experiments/2026-11-19-static-supervised-routing",
+ "evidence_local": "<admin>/experiments/2026-11-19-static-supervised-routing",
  "evidence_remote": "/storage/budejovice1/home/nico/lmi-metacentrum/static-supervised-routing-20261119/results/pilot-25759596.pbs-m1.metacentrum.cz",
  "query_level_V_outside_git": {
-  "path": "/home/nicoo/research-admin/experiments/2026-11-19-static-supervised-routing/analysis-pilot/V_1M_query_level.csv.gz",
+  "path": "<admin>/experiments/2026-11-19-static-supervised-routing/analysis-pilot/V_1M_query_level.csv.gz",
   "sha256": "d9d87524ab92a2f9cb4319ef7fef48c75c0c626d39578064b3c914558b979119"
  }
 }

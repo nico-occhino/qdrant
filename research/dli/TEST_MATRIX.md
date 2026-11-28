@@ -12,19 +12,19 @@ Exact benchmark command (repository root; toolchain environment and configuratio
 
 ```bash
 DLI_BENCH_HEAD="$(git rev-parse HEAD)" \
-DLI_SISAP_INPUTS=/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-22/benchmark-300k \
-DLI_SISAP_OUTPUT=/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-22/benchmark-300k/raw_results \
+DLI_SISAP_INPUTS=<admin>/experiments/2026-11-12-dli-architecture/continuation-22/benchmark-300k \
+DLI_SISAP_OUTPUT=<admin>/experiments/2026-11-12-dli-architecture/continuation-22/benchmark-300k/raw_results \
 CARGO_BUILD_JOBS=2 \
-CARGO_TARGET_DIR=/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/cargo-target \
+CARGO_TARGET_DIR=<admin>/experiments/2026-11-12-dli-architecture/cargo-target \
 LIBTORCH_USE_PYTORCH=1 \
-PATH=/home/nicoo/miniconda3/envs/lmi-rust-inspect/bin:$PATH \
-LD_LIBRARY_PATH=/home/nicoo/miniconda3/envs/lmi-rust-inspect/lib/python3.11/site-packages/torch/lib \
+PATH=$CONDA_ENV/lmi-rust-inspect/bin:$PATH \
+LD_LIBRARY_PATH=$CONDA_ENV/lmi-rust-inspect/lib/python3.11/site-packages/torch/lib \
 cargo test --release --locked --offline -p collection --lib \
   --features 'testing,dli-research' -- --ignored --exact \
   tests::lmi_lifecycle::dli_sisap300k_benchmark::sisap23_300k_static_lmi_vs_temporal_dli --nocapture
 ```
 
-Exit 0; test elapsed 888.94 s. Log: `/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-22/benchmark-300k/logs/run-no-generic-dli-optimizer.log`; summary: `.../raw_results/summary.json`. Dataset manifest and extracted-file hashes are in `.../manifest.json`. Static vs DLI Recall@10/30: `.7962/.7628` vs `.7625/.7253`; p50/p95 ms: `4.358/6.179` vs `6.900/12.483`; DLI publications: 6, cumulative output 750K vectors; selected posting entries: 2,489,314 for 1,000 queries, while actual native scorer count is not instrumented; post-update exact fallback: `100/100`. Static wait-to-indexed 561.999 s and DLI optimizer-job wall sum 300.906 s have different measurement boundaries. One run only; see the experiment analysis for limitations.
+Exit 0; test elapsed 888.94 s. Log: `<admin>/experiments/2026-11-12-dli-architecture/continuation-22/benchmark-300k/logs/run-no-generic-dli-optimizer.log`; summary: `.../raw_results/summary.json`. Dataset manifest and extracted-file hashes are in `.../manifest.json`. Static vs DLI Recall@10/30: `.7962/.7628` vs `.7625/.7253`; p50/p95 ms: `4.358/6.179` vs `6.900/12.483`; DLI publications: 6, cumulative output 750K vectors; selected posting entries: 2,489,314 for 1,000 queries, while actual native scorer count is not instrumented; post-update exact fallback: `100/100`. Static wait-to-indexed 561.999 s and DLI optimizer-job wall sum 300.906 s have different measurement boundaries. One run only; see the experiment analysis for limitations.
 
 Earlier continuation entries below retain their historical status at the time written.
 
@@ -46,7 +46,7 @@ PASS, segment-level only: `lib/segment/tests/dli_native_topology.rs` constructs 
 
 PASS, test-only global selection: real router logits and posting lists are ranked with the illustrative paper-style arity-two multiplier, including a buffer bucket, and selected offsets are scored by `candidate_scoring::score_candidates`. For budget 2 the selected single bucket contained 3 candidates, all mapped to its own external IDs and individually checked against the fixture's exact cosine scores. The test does not verify global top-k against an independent selection oracle, calibrated probabilities, filters, multi-segment visibility, concurrent publication or a geometric 2/4-bucket hierarchy. Output: `<experiment>/continuation-01/native-global-final.log`.
 
-Command (from worktree): `CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=<experiment>/cargo-target LIBTORCH_USE_PYTORCH=1 PATH=/home/nicoo/miniconda3/envs/lmi-rust-inspect/bin:$PATH LD_LIBRARY_PATH=/home/nicoo/miniconda3/envs/lmi-rust-inspect/lib/python3.11/site-packages/torch/lib:$LD_LIBRARY_PATH cargo test --locked --offline -p segment --features 'testing,lmi-training' --test dli_native_topology -- --nocapture`. Source SHA256 `242e6230ac9264740513a33c8d821a59119ce1227deadaddc52b40d2f289588a`; debug test binary SHA256 `ced25ebecd51709a1ef57070f3091f6859b943dc07493427882ad537bb59cffa`. PyTorch 2.5.1 CPU, Rust 1.98.0. Target directory total was 8.5 GiB including previous builds; no peak RSS was measured. The initial 2.7.1 environment failed the required version check; the logs and later trait-import diagnostics are preserved.
+Command (from worktree): `CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=<experiment>/cargo-target LIBTORCH_USE_PYTORCH=1 PATH=$CONDA_ENV/lmi-rust-inspect/bin:$PATH LD_LIBRARY_PATH=$CONDA_ENV/lmi-rust-inspect/lib/python3.11/site-packages/torch/lib:$LD_LIBRARY_PATH cargo test --locked --offline -p segment --features 'testing,lmi-training' --test dli_native_topology -- --nocapture`. Source SHA256 `242e6230ac9264740513a33c8d821a59119ce1227deadaddc52b40d2f289588a`; debug test binary SHA256 `ced25ebecd51709a1ef57070f3091f6859b943dc07493427882ad537bb59cffa`. PyTorch 2.5.1 CPU, Rust 1.98.0. Target directory total was 8.5 GiB including previous builds; no peak RSS was measured. The initial 2.7.1 environment failed the required version check; the logs and later trait-import diagnostics are preserved.
 
 ## Holder/view continuation (continuation-02)
 
@@ -54,7 +54,7 @@ Command (from worktree): `CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=<experiment>/cargo
 
 Scope: native holder objects and update helpers, test-only registry; no WAL, LocalShard, optimizer publication, pending-upsert replacement, persistence or crash test. Proxy members rejected. Replacement assumes no writes during its private build. Route inputs are trusted internal test data; arbitrary forged bucket/offset membership is not validated.
 
-Reproduce with existing target and PyTorch 2.5.1 environment: `CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=<experiment>/cargo-target LIBTORCH_USE_PYTORCH=1 PATH=/home/nicoo/miniconda3/envs/lmi-rust-inspect/bin:$PATH LD_LIBRARY_PATH=/home/nicoo/miniconda3/envs/lmi-rust-inspect/lib/python3.11/site-packages/torch/lib cargo test --locked --offline -p shard --features 'testing,segment/testing,segment/lmi-training' --test dli_view -- --nocapture`. Final log: `<experiment>/continuation-02/scope-fix.log`; failed import and thread-scope logs preserved. Source SHA256 `74c2ad06f8da216c136131b36453335635639b85bd8704a436a1aba8d989c792`; binary SHA256 `dd0e1897e5fca3550a6cd9c0a9b4104d769871f171d4a58a1c7a5ce81a988544`. Built from parent 67e63b615 plus new test source. Debug results only; no peak RSS measured.
+Reproduce with existing target and PyTorch 2.5.1 environment: `CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=<experiment>/cargo-target LIBTORCH_USE_PYTORCH=1 PATH=$CONDA_ENV/lmi-rust-inspect/bin:$PATH LD_LIBRARY_PATH=$CONDA_ENV/lmi-rust-inspect/lib/python3.11/site-packages/torch/lib cargo test --locked --offline -p shard --features 'testing,segment/testing,segment/lmi-training' --test dli_view -- --nocapture`. Final log: `<experiment>/continuation-02/scope-fix.log`; failed import and thread-scope logs preserved. Source SHA256 `74c2ad06f8da216c136131b36453335635639b85bd8704a436a1aba8d989c792`; binary SHA256 `dd0e1897e5fca3550a6cd9c0a9b4104d769871f171d4a58a1c7a5ce81a988544`. Built from parent 67e63b615 plus new test source. Debug results only; no peak RSS measured.
 
 ## Native optimizer proxy/delta continuation (continuation-03)
 

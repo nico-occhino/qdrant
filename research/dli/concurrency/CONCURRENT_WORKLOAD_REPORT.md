@@ -2,7 +2,7 @@
 
 **Harness:** `lib/collection/src/tests/lmi_lifecycle/dli_concurrent_workload.rs` (ignored test). Final version is at `072be2e0c`.
 
-**Evidence:** `/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-43/`
+**Evidence:** `<admin>/experiments/2026-11-12-dli-architecture/continuation-43/`
 - `workload/summary-readers{1,4,8}-ops1500.json`, `workload-r*.log`.
 - `perf-binary.sha256`, `source-head.txt`.
 

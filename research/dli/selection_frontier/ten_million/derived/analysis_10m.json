@@ -1,5 +1,5 @@
 {
- "run": "/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/hpc-results-25677858/frontier-10m-25677858.pbs-m1.metacentrum.cz/frontier",
+ "run": "<admin>/experiments/2026-11-12-dli-architecture/hpc-results-25677858/frontier-10m-25677858.pbs-m1.metacentrum.cz/frontier",
  "eval_set": "test",
  "val_set": "val",
  "resamples": 10000,

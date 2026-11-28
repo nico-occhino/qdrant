@@ -5,7 +5,7 @@ binary `52f1c318…`. N = 100K, 3 batches. Runs: Shift E1/E1R, Constant-R E1/E1G
 1,000 test queries; budgets 1K/4K/16K.
 
 Evidence: remote `results/phase3-preflight-all-25842074…/`; local
-`C:\Users\nicoo\Workspace\Research-Results\2026-11-20-dli-emma-path\phase3-preflight-25842074\`.
+`Research-Results/2026-11-20-dli-emma-path/phase3-preflight-25842074/`.
 `SHA256SUMS` verify, except `job.log` (the known `tee` final-line case, verified with the last line removed).
 Recall values are not interpreted (§6).
 

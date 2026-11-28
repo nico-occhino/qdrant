@@ -1,6 +1,6 @@
 # MUNI source provenance and comparison status
 
-Requested reference: Coda-Research-Group/DynamicLearnedIndex, dde0e57427bb0bf8046dc18ec2f6adc22abea162. Local search under /home/nicoo and /tmp found no dynamic_learned_index.py or matching archive. The GitHub connector fetch of the named commit tree returned API404; direct web retrieval failed. This does not prove the revision does not exist; it means provenance was **not verified in this execution**. No uploaded ZIP was assumed available, no LGPL source was copied, and no pinned-source equivalence is asserted.
+Requested reference: Coda-Research-Group/DynamicLearnedIndex, dde0e57427bb0bf8046dc18ec2f6adc22abea162. Local search under the home directory and /tmp found no dynamic_learned_index.py or matching archive. The GitHub connector fetch of the named commit tree returned API404; direct web retrieval failed. This does not prove the revision does not exist; it means provenance was **not verified in this execution**. No uploaded ZIP was assumed available, no LGPL source was copied, and no pinned-source equivalence is asserted.
 
 The supplied finding describes probability × arity^level_idx. Algebraically this is geometric weighting, not temperature scaling. Native SlotWeighted uses logical level weighting; PopulationDensity uses physical population/posting cost; TemperatureDensity changes softmax temperature then applies density allocation. The latter two are deliberate alternatives, not faithful reproductions of the supplied MUNI mechanism.
 

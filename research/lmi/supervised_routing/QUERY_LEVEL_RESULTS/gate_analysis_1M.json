@@ -1,6 +1,6 @@
 {
  "mode": "pilot",
- "run": "/home/nicoo/research-admin/experiments/2026-11-19-static-supervised-routing/hpc-pilot/pilot-25759596.pbs-m1.metacentrum.cz",
+ "run": "<admin>/experiments/2026-11-19-static-supervised-routing/hpc-pilot/pilot-25759596.pbs-m1.metacentrum.cz",
  "primary_set": "G",
  "matched": {
   "A0": {

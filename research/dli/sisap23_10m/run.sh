@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd /home/nicoo/worktrees/qdrant-dli-cross-segment
-campaign=/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-25
-export CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/cargo-target
-export LIBTORCH_USE_PYTORCH=1 PATH=/home/nicoo/miniconda3/envs/lmi-rust-inspect/bin:$PATH
-export LD_LIBRARY_PATH=/home/nicoo/miniconda3/envs/lmi-rust-inspect/lib/python3.11/site-packages/torch/lib
+cd ${WORKTREES:?}/qdrant-dli-cross-segment
+campaign=${ADMIN:?}/experiments/2026-11-12-dli-architecture/continuation-25
+export CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=${ADMIN:?}/experiments/2026-11-12-dli-architecture/cargo-target
+export LIBTORCH_USE_PYTORCH=1 PATH=${CONDA_ENV:?}/lmi-rust-inspect/bin:$PATH
+export LD_LIBRARY_PATH=${CONDA_ENV:?}/lmi-rust-inspect/lib/python3.11/site-packages/torch/lib
 export QDRANT_MEASURE_SCORING=1
 export DLI_BENCH_HEAD="$(git rev-parse HEAD)"
 system=${1:-geometric}

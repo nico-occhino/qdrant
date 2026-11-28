@@ -6,13 +6,14 @@ Large retained datasets stay outside Git. No training or database mutation.
 import argparse
 import csv
 import json
+import os
 from pathlib import Path
 import numpy as np
 
 p = argparse.ArgumentParser()
 p.add_argument('run', type=Path)
 a = p.parse_args()
-root = Path('/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture')
+root = Path(os.environ['ADMIN'], 'experiments/2026-11-12-dli-architecture')
 base = root / 'continuation-25'
 run = a.run
 cases = json.loads((run / 'study.json').read_text())

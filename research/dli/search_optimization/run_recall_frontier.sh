@@ -5,14 +5,14 @@ out=${1:?fresh output directory}
 plan=${2:?validation-locked native plan}
 teacher=${3:?prepared private subset directory}
 test ! -e "$out"; mkdir -p "$out"
-export PATH=/home/nicoo/miniconda3/envs/lmi-rust-inspect/bin:$PATH
-export CARGO_TARGET_DIR=/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/cargo-target
+export PATH=${CONDA_ENV:?}/lmi-rust-inspect/bin:$PATH
+export CARGO_TARGET_DIR=${ADMIN:?}/experiments/2026-11-12-dli-architecture/cargo-target
 export CARGO_BUILD_JOBS=2 LIBTORCH_USE_PYTORCH=1
 unset LMI_TEACHER_DIAGNOSTIC
-export LD_LIBRARY_PATH=/home/nicoo/miniconda3/envs/lmi-rust-inspect/lib/python3.11/site-packages/torch/lib
+export LD_LIBRARY_PATH=${CONDA_ENV:?}/lmi-rust-inspect/lib/python3.11/site-packages/torch/lib
 export OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2 MKL_NUM_THREADS=2
-export DLI_REOPEN_COLLECTION_ROOT=/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-25/geometric-10120191/collection
-export DLI_SISAP_INPUTS=/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-25/data
+export DLI_REOPEN_COLLECTION_ROOT=${ADMIN:?}/experiments/2026-11-12-dli-architecture/continuation-25/geometric-10120191/collection
+export DLI_SISAP_INPUTS=${ADMIN:?}/experiments/2026-11-12-dli-architecture/continuation-25/data
 export DLI_SISAP_OUTPUT="$out" DLI_FRONTIER_PLAN="$plan"
 export DLI_FRONTIER_QUERY_COUNT=${DLI_FRONTIER_QUERY_COUNT:-12}
 export DLI_QUERY_EVENTS="$out/query-events.jsonl" DLI_ROUTING_EVENTS="$out/routing-events.jsonl"
@@ -48,4 +48,4 @@ timeout 600s cargo test --release --locked --offline -p collection --lib --featu
 test -s "$teacher/index.json"
 python research/dli/search_optimization/analyze_teacher_control.py "$teacher" > "$teacher/analysis.log" 2>&1
 
-/home/nicoo/miniconda3/envs/lmi-starterpack/bin/python research/dli/search_optimization/plot_recall_frontier.py "$(dirname "$plan")" "$out" "$teacher"
+${CONDA_ENV:?}/lmi-starterpack/bin/python research/dli/search_optimization/plot_recall_frontier.py "$(dirname "$plan")" "$out" "$teacher"

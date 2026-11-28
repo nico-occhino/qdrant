@@ -2,7 +2,7 @@
 
 Read-only reconstruction uses actual router binaries, posting boundaries, numeric external/internal mappings and40 validated insertion-lineage publications. Native Float32 accumulation order and cosine preprocessing are reproduced. Baseline selected-vector counts and scorer-call counts match100/100 original queries. Numeric mappings are decoded using the native immutable13-byte entry format; posting offsets are never assumed to equal external IDs. Baseline oracle rows0–99, one-based external IDs, full10,120,191 population. No size-tiered experiment was run.
 
-Source: `frozen_routing.py`. Raw outputs: `/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-26/geometric-routing/{routing.csv,summary.json,probabilities.npz,model-diagnostic.json}`. Probabilities file also includes raw logits. The dataset/gold remain continuation25/data. The100 queries are exploratory diagnostics, not a validation/test split for a tuned claim.
+Source: `frozen_routing.py`. Raw outputs: `<admin>/experiments/2026-11-12-dli-architecture/continuation-26/geometric-routing/{routing.csv,summary.json,probabilities.npz,model-diagnostic.json}`. Probabilities file also includes raw logits. The dataset/gold remain continuation25/data. The100 queries are exploratory diagnostics, not a validation/test split for a tuned claim.
 
 | Policy / requested minimum | Mean selected offsets | Models/query | Model-scope top10 | Bucket top10 |
 |---|---:|---:|---:|---:|
@@ -29,8 +29,8 @@ At comparable work, reserved coverage beats slot weighting offline (.643 at28.8K
 Reproduction (read-only, no Qdrant process or training):
 
 ```bash
-/home/nicoo/miniconda3/envs/lmi-rust-inspect/bin/python research/dli/search_optimization/frozen_routing.py
-/home/nicoo/miniconda3/envs/lmi-starterpack/bin/python research/dli/search_optimization/plot_coverage.py /home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-26/geometric-routing/routing.csv research/dli/search_optimization/bucket_coverage.svg
+$CONDA_ENV/lmi-rust-inspect/bin/python research/dli/search_optimization/frozen_routing.py
+$CONDA_ENV/lmi-starterpack/bin/python research/dli/search_optimization/plot_coverage.py <admin>/experiments/2026-11-12-dli-architecture/continuation-26/geometric-routing/routing.csv research/dli/search_optimization/bucket_coverage.svg
 ```
 
 Experimental internal collection settings: `routing_policy: "ReservedPerLevel"`, `materialize_topk: true`; omit both for the preserved baseline. Neither changes compaction ownership or learned metadata generations. The collection remains restricted to its established supported single-shard dense Float16 cosine mode.
