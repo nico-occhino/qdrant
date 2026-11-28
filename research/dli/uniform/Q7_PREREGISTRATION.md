@@ -79,3 +79,23 @@ For each, we record:
 - **Where.** One local smoke on a 6,000-row prefix of the fixture, with separate labels. Then one MetaCentrum job (8
   CPUs, ≤ 4 h) on the full fixture, staged from a pushed commit.
 - **Implementation.** `lib/segment/tests/` plus the collection harness, adapted from `lmi_filter_probing_sisap300k.rs`.
+
+## 8. Addendum A1 (2026-11-28, before any Q7 result; descriptive only)
+- **Why.** The author asked for the cross-engine switch point. PostgreSQL's `FILTER_FIXTURE_PG_RESULTS.md`
+  (`04863df`, pinned) reports exact search cheaper at 0.1–10% and routing cheaper at 50%.
+- **The switch point, in vectors scored.** It is computed per arm and engine from the four measured predicates.
+  - **The inputs.** Exact work is the qualifying count m(p), which is what ExactMatches scores. The routed cost is
+    W@0.90(p), the first measured crossing of that arm's routed curve (§4).
+  - **Where it lies.** The switch lies between the two adjacent predicates where D(p) = W@0.90(p) − m(p) changes
+    sign.
+  - **How it is computed.** It is reported as the qualifying count m\* by linear interpolation of D in m between
+    those two predicates, and as the matching selectivity m\*/60,000.
+  - **When it is not reported.** If D never changes sign, the switch is reported as "below 0.1%" or "above 50%".
+    `upper_bound` or `not_attained` crossings are carried through as such.
+- **What it is not.** It is an interpolation between two measured predicates only, not a fitted model. It is
+  descriptive, with no interval.
+- **Qdrant's native planner.** For the native operating point (§2), the plan Qdrant's planner chose is reported next
+  to the work-optimal plan per predicate.
+- **PostgreSQL's value, computed now from its pinned table.** D(10%) = 12,700.75 − 6,000 = +6,700.75 and
+  D(50%) = 11,277.06 − 30,000 = −18,722.94. So m\* = 6,000 + 6,700.75 / 25,423.69 × 24,000 ≈ **12,326** qualifying
+  vectors (≈ 20.5%).
