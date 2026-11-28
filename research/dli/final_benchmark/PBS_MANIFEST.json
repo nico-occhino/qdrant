@@ -292,5 +292,56 @@
     "cfg": 16
    }
   ]
+ },
+ "primary": {
+  "authorised": "author, 2026-11-28 ('Start primary now'; CLI added later on the same seeds and panels, \u00a73.6)",
+  "staging": "native-30271d364902 (commit 30271d364; no lib/src/Cargo or pbs/analysis change through 589e81a06; inputs.sha256 re-verified)",
+  "walltimes": "A3.5/A4.2: W1/W2 static 24 h, others 12 h; W3 E1, DLI-best, S-LMI, IVF 48 h, HNSW 12 h",
+  "submission": "plan jobs first; each (workload, seed)'s 5 arms are submitted only after its plan job exits 0 with COMPLETE.json (no PBS dependency, avoiding the stage-2 hold; A4.4). Arm IDs: local primary-submissions.log, copied here when complete",
+  "plans": [
+   {
+    "job": "26079249.pbs-m1.metacentrum.cz",
+    "workload": "W1",
+    "seed": 20261201,
+    "walltime": "06:00:00",
+    "status": "submitted 2026-11-28"
+   },
+   {
+    "job": "26079250.pbs-m1.metacentrum.cz",
+    "workload": "W2",
+    "seed": 20261201,
+    "walltime": "06:00:00",
+    "status": "submitted 2026-11-28"
+   },
+   {
+    "job": "26079251.pbs-m1.metacentrum.cz",
+    "workload": "W3",
+    "seed": 20261201,
+    "walltime": "06:00:00",
+    "status": "submitted 2026-11-28"
+   },
+   {
+    "job": "26079252.pbs-m1.metacentrum.cz",
+    "workload": "W1",
+    "seed": 20261205,
+    "walltime": "06:00:00",
+    "status": "submitted 2026-11-28"
+   },
+   {
+    "job": "26079253.pbs-m1.metacentrum.cz",
+    "workload": "W2",
+    "seed": 20261205,
+    "walltime": "06:00:00",
+    "status": "submitted 2026-11-28"
+   },
+   {
+    "job": "26079254.pbs-m1.metacentrum.cz",
+    "workload": "W3",
+    "seed": 20261205,
+    "walltime": "06:00:00",
+    "status": "submitted 2026-11-28"
+   }
+  ],
+  "arms": []
  }
 }

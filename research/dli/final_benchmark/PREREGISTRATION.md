@@ -559,3 +559,20 @@ Authorised by the author ("analyze, document and try again"). Details are in `RE
   hold, so a held arm may be cancelled and resubmitted once its plan job has completed. Each such resubmission is
   recorded in `PBS_MANIFEST.json`, and every primary submission still needs the author's explicit authorisation
   (§12).
+
+### A5 (2026-11-28, before any primary data): primary without CLI; CLI design decisions
+- **A5.1 The primary starts without CLI**, as §3.6 allows. The author authorised it on 2026-11-28. Plan jobs
+  26079249–26079254 cover W1–W3 × seeds 20261201 and 20261205. Each plan's five arms are submitted when that plan
+  job has completed (A4.4); the arm job IDs go in `PBS_MANIFEST.json`.
+- **A5.2 CLI enters later**, on the same plan seeds and panels, under its own frozen amendment, and is compared with
+  the archived arms (§3.6). The author's decisions, recorded now:
+  - **Mutability: in-segment.** An appendable learned segment whose posting lists and router change in place
+    (Jakubík's design), not copy-on-write publication. It needs its own visibility, recovery and concurrency gates
+    in Qdrant's segment layer, designed before code.
+  - **The one variant: an imbalance trigger.** CLI's entropy trigger is replaced by the frozen bucket-imbalance
+    rule (max/mean ≥ 8.0 over allocated buckets, as Q5's `ImbalanceRetrain::POSTGRES_FROZEN`). The growth trigger
+    and DEDRIFT are unchanged. This links CLI to Q5.
+  - **Still open** (fixed in the CLI amendment, before CLI data): b_max and soft budget, chosen by a selection pilot
+    on seed 20261202's validation panels, as in §8; the replay-buffer size; the fine-tune cadence; and the
+    hyperparameters, from thesis Table 3.2, following the thesis where `cli_ablation` disagrees (A4–A7 of the
+    audit).
