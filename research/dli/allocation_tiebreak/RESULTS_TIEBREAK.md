@@ -20,7 +20,7 @@
 | S5 reproduction | `mdn_code` **and** `calibrated` rows are 100% identical to the Phase 3 E1C run (job 25859945) at the 13 shared budgets |
 | Check job | 25914476 (2 batches, identity checks only), passed; see [PBS_MANIFEST.json](PBS_MANIFEST.json) |
 | Extracts | [derived/](derived/) |
-| Archive | MetaCentrum `dli-emma-path-20261120/results/alloc-tiebreak-primary-insert_only-25931720.pbs-m1.metacentrum.cz/`; local copy `C:\Users\nicoo\Workspace\Research-Results\2026-11-24-allocation-tiebreak\` |
+| Archive | MetaCentrum `dli-emma-path-20261120/results/alloc-tiebreak-primary-insert_only-25931720.pbs-m1.metacentrum.cz/`; local copy `Research-Results/2026-11-24-allocation-tiebreak/` |
 
 ## Results
 

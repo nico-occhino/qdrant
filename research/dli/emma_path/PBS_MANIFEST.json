@@ -1,7 +1,7 @@
 {
  "campaign": "dli-emma-path-20261120",
  "remote_root": "/storage/budejovice1/home/nico/lmi-metacentrum/dli-emma-path-20261120",
- "local_results": "C:\\Users\\nicoo\\Workspace\\Research-Results\\2026-11-20-dli-emma-path",
+ "local_results": "Research-Results/2026-11-20-dli-emma-path",
  "jobs": [
   {
    "id": "25801511.pbs-m1.metacentrum.cz",

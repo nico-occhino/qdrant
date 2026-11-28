@@ -23,7 +23,7 @@ come from `analyze.py confirm`, run in-job; the script was committed before any 
 | Data | full SISAP23 LAION2B 10,120,191 × 768 Float16 (`f5868d6e…`); official top-30 gold |
 | Queries | validation rows 900–931 (32), test rows 9000–9255 (256) |
 | Build CPUs | 16 per DLI build (Amendment 4), both arms; the MLP stays single-threaded |
-| Evidence | remote `dli-emma-path-20261120/results/10m-25827532…/`; local copy `C:\Users\nicoo\Workspace\Research-Results\2026-11-20-dli-emma-path\10m-25827532\`. `SHA256SUMS` verify except `job.log` (known `tee` final-line case, verified minus its last line). |
+| Evidence | remote `dli-emma-path-20261120/results/10m-25827532…/`; local copy `Research-Results/2026-11-20-dli-emma-path/10m-25827532/`. `SHA256SUMS` verify except `job.log` (known `tee` final-line case, verified minus its last line). |
 | Earlier attempts | 25814270, 25820728, 25823237: harness limits and a 1-CPU build permit, no estimand produced (Amendments 2–4) |
 
 **Reproduction check.** G0 reproduces H-10M (job 25677858) exactly:

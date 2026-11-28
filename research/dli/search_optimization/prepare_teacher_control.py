@@ -1,9 +1,10 @@
 """Prepare one deterministic64K private subset; never copies/rebuilds10M index."""
 import argparse,json,hashlib
+import os
 from pathlib import Path
 import numpy as np
 p=argparse.ArgumentParser();p.add_argument('output',type=Path);a=p.parse_args();a.output.mkdir(parents=True,exist_ok=False)
-base=Path('/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-25/data')
+base=Path(os.environ['ADMIN'], 'experiments/2026-11-12-dli-architecture/continuation-25/data')
 # Restrict to original6M learned member's population, but do not claim its teacher is reproduced.
 ids=np.sort(np.random.default_rng(42).choice(6000000,size=65536,replace=False)).astype('<u8')
 v=np.memmap(base/'vectors.f16',mode='r',dtype='<f2',shape=(10120191,768))

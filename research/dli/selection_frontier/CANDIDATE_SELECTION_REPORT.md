@@ -2,7 +2,7 @@
 
 **Question.** Can learned routing reach competitive recall while examining fewer candidates? Where does candidate work go?
 
-**Evidence:** `/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-42/`
+**Evidence:** `<admin>/experiments/2026-11-12-dli-architecture/continuation-42/`
 - `frontier/rows.jsonl`, `reference_costs.jsonl`, `topology.json`, `analysis.json`.
 - `frontier-run.log`, `source-head.txt`.
 - `source.patch` (taken at launch) and `source-at-completion.patch`.

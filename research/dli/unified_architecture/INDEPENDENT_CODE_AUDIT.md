@@ -314,7 +314,7 @@ The continuation40 results stand within their stated limits: warm, 64 previously
 
 ## 4. Test evidence
 
-Environment: `--locked --offline`, PyTorch 2.5.1 environment, shared research target, features `testing,lmi-training,dli-research`. Logs are in `/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-41/`.
+Environment: `--locked --offline`, PyTorch 2.5.1 environment, shared research target, features `testing,lmi-training,dli-research`. Logs are in `<admin>/experiments/2026-11-12-dli-architecture/continuation-41/`.
 
 | Log | Scope | Result |
 |---|---|---|

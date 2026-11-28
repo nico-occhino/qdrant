@@ -1,6 +1,6 @@
 # Held-out frozen 10M frontier
 
-Executed revision `dce9f1a54c85de06f7e19887b781003343d7b138`; release, 12 held-out official queries 600–611. Validation 400–499 selected budgets and T=2. Native logs and plots: `/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-28/native-frontier`. 492 learned queries, zero fallback; four exact controls are separate. Small sample and sequential cache/order effects limit inference.
+Executed revision `dce9f1a54c85de06f7e19887b781003343d7b138`; release, 12 held-out official queries 600–611. Validation 400–499 selected budgets and T=2. Native logs and plots: `<admin>/experiments/2026-11-12-dli-architecture/continuation-28/native-frontier`. 492 learned queries, zero fallback; four exact controls are separate. Small sample and sequential cache/order effects limit inference.
 
 |ID|policy|budget|scored/query|R@10|R@30|scope@30|bucket@30|p50 ms|p95 ms|
 |---:|---|---:|---:|---:|---:|---:|---:|---:|---:|

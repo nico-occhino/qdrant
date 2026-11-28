@@ -2,7 +2,7 @@
 
 **Source revision:** `47ddac824db106014c47e3b56a439d514e921b81`  
 **Status:** one optimized run; not replicated or recall-matched.  
-**Raw artifacts:** `/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-22/benchmark-300k/`
+**Raw artifacts:** `<admin>/experiments/2026-11-12-dli-architecture/continuation-22/benchmark-300k/`
 
 ## Provenance and workload
 

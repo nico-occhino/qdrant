@@ -4,10 +4,11 @@ No teacher labels are claimed. Targets are gold-neighbor posting buckets.
 Validation100:200; held-out200:300. No index/model is changed.
 """
 import argparse,json,struct
+import os
 from pathlib import Path
 import numpy as np
 p=argparse.ArgumentParser();p.add_argument('out',type=Path);a=p.parse_args();a.out.mkdir(parents=True,exist_ok=False)
-base=Path('/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-25')
+base=Path(os.environ['ADMIN'], 'experiments/2026-11-12-dli-architecture/continuation-25')
 BUDGETS=sorted(set([2000,10000,20000,40000,80000,160000,320000,640000,1280000,2560000,5120000,10120191]+list(range(10000,100001,10000))+list(range(120000,400001,20000))+list(range(500000,1000001,100000))))
 dp=base/'geometric-10120191/collection/storage/0/dli_hierarchy.json';desc=json.loads(dp.read_text())
 query_rows=list(range(400,500))+list(range(600,700))

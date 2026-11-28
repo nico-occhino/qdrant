@@ -5,13 +5,13 @@ out=${1:?fresh output directory required}
 test ! -e "$out"
 mkdir -p "$out"
 export CARGO_BUILD_JOBS=2
-export CARGO_TARGET_DIR=/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/cargo-target
+export CARGO_TARGET_DIR=${ADMIN:?}/experiments/2026-11-12-dli-architecture/cargo-target
 export LIBTORCH_USE_PYTORCH=1
-export PATH=/home/nicoo/miniconda3/envs/lmi-rust-inspect/bin:$PATH
-export LD_LIBRARY_PATH=/home/nicoo/miniconda3/envs/lmi-rust-inspect/lib/python3.11/site-packages/torch/lib
+export PATH=${CONDA_ENV:?}/lmi-rust-inspect/bin:$PATH
+export LD_LIBRARY_PATH=${CONDA_ENV:?}/lmi-rust-inspect/lib/python3.11/site-packages/torch/lib
 export OMP_NUM_THREADS=2 MKL_NUM_THREADS=2
-export DLI_REOPEN_COLLECTION_ROOT=/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-25/geometric-10120191/collection
-export DLI_SISAP_INPUTS=/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-25/data
+export DLI_REOPEN_COLLECTION_ROOT=${ADMIN:?}/experiments/2026-11-12-dli-architecture/continuation-25/geometric-10120191/collection
+export DLI_SISAP_INPUTS=${ADMIN:?}/experiments/2026-11-12-dli-architecture/continuation-25/data
 export DLI_SISAP_OUTPUT="$out"
 export DLI_STUDY_VALIDATION_COUNT=${DLI_STUDY_VALIDATION_COUNT:-12}
 export DLI_STUDY_TEST_COUNT=${DLI_STUDY_TEST_COUNT:-24}
@@ -28,8 +28,8 @@ uname -a > "$out/uname.txt"
 cp "$DLI_SISAP_INPUTS/manifest.json" "$out/dataset-manifest.json"
 sha256sum "$DLI_REOPEN_COLLECTION_ROOT/storage/0/dli_hierarchy.json" "$DLI_REOPEN_COLLECTION_ROOT/storage/config.json" > "$out/topology-before.sha256"
 python - "$out" <<'PY'
-import hashlib,h5py,json,numpy as np,pathlib,sys,torch
-out=pathlib.Path(sys.argv[1]);base=pathlib.Path('/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-25/data')
+import hashlib,h5py,json,numpy as np,os,pathlib,sys,torch
+out=pathlib.Path(sys.argv[1]);base=pathlib.Path(os.environ['DLI_SISAP_INPUTS'])
 check={}
 for name,key,raw,dtype,shape in [('public-queries-10k-clip768v2.h5','emb','queries.f32','<f4',(10000,768)),('laion2B-en-public-gold-standard-v2-10M-F64-IEEE754.h5','knns','ground_truth.i32','<i4',(10000,1000))]:
  source=pathlib.Path('/mnt/c/datasets/sisap2023')/name
@@ -45,4 +45,4 @@ test -f "$out/study.json"
 sha256sum -c "$out/topology-before.sha256" > "$out/topology-after-check.txt"
 test ! -s "$out/unexpected-optimizations.jsonl"
 python research/dli/search_optimization/analyze_matched_study.py "$out" > "$out/analysis.log" 2>&1
-/home/nicoo/miniconda3/envs/lmi-starterpack/bin/python research/dli/search_optimization/plot_matched_study.py "$out"
+${CONDA_ENV:?}/lmi-starterpack/bin/python research/dli/search_optimization/plot_matched_study.py "$out"

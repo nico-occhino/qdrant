@@ -22,7 +22,7 @@
   for W2, `val` (32) for W3 and W4. Arms D (E1, `mdn_code`), S1 (1 segment, 1,000 buckets) and S4 (4 segments,
   250 buckets), each with a 20,000 KB indexing threshold.
 - **Evidence.** Remote `dli-emma-path-20261120/results/static-vs-dli-pilot-<workload>-<job>/`; local copy
-  `C:\Users\nicoo\Workspace\Research-Results\2026-11-22-static-vs-dli\`.
+  `Research-Results/2026-11-22-static-vs-dli/`.
 
 ## 2. Work at mean validation R@30 = 0.90 (`analyze_static_vs_dli.py`, in-job)
 

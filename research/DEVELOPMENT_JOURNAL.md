@@ -835,7 +835,7 @@ The collection DLI suite went from 46 to 51 tests.
   10 March 2027.
 - **Interview study guide** on testing, using this project's tests as examples (`~/worktrees/TESTING_INTERVIEW_GUIDE.md`).
 - **First-principles explainer and audit** of both repositories (22 November, read-only):
-  `C:\Users\nicoo\Workspace\Learning stuff\Progress_Ladder\PROJECT_EXPLAINER.md`. It ranks 14 audit findings and
+  `<workspace>/Learning stuff/Progress_Ladder/PROJECT_EXPLAINER.md`. It ranks 14 audit findings and
   lists code–documentation disagreements.
 
 ---
@@ -977,7 +977,7 @@ The collection DLI suite went from 46 to 51 tests.
 | Static ablation | `main` (`exp/2026-11-19-static-tier3b`) | `research/lmi/` | `research-admin/experiments/2026-11-18-static-lmi-ivf/` |
 | Filtering | `main` (`exp/2026-11-19-filter-probing-300k`) | `research/lmi/filtering/` | `research-admin/experiments/2026-11-19-lmi-adaptive-filtering/` |
 | Supervised routing | `main` (`exp/2026-11-20-supervised-routing`) | `research/lmi/supervised_routing/` | `research-admin/experiments/2026-11-19-static-supervised-routing/` |
-| Emma path (DLI) | branch `research/dli-emma-path-20261120` | `research/dli/emma_path/` | MetaCentrum `dli-emma-path-20261120/results/`; Windows `C:\Users\nicoo\Workspace\Research-Results\2026-11-20-dli-emma-path\`; staging `research-admin/experiments/2026-11-20-dli-emma-path/` |
+| Emma path (DLI) | branch `research/dli-emma-path-20261120` | `research/dli/emma_path/` | MetaCentrum `dli-emma-path-20261120/results/`; Windows `Research-Results/2026-11-20-dli-emma-path/`; staging `research-admin/experiments/2026-11-20-dli-emma-path/` |
 
 ### External-disk backup (20 November)
 

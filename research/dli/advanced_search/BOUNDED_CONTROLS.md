@@ -1,6 +1,6 @@
 # Advanced search: bounded locality and projection controls
 
-Executed against starting revision 6273a8770. Inputs: continuation-28/native-frontier and continuation-28/teacher-control; outputs: `/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-29/`. Existing 10M collection was not opened for mutation.
+Executed against starting revision 6273a8770. Inputs: continuation-28/native-frontier and continuation-28/teacher-control; outputs: `<admin>/experiments/2026-11-12-dli-architecture/continuation-29/`. Existing 10M collection was not opened for mutation.
 
 ## Locality
 
@@ -27,6 +27,6 @@ The prior T=2 matched-work 10M pilot raises bucket coverage at approximately 196
 Run commands:
 
 ```bash
-python3 research/dli/advanced_search/locality_replay.py /home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-28 /home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-29
-OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2 python3 research/dli/advanced_search/projection_control.py /home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-28/teacher-control /home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-29
+python3 research/dli/advanced_search/locality_replay.py <admin>/experiments/2026-11-12-dli-architecture/continuation-28 <admin>/experiments/2026-11-12-dli-architecture/continuation-29
+OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2 python3 research/dli/advanced_search/projection_control.py <admin>/experiments/2026-11-12-dli-architecture/continuation-28/teacher-control <admin>/experiments/2026-11-12-dli-architecture/continuation-29
 ```

@@ -322,7 +322,7 @@ Remaining before freezing: preflight1m, then the precision check, then FROZEN.
 Job `25857840.pbs-m1.metacentrum.cz` (turin25, exit 0, 2:46:35, commit `c42fde1ee`) ran 1M, 20-batch plans with
 seed 20261199. That seed is never used for primary data. Batches 10 and 20 were evaluated at 20K/50K/80K. Recall
 values were not inspected beyond the per-query SD of differences. Evidence:
-`C:\Users\nicoo\Workspace\Research-Results\2026-11-20-dli-emma-path\phase3-preflight1m-25857840\`
+`Research-Results/2026-11-20-dli-emma-path/phase3-preflight1m-25857840/`
 (`SHA256SUMS` verify, except the known `job.log` final-line case).
 
 | Contrast | Per-query SD at B* = 50K | 95% half-width per snapshot, 1,000 queries | Threshold / margin |

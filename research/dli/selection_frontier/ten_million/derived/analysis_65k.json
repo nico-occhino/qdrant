@@ -1,5 +1,5 @@
 {
- "run": "/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-42/frontier",
+ "run": "<admin>/experiments/2026-11-12-dli-architecture/continuation-42/frontier",
  "eval_set": "testB",
  "val_set": "val",
  "resamples": 10000,

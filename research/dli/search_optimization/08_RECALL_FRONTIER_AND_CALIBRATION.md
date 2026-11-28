@@ -1,7 +1,7 @@
 # Frozen geometric 10M recall frontier — continuation 28
 
 Source checkpoint: 7f3bfc066 (native controls); starting revision 4136d46f9.
-Raw evidence: `/home/nicoo/research-admin/experiments/2026-11-12-dli-architecture/continuation-28/`.
+Raw evidence: `<admin>/experiments/2026-11-12-dli-architecture/continuation-28/`.
 
 ## Completed evidence
 
