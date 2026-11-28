@@ -54,11 +54,17 @@ pinned by commit and SHA-256.
 1. **Split every overflowing bucket.** For each bucket with n > b_max live points, k = ⌈n / b_max⌉ (eq. 2.3).
    Spherical k-means with that k runs on a uniform sample of min(n, 100 · k) of its vectors (eq. 2.4); every vector
    of the bucket is then labelled by its nearest centroid.
+   - **b_max is a maintenance threshold, not a storage invariant.** k-means does not balance sizes, and reinsertion
+     is by argmax, so a child can still exceed b_max. Following the thesis, no extra split is made within the same
+     step. The child is split at the next maintenance, and the largest bucket is reported (§7).
 2. **Grow the output layer.** The parent keeps its id and output neuron. The k − 1 new neurons copy the parent's
    output weights and bias [T Fig. 2.3; C `models.py:62–94`].
 3. **Fine-tune.**
    - **Data.** The split buckets' sampled vectors with their k-means labels, plus a replay buffer: R vectors drawn
-     uniformly at random from the non-split buckets, split evenly across them, labelled with their current bucket.
+     uniformly at random from the non-split buckets, split evenly across them.
+   - **Replay labels.** Each replay vector is labelled with its **stored** bucket assignment, never with the
+     current router's prediction. Regenerating labels from the router would teach it to repeat its own drift, as in
+     Forgáč's self-labelling (audit F1).
    - **Optimizer.** A fresh Adam (lr 1e-3, batch 256), 20 epochs, starting from the current weights [C
      `cli.py:366`].
 4. **Reinsert** every vector of the split buckets by argmax under the fine-tuned router. Vectors in other buckets
@@ -66,14 +72,28 @@ pinned by commit and SHA-256.
 5. **Remove empty buckets** and their neurons.
 
 **4.3 Reclustering path (DEDRIFT)** [T §3.5, Alg. 4 l. 7].
-1. **Select the buckets to recluster.** B1 = the 50% largest buckets by live count. Then k₂ = ⌈|B1| / median size⌉,
-   and the k₂ − |B1| smallest buckets are added if k₂ > |B1|. Every overflowing bucket is added.
-2. **Recluster.** The selected vectors are pooled and reclustered by spherical k-means into ⌈n / (0.5 · b_max)⌉
-   clusters.
+1. **Select the buckets to recluster.** The rule is exact, as in `DedriftReclusteringStrategy`, [C
+   `reclustering.py:206–330`]. Sizes are live counts.
+   - **The largest buckets.** k = round_half_even(0.5 · |B|), clamped to [1, |B|]. If at most k buckets are
+     non-empty, nothing is reclustered. B1 = the k largest buckets (ties by lower bucket id).
+   - **The median.** μ is the median of the non-empty sizes, taking the *lower* middle value for an even count (as
+     `torch.median` does).
+   - **The smallest buckets.** k₂ = clamp(⌈|B1 sizes| / μ⌉, k, |B|). B2 = the k₂ − k smallest non-empty buckets
+     not in B1 (ties by higher bucket id first, as the code iterates the reversed sort).
+   - **The selection.** B1 ∪ B2 ∪ {every bucket with size > b_max}.
+2. **Recluster.** The selected vectors are pooled (N of them) and reclustered by spherical k-means into
+   k_new = ⌈N / (0.5 · b_max)⌉ clusters (thesis Alg. 4 l. 7; the code's default fill ratio is 1.0, and this spec
+   follows the thesis).
+   - **The k-means sample.** min(N, ⌊0.1 · b_max · k_new⌋) vectors (eq. 2.2's ratio, as in the code), seeded.
+   - **Labels.** Every pooled vector is labelled by its nearest centroid.
 3. **Initialize the new neurons.** Each new bucket's neuron copies the weights of the bucket that its centroid routes
    to under the current router [C `reclustering.py:121–169`].
 4. **Fine-tune, reinsert and remove empty buckets,** as in 4.2 steps 3–5.
 5. **Reset the reclustering baseline:** |B|_last = |B|.
+
+- **A note on cloned neurons.** Copying the parent's weights makes the siblings' logits equal at first, but it changes
+  the softmax normalisation. It is an initialisation, not a function-preserving expansion, so the entropy of the
+  next batch is measured after fine-tuning.
 
 ## 5. The single variant, CLI-I (author, 2026-11-28)
 - **The change.** CLI-I replaces the entropy trigger of 4.1 with the frozen bucket-imbalance rule of the Q5 trigger:
@@ -106,5 +126,19 @@ pinned by commit and SHA-256.
   epochs; and the training-sample size.
 - **Correctness:** a known answer after maintenance. Every live point is in exactly one bucket, and the size totals
   equal the live count.
+- **Routing-accuracy loss** [T §1.2]: L_route = 1 − (share of live points in untouched buckets whose argmax under the
+  new router equals their stored bucket), computed after every fine-tune. This is algorithmic drift between the
+  router and stored assignments, distinct from any publication defect.
+- **Trigger diagnostics.** |B|, H_batch − H_init and the mean and maximum batch logit are recorded every batch,
+  whether or not a trigger fires. Entropy's scale changes as |B| grows, so the +0.3-bit rule is a frozen
+  experimental setting, not a calibrated constant.
 - **Search:** recall and vectors scored over the final-benchmark grid (W@0.90, R@30 at 50K), from the frozen
   snapshot of each batch, as for the other arms.
+
+## 8. Proposed diagnostic, not an arm (author decision)
+- **The centroid-routing control.** The same splitting and DEDRIFT maintenance, but routing by the nearest bucket
+  centroid instead of the MLP.
+  - **The motivation.** The 1M IVF ablation found centroid routing often needed less work than the MLP.
+  - **The scope.** An offline replay on one uniform and one Shift plan, on validation panels, reported descriptively.
+    It answers whether the neural router adds value beyond the maintenance structure. §3.6 allows at most one
+    benchmark variant, which is CLI-I.

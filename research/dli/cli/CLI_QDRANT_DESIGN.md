@@ -131,11 +131,25 @@ mutable index with an imbalance-trigger variant.
   within a tolerance only, because training differs.
 - **G6 (local smoke).** Seed 20261202, W1 and W3, batches 0–2: gates G2 and G3(c) inside the run, plus monotone work.
 
+## 6b. Staging the work (adopted from the author's study notes, 2026-11-28)
+- **Stage A, the algorithm on a frozen single segment.** A pure in-memory CLI core (state machine, maintenance and
+  search) over a segment's vectors. Persistence and concurrency are out of scope at this stage.
+  - **What it must show.** Untouched buckets keep their assignments; split buckets are reinserted; model dimensions
+    match the bucket directory; L_route is measured.
+  - **Gates.** G1, G2 and G5 pass here first. Maintenance may rewrite the test segment's state wholesale. That is
+    acceptable for verification, and is never reported as an incremental-maintenance cost.
+- **Stage B, the in-segment lifecycle (§3–§4).** Persisted generations, the commit protocol, and optimizer
+  exclusion, with gates G3 and G4.
+- **The invariant both stages test.** A reader sees a complete (router, bucket directory, assignments) generation:
+  all old or all new.
+  - **Two failure kinds kept apart in the tests.** A mixed publication is a defect. Routing drift between the new
+    router and the stored assignments of untouched buckets is CLI's intended approximation, measured by L_route.
+
 ## 7. Plan and cost (estimate)
 | Weeks | Work |
 |---|---|
-| 1–2 | `CliIndex` (writes, search, live census), the persisted state and its flusher, optimizer exclusion; G1, G3 and G4 |
-| 3 | maintenance: k-means, grow and shrink, fine-tune, DEDRIFT, triggers, CLI-I; G1, G2 and G5 |
+| 1–2 | Stage A core (formulas, output-layer grow and shrink, triggers, DEDRIFT, fine-tune, search) on a frozen segment; G1, G2 and G5. Then `CliIndex` writes and the live census |
+| 3 | Stage B: the persisted generations and their flusher, the commit protocol, optimizer exclusion; G3 and G4 |
 | 4 | harness and frontier; G6; the b_max selection pilot (seed 20261202: {500, 1,000, 2,000} × W1–W3, 9 jobs); the CLI amendment frozen |
 | 5 | primary: CLI and CLI-I × W1–W3 × seeds 20261201 and 20261205 (12 jobs) |
 

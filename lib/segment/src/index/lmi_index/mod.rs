@@ -3,6 +3,8 @@
 
 #[cfg(feature = "lmi-training")]
 mod build;
+#[cfg(feature = "cli-research")]
+pub mod cli;
 mod build_plan;
 mod config;
 pub mod filtered;

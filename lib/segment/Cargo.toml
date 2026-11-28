@@ -18,6 +18,8 @@ lmi-training = ["dep:tch"]
 lmi-scorer-profile = []
 # Static LMI search profiling: switches `LmiIndex::search` to profiled routing/scoring with per-query logs.
 lmi-research = ["lmi-scorer-profile"]
+# Jakubík CLI research (research/dli/cli/CLI_SHARED_SPEC.md): algorithm core, no behaviour change unless used.
+cli-research = []
 testing = ["common/testing", "sparse/testing", "gpu/testing", "quantization/testing", "dep:exhaustive"]
 gpu = ["gpu/gpu"]
 
