@@ -614,3 +614,18 @@ rescore. See [the audit and evidence paths](emma_path/PHASE3_PRIMARY_JOB_AUDIT_2
 - **Gate 4.** It failed raw on all plans and passes after the preregistered stored-representation classification.
   The job script should have run that classification in-job; this is noted for future gates.
 - **Q7.** Submitted (26076922) from the frozen `e85c176f7`.
+
+## 2026-11-28 — Q7: where the filter is applied decides exact versus routed; Q4(c) implemented
+- **Q7 (job 26076922).** On the shared 60K fixture, Qdrant's routed plan intersects the probed buckets with the
+  payload index and scores only qualifying points.
+  - **Work.** S-LMI and DLI reach 0.90 with fewer vectors scored than exact search at every selectivity
+    (0.1–50%), so the switch is below 0.1%.
+  - **PostgreSQL.** It post-filters a candidate budget, and exact search wins up to ≈ 12,326 qualifying (≈ 20.5%).
+  - **The gate.** One preregistered gate failed: DLI's work is non-monotone at 1%, because the restarts of two
+    members are summed. Per member, every drop is within the restart rule. Amendment A2 is proposed and the data are
+    provisional.
+  - **Omissions.** Payload-enumeration counts and the 5-repetition latency were not recorded; they are declared.
+- **Q4(c)/(c′).** PostgreSQL's fitted level routers (LMI1) can be imported into Qdrant (research-only, segment
+  `testing`).
+  - **The known answer.** Qdrant router → LMI1 → import → rebuild reproduces every posting.
+  - **The run.** Amendment A1 is frozen at `fda10150c`, and the local replay is running.

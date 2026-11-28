@@ -86,7 +86,9 @@
     "job": "26076922.pbs-m1.metacentrum.cz",
     "walltime": "04:00:00",
     "submitted_utc": "2026-11-28",
-    "status": "running"
+    "status": "finished; gate monotone_work failed (FAILED.json: gates_failed); data kept; provisional results",
+    "archive": "C:/Users/nicoo/Workspace/Research-Results/2026-11-28-uniform-q7 (21 files)",
+    "rows_sha256": "1b011c6dddaeef1e7e4e359da352530d7227b201478df8656fa66d44ef0997bf"
    }
   ]
  }
