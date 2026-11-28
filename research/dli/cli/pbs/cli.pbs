@@ -4,7 +4,7 @@
 #PBS -j oe
 #
 # CLI selection pilot (research/dli/cli/CLI_PILOT_PREREGISTRATION.md). One job per (workload, b_max).
-#   qsub -l walltime=24:00:00 -v WORKLOAD=W1|W2|W3,BMAX=500|1000|2000,IN=<staged dir> cli.pbs
+#   qsub -l walltime=24:00:00 -v WORKLOAD=W1|W2|W3,BMAX=500|1000|2000,IN=<staged dir>[,ROUTING=mlp|centroid] cli.pbs
 set -euo pipefail
 : "${PBS_JOBID:?must run under PBS}" "${SCRATCHDIR:?scratch_ssd required}" "${WORKLOAD:?}" "${BMAX:?}" "${IN:?}"
 ROOT=/storage/budejovice1/home/nico/lmi-metacentrum
@@ -22,8 +22,10 @@ case "$WORKLOAD" in
   *) echo "unknown WORKLOAD"; exit 2 ;;
 esac
 case "$BMAX" in 500|1000|2000) ;; *) echo "BMAX is not a preregistered candidate"; exit 2 ;; esac
+ROUTING=${ROUTING:-mlp}   # pilot addendum A1: centroid = C-CLI
+case "$ROUTING" in mlp|centroid) ;; *) echo "unknown ROUTING"; exit 2 ;; esac
 EXPECTED_COMMIT=$(cat "$IN/native.commit")
-LABEL="pilot-$WORKLOAD-$SEED-bmax$BMAX"
+LABEL="pilot-$WORKLOAD-$SEED-bmax$BMAX$([[ $ROUTING = centroid ]] && echo -ccli || true)"
 OUT="$CR/results/cli-$LABEL-$PBS_JOBID"
 mkdir -p "$CR/results"; mkdir "$OUT"
 exec > >(tee "$OUT/job.log") 2>&1
@@ -93,7 +95,7 @@ QDRANT_LMI_SAMPLE_BUDGET_BYTES=2000000000 "$BIN" --exact cli_core_synthetic_loop
 grep -q "test result: ok. 1 passed" "$OUT/unit-tests.log"
 phase=run
 QDRANT_LMI_SAMPLE_BUDGET_BYTES=2000000000 CLI_PLAN="$W/plan" CLI_CORPUS="$W/data/vectors.f16" CLI_SET="$VAL" CLI_OUT="$W/out" \
-  CLI_ROUTING=mlp CLI_SIGNAL=entropy CLI_BMAX="$BMAX" CLI_REPLAY=v3 CLI_STORED_F16=1 CLI_THREADS="$NCPUS" OMP_NUM_THREADS="$NCPUS" \
+  CLI_ROUTING=$ROUTING CLI_SIGNAL=entropy CLI_BMAX="$BMAX" CLI_REPLAY=v3 CLI_STORED_F16=1 CLI_THREADS="$NCPUS" OMP_NUM_THREADS="$NCPUS" \
   /usr/bin/time -v "$BIN" --ignored --exact cli_stage_a_plan --nocapture > "$W/run.log" 2>&1
 cp "$W/run.log" "$W/out/rows.jsonl" "$W/out/batches.jsonl" "$OUT/"
 phase=analysis

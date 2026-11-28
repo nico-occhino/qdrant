@@ -55,3 +55,14 @@ runtime, which set the CLI primary walltimes.
 ## 6. Reported, not decided
 Bracketing per (workload, b_max, panel), the per-batch maintenance record (spec §7), fine-tune and wall seconds,
 and peak memory.
+
+## 7. Addendum A1 (2026-11-28, before any centroid-CLI pilot data): the centroid-routed CLI variant
+- **The author's decision.** A second, exploratory CLI variant, **C-CLI**: spec v3 maintenance (splits, DEDRIFT,
+  stored-label membership) with routing by each bucket's spherical k-means centroid instead of the MLP.
+  - **Maintenance and triggers.** Centroids are replaced at each split or recluster, with no training. The drift
+    trigger is growth only, because entropy is undefined for this router (`cli_core.rs`, `RoutingKind::Centroid`).
+  - **Its basis.** The Stage A diagnostic `RESULTS_CENTROID_CONTROL.md`, which is descriptive. This variant is
+    labelled exploratory everywhere it is reported.
+- **Its pilot.** It mirrors §3–§5. The same three workloads and three b_max candidates, the same choice rule and gates,
+  nine jobs with `ROUTING=centroid`. Its b_max is chosen independently of CLI's.
+- **What stays.** The MLP pilot (§3) is unchanged. Its jobs are already running from staging `21cf4eaa1`.
