@@ -3226,7 +3226,25 @@ async fn dli_phase3_workload() {
                 static_reference: static_model.is_some(),
                 static_model,
                 calibration_set: calibration_set.as_ref(),
+                import_routers: None,
             });
+            // Q4 arm (c): the same snapshot again, every learned level rebuilt with another engine's router
+            // (`DLI_P3_IMPORT_ROUTERS/batch_<t>/level_<l>.lmi1`), into `batch_<t>/import`.
+            if let Some(root) = std::env::var_os("DLI_P3_IMPORT_ROUTERS") {
+                let dir = PathBuf::from(root).join(format!("batch_{index:02}"));
+                run_frontier(&FrontierRun {
+                    segments_dir: &copy,
+                    output: &output.join(format!("batch_{index:02}")).join("import"),
+                    sets: &sets,
+                    budgets: &budgets,
+                    policy_filter: policies.as_ref(),
+                    query_cap,
+                    static_reference: false,
+                    static_model: None,
+                    calibration_set: None,
+                    import_routers: Some(&dir),
+                });
+            }
             }
             record["frontier_seconds"] = frontier_started.elapsed().as_secs_f64().into();
             // I6 timed replay (PREREGISTRATION.md §4): same copy, production search paths, no tracing.

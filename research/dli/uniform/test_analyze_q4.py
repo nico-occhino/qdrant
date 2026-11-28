@@ -6,6 +6,8 @@ Synthetic snapshots 10–12, 4 queries, recall at 50K identical across queries:
 * At batch 11 the schedule explains the gap (|G_b| ≤ 0.02, |S| ≥ 0.10).
 * (b)'s ledger equals PostgreSQL's (two publications), and its snapshot digests and populations match.
 * A second (b) with a wrong publication fails the ledger check.
+* Amendment A1: (c) = 0.80 and (c′) = 0.80, so F = (c)−(b) = +0.10 (0.80 rounds to 24/30), E = PostgreSQL
+  original − (c) = −0.10, F′ = (c′)−(a′) = −0.10 and E′ = PostgreSQL aligned − (c′) = +0.10.
 """
 import json
 import sys
@@ -64,6 +66,11 @@ with tempfile.TemporaryDirectory() as tmp:
     assert r["batch11_schedule_explains_gap"] is True
     assert r["checks"]["b_ledger_equals_postgres"] and r["checks"]["b_snapshots_equal_postgres"], r["checks"]
     assert r["checks"]["a1_ledger_equals_archive"], r["checks"]
+    runs.update(c=qrun(root, "c", 0.80), c1=qrun(root, "c1", 0.80))
+    c = Q.analyze(pgd, runs)["snapshots"][10]["contrasts"]
+    for key, want in (("F_router_c_minus_b", 0.10), ("E_engine_pg_original_minus_c", -0.10),
+                      ("F1_router_c1_minus_a1", -0.10), ("E1_engine_pg_aligned_minus_c1", 0.10)):
+        assert abs(c[key]["point"] - want) < 1e-9, (key, c[key])
     bad = qrun(root, "b_bad", 0.70, pubs=[(1, 5000), (2, 10000)])
     r = Q.analyze(pgd, {"b": bad, "a1": runs["a1"]})
     assert not r["checks"]["b_ledger_equals_postgres"], r["checks"]

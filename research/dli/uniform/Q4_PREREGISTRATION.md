@@ -28,7 +28,8 @@ residual-engine parts.
 | (a) | Qdrant as run | the archived E1 rows of job 25859944 (MetaCentrum), unchanged |
 | (a′) | Qdrant's own schedule, replayed locally | E1, per-batch chunking (5,025-point drains at batch starts), measured at 10–12 |
 | (b) | PostgreSQL's schedule | E1, `DLI_P3_DRAIN_ALIGN=global`: every drain holds exactly 5,000 points across batch boundaries |
-| (c) | PostgreSQL's routers on (b)'s topology | **blocked**: needs PostgreSQL's level routers (LMI1) at batches 10–12, which PostgreSQL archived only as hashes |
+| (c) | PostgreSQL's routers on (b)'s topology | added by Amendment A1 (§7) |
+| (c′) | PostgreSQL's Qdrant-aligned routers on (a′)'s topology | added by Amendment A1 (§7) |
 
 - **The known-answer check for (b).** Before data, a simulation of the Bentley–Saxe rule with exact 5,000-point
   drains reproduced all 117 PostgreSQL publications (target level and entries).
@@ -72,3 +73,39 @@ For each snapshot t ∈ {10, 11, 12}, mean Recall@30 at 50K and mean vectors sco
 - **The runs.** Local and serial: (a′) then (b), with `DLI_P3_MAX_BATCHES=13` and `DLI_P3_EVAL=10,11,12`.
 - **The code.** The same binary for both, the frozen revision's perf build.
 - **The analysis.** `analyze_q4.py`, with a known-answer test, committed before the runs.
+
+## 7. Amendment A1 (2026-11-28, before any arm (c) or (c′) data)
+- **Inputs.** PostgreSQL's export `Q4_ROUTER_EXPORT.md` (`c68a606`, SHA-256 `0f218f20…637c`, pinned in `PINS.md`)
+  provides the original fitted level routers (LMI1) at batches 10–12 for both of PostgreSQL's schedules.
+  - **Integrity.** Export `SHA256SUMS` digest `8219614e…9e74`, manifest SHA-256 `e3ca8b0e…10e7`.
+  - **The plan.** Its Phase 3 plan digest `20a8bb97…e2` equals the S1 plan used here.
+- **Topology match, checked before data.** Live counts and level populations agree level for level.
+  - PostgreSQL's own schedule equals (b): batch 10 L2 495,000; batch 11 L1 45,000 + L2 495,000; batch 12 L1 35,000 +
+    L3 550,000.
+  - Its Qdrant-aligned schedule equals (a′): batch 10 L1 45,026 + L2 450,228; batch 11 L1 40,000 + L3 500,279;
+    batch 12 L1 35,000 + L2 50,025 + L3 500,279.
+- **Arm (c).** At each snapshot of a replay of (b), every learned level is rebuilt over its own points with
+  PostgreSQL's router for that level (`reuse_router`; no training; buckets and hidden width 128 from the file).
+  Search then uses Qdrant's engine unchanged: mdn_code, the same budgets and the 32 mq_val queries.
+- **Arm (c′).** The same, on a replay of (a′), with the routers of PostgreSQL's Qdrant-aligned schedule.
+- **Estimands, added to §3.**
+  - **At PostgreSQL's schedule:** F = (c) − (b) (router fit) and E = PostgreSQL original − (c) (engine), as frozen in
+    §3.
+  - **At Qdrant's schedule:** F′ = (c′) − (a′) and E′ = PostgreSQL aligned − (c′). These split the batch-10 mirror
+    residual (+10.42 pp).
+  - **Statistics.** As in §3.
+- **Gates, added to §5:**
+  1. **Import round trip.** `lmi1_export_import_rebuild_reproduces_postings`: a Qdrant router written as LMI1,
+     imported and rebuilt reproduces every posting.
+  2. **Per member, inside the run.** The rebuilt member carries exactly the parsed router. On 1,000 stored points its
+     forward pass equals an independent float64 evaluation of the LMI1 weights to ≤ 1e-4, with the same argmax, and
+     each point is posted in its argmax bucket.
+  3. **The replays reproduce the earlier arms.** The native (a′) and (b) rows of the new replays equal those of the
+     archived Q4 local runs query by query. That is the same machine, with the E1 path unchanged.
+- **A declared difference.** PostgreSQL routes its halfvec cosine-normalized vectors; Qdrant routes its own stored
+  normalized Float16 vectors.
+  - **What follows.** Gate 2 checks the import, not cross-engine logit equality. No PostgreSQL-computed logits for an
+    agreed query were exported.
+  - **What it means for the estimates.** F and F′ therefore include any routing difference from preprocessing. This
+    is expected to be negligible, but it is not measured.
+- **Execution.** Locally, serially, with one binary (`gates/run_q4c_local.sh`), archived to C: as before.

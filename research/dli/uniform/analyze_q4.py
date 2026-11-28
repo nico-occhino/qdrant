@@ -1,6 +1,6 @@
 """Q4 analysis (Q4_PREREGISTRATION.md §2–§3). It is committed, with its known-answer test, before arms (a′) and (b).
 
-    analyze_q4.py --pg-dir SHIFT_TOPOLOGY_DIR --qdrant a=DIR --qdrant a1=DIR --qdrant b=DIR [--qdrant c=DIR]
+    analyze_q4.py --pg-dir SHIFT_TOPOLOGY_DIR --qdrant a=DIR --qdrant a1=DIR --qdrant b=DIR [--qdrant c=DIR] [--qdrant c1=DIR]
                   [--a-ledger DIR] [--out FILE]
 
 Each Qdrant DIR is a `dli_phase3_workload` run with `batches.jsonl` and `batch_XX/rows.jsonl` (set `mq_val`,
@@ -113,6 +113,9 @@ def analyze(pg_dir, qdrant, a_ledger=None):
         if "c" in q:
             c["F_router_c_minus_b"] = paired(q["c"][t][0], q["b"][t][0], rng)
             c["E_engine_pg_original_minus_c"] = paired(ref[0], q["c"][t][0], rng)
+        if "c1" in q and "a1" in q and t in pg["qdrant_schedule"]:  # Amendment A1: the mirror at Qdrant's schedule
+            c["F1_router_c1_minus_a1"] = paired(q["c1"][t][0], q["a1"][t][0], rng)
+            c["E1_engine_pg_aligned_minus_c1"] = paired(pg["qdrant_schedule"][t][0], q["c1"][t][0], rng)
         if "a1" in q and t in pg["qdrant_schedule"]:
             c["mirror_pg_aligned_minus_a1"] = paired(pg["qdrant_schedule"][t][0], q["a1"][t][0], rng)
         if "a" in q:
@@ -129,7 +132,7 @@ def analyze(pg_dir, qdrant, a_ledger=None):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--pg-dir", type=Path, required=True)
-    p.add_argument("--qdrant", action="append", required=True, help="ARM=DIR for a, a1, b (and c)")
+    p.add_argument("--qdrant", action="append", required=True, help="ARM=DIR for a, a1, b (and c, c1)")
     p.add_argument("--a-ledger", type=Path, help="archived Qdrant run whose ledger (a′) must reproduce")
     p.add_argument("--out", type=Path)
     a = p.parse_args()

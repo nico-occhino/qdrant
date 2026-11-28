@@ -7,6 +7,8 @@ mod build_plan;
 mod config;
 pub mod filtered;
 mod postings;
+#[cfg(feature = "testing")]
+pub mod research_import;
 pub mod read_only;
 mod routing;
 #[cfg(feature = "lmi-training")]

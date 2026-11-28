@@ -30,7 +30,7 @@ use segment::index::VectorIndexEnum;
 use segment::segment::Segment;
 use segment::segment_constructor::load_segment;
 use segment::segment_constructor::segment_builder::SegmentBuilder;
-use segment::index::lmi_index::LmiConfig;
+use segment::index::lmi_index::{LmiConfig, MlpRouter, RouterLayer};
 use segment::types::{Distance, ExtendedPointId, HnswGlobalConfig, Indexes};
 use uuid::Uuid;
 
@@ -417,6 +417,128 @@ fn run_proportional(
     out
 }
 
+/// Q4 arm (c). For every learned member, parse `dir/level_<l>.lmi1`, register it, and rebuild the member over
+/// its own points with that router (`reuse_router`, so no training), the router's bucket count and hidden width.
+/// Gate: on the first 1,000 live points of each member, the rebuilt router's forward pass equals an independent
+/// scalar evaluation of the LMI1 weights on the same stored vector (max |Δlogit| <= 1e-4, identical argmax), and
+/// every point lands in that argmax bucket. Returns a record per member.
+fn import_level_routers(scratch: &Path, dir: &Path, loaded: &mut [(usize, Segment)]) -> serde_json::Value {
+    use segment::index::lmi_index::research_import::{parse_lmi1, register_router};
+    let mut records = Vec::new();
+    for (level, segment) in loaded.iter_mut().filter(|(l, _)| *l > 0) {
+        let path = dir.join(format!("level_{level}.lmi1"));
+        let bytes = fs_err::read(&path).unwrap();
+        let router = parse_lmi1(&bytes).unwrap();
+        let (input, buckets) = router.validate().unwrap();
+        let RouterLayer::Linear(first) = &router.layers[0] else { unreachable!() };
+        let hidden = first.out_features;
+        let fingerprint = register_router(router.clone());
+        let mut config = segment.config().clone();
+        let vector = config.vector_data.get_mut(DEFAULT_VECTOR_NAME).unwrap();
+        let Indexes::LmiTrained(mut model) = vector.index.clone() else {
+            panic!("learned member is not a trained LMI");
+        };
+        model.n_buckets = buckets;
+        model.hidden_dim = hidden;
+        model.sample_size = model.sample_size.max(buckets);
+        model.nprobe = model.nprobe.min(buckets);
+        model.reuse_router = Some(fingerprint);
+        model.check().unwrap();
+        vector.index = Indexes::LmiTrained(model);
+        vector.quantization_config = None;
+        let staging = tempfile::tempdir_in(scratch).unwrap();
+        let mut builder =
+            SegmentBuilder::new(staging.path(), &config, &HnswGlobalConfig::default(), FeatureFlags::default())
+                .unwrap();
+        builder.update(&[&*segment], &AtomicBool::new(false)).unwrap();
+        let rebuilt = builder.build_for_test(scratch);
+        assert_eq!(rebuilt.available_point_count(), segment.available_point_count(), "level {level} live count");
+        // Known answer: the imported router, evaluated independently in scalar f64 on stored vectors.
+        let (max_delta, checked) = check_imported_forward(&rebuilt, &router, input);
+        assert!(max_delta <= 1e-4, "level {level}: imported forward differs by {max_delta}");
+        println!("IMPORTED_ROUTER level={level} buckets={buckets} hidden={hidden} fp={fingerprint:016x} checked={checked} max_delta={max_delta:e}");
+        records.push(serde_json::json!({
+            "level": level, "file": path.file_name().unwrap().to_string_lossy(), "sha256": sha256_hex(&bytes),
+            "fingerprint": format!("{fingerprint:016x}"), "buckets": buckets, "hidden": hidden,
+            "live": rebuilt.available_point_count(), "replaced_uuid": segment.uuid, "uuid": rebuilt.uuid,
+            "forward_checked": checked, "forward_max_abs_delta": max_delta,
+        }));
+        *segment = rebuilt;
+    }
+    serde_json::Value::Array(records)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Max |logit difference| between the member's routing state (as built) and a scalar f64 evaluation of `router`,
+/// over the first 1,000 live points; also asserts each point is posted in its argmax bucket.
+fn check_imported_forward(segment: &Segment, router: &MlpRouter, dim: usize) -> (f64, usize) {
+    let index = segment.vector_data[DEFAULT_VECTOR_NAME].vector_index.borrow();
+    let VectorIndexEnum::Lmi(lmi) = &*index else { panic!("rebuilt member is not LMI") };
+    let state = lmi.routing_state().expect("rebuilt member is trained");
+    assert_eq!(state.router(), router, "rebuilt member does not carry the imported router");
+    let mut bucket_of = HashMap::new();
+    for bucket in 0..state.postings().len() {
+        for &offset in state.postings().get(bucket).unwrap() {
+            bucket_of.insert(offset, bucket);
+        }
+    }
+    let storage = segment.vector_data[DEFAULT_VECTOR_NAME].vector_storage.borrow();
+    let mut offsets: Vec<_> = bucket_of.keys().copied().collect();
+    offsets.sort_unstable();
+    let (mut max_delta, mut checked) = (0f64, 0usize);
+    for &offset in offsets.iter().take(1000) {
+        let stored: Vec<f32> = storage_vector_f32(&*storage, offset, dim);
+        let native = router.forward(&stored).unwrap();
+        let scalar = scalar_forward(router, &stored);
+        for (a, b) in native.iter().zip(&scalar) {
+            max_delta = max_delta.max((*a as f64 - b).abs());
+        }
+        let argmax = |v: &[f64]| v.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0;
+        let native64: Vec<f64> = native.iter().map(|&v| v as f64).collect();
+        assert_eq!(argmax(&native64), argmax(&scalar), "offset {offset}: argmax differs");
+        assert_eq!(bucket_of[&offset], argmax(&native64), "offset {offset} posted outside its argmax bucket");
+        checked += 1;
+    }
+    (max_delta, checked)
+}
+
+fn storage_vector_f32(
+    storage: &segment::vector_storage::VectorStorageEnum,
+    offset: common::types::PointOffsetType,
+    dim: usize,
+) -> Vec<f32> {
+    use common::generic_consts::Random;
+    use segment::data_types::vectors::VectorInternal;
+    use segment::vector_storage::VectorStorageRead as _;
+    let VectorInternal::Dense(v) = storage.get_vector_opt::<Random>(offset).expect("stored vector").to_owned() else {
+        panic!("dense vector expected")
+    };
+    assert_eq!(v.len(), dim, "dimension");
+    v
+}
+
+fn scalar_forward(router: &MlpRouter, input: &[f32]) -> Vec<f64> {
+    let mut values: Vec<f64> = input.iter().map(|&v| v as f64).collect();
+    for layer in &router.layers {
+        match layer {
+            RouterLayer::Linear(l) => {
+                values = l
+                    .weights
+                    .chunks_exact(l.in_features)
+                    .zip(&l.bias)
+                    .map(|(row, &b)| b as f64 + row.iter().zip(&values).map(|(&w, &x)| w as f64 * x).sum::<f64>())
+                    .collect();
+            }
+            RouterLayer::ReLU => values.iter_mut().for_each(|v| *v = v.max(0.0)),
+        }
+    }
+    values
+}
+
 fn build_static_reference(
     root: &Path,
     sources: &[(usize, &Segment)],
@@ -492,6 +614,7 @@ fn dli_65k_selection_frontier() {
         static_reference: std::env::var_os("DLI_FRONTIER_STATIC").is_some(),
         static_model,
         calibration_set: None,
+        import_routers: None,
     });
 }
 
@@ -509,6 +632,9 @@ pub(super) struct FrontierRun<'a> {
     pub static_model: Option<LmiConfig>,
     /// Calibration queries for the `calibrated` policy (E1L); fitted on this snapshot.
     pub calibration_set: Option<&'a QuerySet>,
+    /// Q4 arm (c): a directory of `level_<l>.lmi1` routers from another engine. Every learned member is rebuilt
+    /// over its own points with that level's router (no training) before the frontier runs.
+    pub import_routers: Option<&'a Path>,
 }
 
 pub(super) fn run_frontier(run: &FrontierRun) {
@@ -534,6 +660,7 @@ pub(super) fn run_frontier(run: &FrontierRun) {
         })
         .collect();
     loaded.sort_by_key(|(level, _)| std::cmp::Reverse(*level));
+    let imported = run.import_routers.map(|dir| import_level_routers(segments_dir, dir, &mut loaded));
     let members: Vec<(usize, &Segment)> = loaded.iter().map(|(l, s)| (*l, s)).collect();
     let index: Vec<Option<MemberIndex>> = members.iter().map(|(l, s)| member_index(*l, s)).collect();
     let total: usize = members.iter().map(|(_, s)| s.available_point_count()).sum();
@@ -570,6 +697,9 @@ pub(super) fn run_frontier(run: &FrontierRun) {
         })),
     });
     fs_err::write(output.join("topology.json"), serde_json::to_vec_pretty(&topology).unwrap()).unwrap();
+    if let Some(imported) = &imported {
+        fs_err::write(output.join("imported_routers.json"), serde_json::to_vec_pretty(imported).unwrap()).unwrap();
+    }
     let calibration = run.calibration_set.map(|set| {
         let started = std::time::Instant::now();
         let fitted = fit_calibration(&members, &index, set, total);

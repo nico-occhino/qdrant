@@ -158,6 +158,9 @@ fn reusable_router(
             break;
         }
     }
+    // Research (`testing`): a router imported from another engine (Q4 arm c), when no source holds it.
+    #[cfg(feature = "testing")]
+    let found = found.or_else(|| super::research_import::registered_router(fingerprint));
     let router = found.ok_or_else(|| {
         OperationError::service_error(format!(
             "LMI router {fingerprint:016x} requested for reuse is not among the build sources"
