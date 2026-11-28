@@ -629,3 +629,13 @@ rescore. See [the audit and evidence paths](emma_path/PHASE3_PRIMARY_JOB_AUDIT_2
   `testing`).
   - **The known answer.** Qdrant router → LMI1 → import → rebuild reproduces every posting.
   - **The run.** Amendment A1 is frozen at `fda10150c`, and the local replay is running.
+
+## 2026-11-28 — Q4 closed: same topology plus same routers gives the same answers in both engines
+- **The run.** Arms (c) and (c′) rebuilt every learned level at Shift batches 10–12 with PostgreSQL's exported
+  routers, and searched with Qdrant's unchanged engine.
+- **The engine residual** is 0.00 pp at batches 10–11 and 0.10 pp at batch 12, in both schedules. Vectors scored
+  equal PostgreSQL's exactly.
+- **The decomposition.** Batch 11's −22.5 pp total is schedule (−24.17), plus router fit (+1.67), plus engine (0).
+  Batch 10's +10.42 pp residual at Qdrant's schedule is router fit, F′ [+1.87, +20.00].
+- **Gates.** Import round trip, forward ≤ 8.2e-6, native rows identical to the archived Q4 run, ledgers, and
+  rounding: all pass.

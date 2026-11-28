@@ -5,16 +5,14 @@ Updated 2026-11-27. Branch `research/uniform-questions-20261127` (worktree `~/wo
 ## Author actions
 - **Q7 Amendment A2 decision:** apply the widening-restart exception per DLI member (proposed; the gate passes
   under it, and no number changes), or keep the gate failure. See [RESULTS_Q7.md](RESULTS_Q7.md) §5.
-- Q4(c) is unblocked: PostgreSQL published `Q4_ROUTER_EXPORT.md` (`c68a606`). Trigger V2 is skipped
-  (author, 2026-11-28).
+- Trigger V2 is skipped (author, 2026-11-28).
 - Otherwise none. MetaCentrum Kerberos is valid; if it expires, the `kinit` is written here.
 
 ## Running jobs (this worktree; cap of 4)
 - None.
 
 ## Local runs
-- **Q4(c)/(c′)** (Amendment A1, frozen `fda10150c`): replays of (b) and (a′), with snapshots 10–12 also evaluated
-  using PostgreSQL's level routers. Running in `~/research-admin/experiments/2026-11-27-uniform/q4c-local/`.
+- **Q4(c)/(c′)**: done. Archived as `Research-Results/2026-11-28-uniform-q4c/`.
 
 ## Finished jobs
 - `26076922` **Q7: completed; the monotone-work gate FAILED** (DLI at 1%, summed member restarts); provisional
@@ -71,9 +69,9 @@ Updated 2026-11-27. Branch `research/uniform-questions-20261127` (worktree `~/wo
   and its snapshot topologies exactly.
   - **Batch 11.** The schedule explains the gap: S = −24.17 pp, with +1.67 pp remaining.
   - **Batch 10.** A topology-dependent residual remains (+10.42 pp at Qdrant's schedule).
-- **(c) and (c′): unblocked.** PostgreSQL exported its routers (`Q4_ROUTER_EXPORT.md`, `c68a606`). Amendment A1
-  adds the router import (known answer: export → import → rebuild reproduces every posting). The local run is in
-  progress.
+- **(c) and (c′): done** (Amendment A1). With PostgreSQL's routers on the same topology, Qdrant reproduces
+  PostgreSQL's recall and work: engine residual 0.0–0.1 pp. The batch-10 +10.42 pp residual is router fit (F′). See
+  [RESULTS_Q4.md](RESULTS_Q4.md).
 
 ## Q7. Filtering
 - **Fixture.** `q7_fixture.py` reproduces every value of PostgreSQL's spec (3ec4041).
