@@ -11,7 +11,8 @@ Gates:
 * no duplicate or non-qualifying ids;
 * exact strategies have Recall@30 = 1 except where the gold has an exact tie at rank 30 (s30 == s31);
 * monotone mean work along each curve, except widening restarts (a drop between n and 2n where every per-query
-  drop is < 30, as in final-benchmark A3); every drop is listed.
+  drop is < 30, as in final-benchmark A3; for a multi-member arm, every per-member drop, Amendment A2); every drop
+  is listed.
 """
 import argparse
 import json
@@ -76,9 +77,16 @@ def analyze(run):
             if m1 < m0 - 1e-9:
                 q0 = {x["query"]: x["work"] for x in v0}
                 drops = [q0[x["query"]] - x["work"] for x in v1 if q0[x["query"]] > x["work"]]
+                # Amendment A2: for a multi-member arm (DLI), the restart bound applies to each member's own work
+                # (`plans[].work`), because each member runs its own routed search and widening restart.
+                p0 = {x["query"]: {m.get("level"): m.get("work", 0) for m in x["plans"]} for x in v0}
+                member_drops = [p0[x["query"]].get(m.get("level"), 0) - m.get("work", 0)
+                                for x in v1 for m in x["plans"] if len(x["plans"]) > 1]
+                max_member = max(member_drops, default=None)
                 rec = {"curve": f"{arm}/{kind}/{pred}", "knobs": [k0, k1], "mean_work": [float(m0), float(m1)],
-                       "max_query_drop": max(drops)}
-                if kind == "nprobe" and k1 <= 2 * k0 and max(drops) < K:
+                       "max_query_drop": max(drops), "max_member_drop": max_member}
+                bound = max(drops) if max_member is None else max_member
+                if kind == "nprobe" and k1 <= 2 * k0 and bound < K:
                     restarts.append(rec)
                 else:
                     problems.append({"non_monotone": rec})

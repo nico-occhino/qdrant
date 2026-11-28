@@ -1,8 +1,9 @@
 # Q7. Filtered search on the shared fixture (results)
 
-**Status: the job completed, but one preregistered gate FAILED (work monotonicity, DLI at the 1% predicate).** The
-numbers below are complete and archived, but they are **provisional** until the author decides proposed
-Amendment A2 (§5). No rerun was made.
+**Status: COMPLETE; every gate passes under Amendment A2** (applied by the author's decision, after the data). The
+frozen monotone-work gate failed in the job on DLI at 1% (§1, §5). A2 applies the restart bound per DLI member. Under
+it the gate passes, with 20 admitted restarts, and no reported number changes (`analysis-A2.json`, SHA-256
+`9802335f…337c`). No rerun was made.
 
 - **The protocol.** [Q7_PREREGISTRATION.md](Q7_PREREGISTRATION.md), frozen at `e85c176f7`, with descriptive
   Addendum A1 (`a6b067075`, before results).
@@ -19,7 +20,7 @@ Amendment A2 (§5). No rerun was made.
 | No duplicate or non-qualifying id (4,224 records) | pass (0) |
 | ExactMatches gives Recall@30 = 1.0, with work = qualifying count | pass (S-LMI and DLI, all predicates) |
 | Underfill | 0 rows underfilled |
-| Monotone work, widening restarts admitted (n → 2n, every per-query drop < 30) | **fail**: DLI nprobe 2→4 (max per-query drop 39) and 4→8 (52) at 1%. The other 18 drops are admitted restarts |
+| Monotone work, widening restarts admitted (n → 2n, every per-query drop < 30) | frozen rule: **fail** (DLI nprobe 2→4 and 4→8 at 1%, per-query drops 39 and 52). Under A2 (per-member bound): **pass**, 20 restarts admitted |
 
 - **Why the monotonicity gate fails.** The DLI arm is two members: level 2 (ids 1–55,000, 100 buckets) and level 1
   (55,001–60,000, 10 buckets). Each runs its own routed search, and each can widen and restart.
@@ -84,11 +85,11 @@ D(p) = routed W@0.90(p) − qualifying count.
   routes (0.51–0.59). DLI's own search path rejects filters, so this fallback is not tuned for filtered search.
 - **HNSW** reaches ≥ 0.996 at every predicate, at exact cost up to 10%.
 
-## 5. Proposed Amendment A2 (author decision; not applied)
+## 5. Amendment A2 (applied 2026-11-28 by the author's decision; recorded in the preregistration §9)
 - **The proposed rule.** Apply the widening-restart exception per member. A drop in a query's total DLI work from n
   to 2n is admitted when, for every member, that member's work drop is < 30, from the per-member `plans[].work`
   already in the rows. Single-index arms are unchanged.
 - **Its effect on these data.** All DLI drops are admitted (largest per-member drop 28), and the gate passes. No
   number in §2–§4 changes: the analysis does not depend on the gate's outcome.
-- **The alternative.** Keep the failure, and report Q7's DLI curves as non-monotone, which they are at the query
-  level.
+- **The rejected alternative** was to keep the failure, and report Q7's DLI curves as non-monotone at the query
+  level. That is still true of the raw curves.

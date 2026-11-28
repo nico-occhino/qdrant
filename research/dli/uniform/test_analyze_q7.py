@@ -8,6 +8,8 @@ One predicate, 2 queries:
 * HNSW ef curve 30, 45: recall 0.95 and 1.0, so W@0.90 is the ef=30 work (upper_bound) and 50K is unreachable.
 * S-LMI exact: query 0 has recall 29/30, but its gold has a rank-30 tie, so it is admitted.
 * Second case: the same, with no tie and a 1→2 drop of 40 per query. Both are problems.
+* Amendment A2: a two-member DLI curve whose per-query drop is 40 = 20 + 20 per member is a restart; one whose
+  members drop 35 + 5 is not.
 """
 import json
 import sys
@@ -52,4 +54,22 @@ with tempfile.TemporaryDirectory() as tmp:
     r = A.analyze(bad)
     kinds = sorted(next(iter(p)) for p in r["problems"])
     assert not r["pass"] and kinds == ["exact_shortfall_without_tie", "non_monotone"], r["problems"]
+    def dli(root, split):
+        root.mkdir()
+        rows = []
+        for q in (0, 1):
+            for n, (a, b) in ((1, (100, 100)), (2, (100 - split[0], 100 - split[1]))):
+                rows.append({"arm": "DLI", "strategy": f"nprobe={n}", "predicate": "1%", "query": q, "recall30": 0.95,
+                             "underfill": 0, "duplicates": 0, "nonqualifying": 0, "work": a + b,
+                             "plans": [{"level": 2, "plan": "RoutedIntersect", "work": a},
+                                       {"level": 1, "plan": "RoutedIntersect", "work": b}]})
+        (root / "rows.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+        (root / "gold.jsonl").write_text("\n".join(json.dumps({"predicate": "1%", "query": q, "qualifying": 600,
+                                                               "tie_at_boundary": False}) for q in (0, 1)) + "\n")
+    dli(Path(tmp) / "dli_ok", (20, 20))
+    r = A.analyze(Path(tmp) / "dli_ok")
+    assert r["pass"] and len(r["widening_restarts"]) == 1 and r["widening_restarts"][0]["max_member_drop"] == 20, r
+    dli(Path(tmp) / "dli_bad", (35, 5))
+    r = A.analyze(Path(tmp) / "dli_bad")
+    assert not r["pass"] and next(iter(r["problems"][0])) == "non_monotone", r["problems"]
 print("analyze_q7 known-answer test: OK")

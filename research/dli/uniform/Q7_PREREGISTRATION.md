@@ -99,3 +99,14 @@ For each, we record:
 - **PostgreSQL's value, computed now from its pinned table.** D(10%) = 12,700.75 − 6,000 = +6,700.75 and
   D(50%) = 11,277.06 − 30,000 = −18,722.94. So m\* = 6,000 + 6,700.75 / 25,423.69 × 24,000 ≈ **12,326** qualifying
   vectors (≈ 20.5%).
+
+## 9. Amendment A2 (2026-11-28, AFTER the Q7 data; author decision)
+- **What happened.** Job 26076922 failed the monotone-work gate (§5). DLI nprobe 2→4 and 4→8 at 1% had per-query
+  drops of 39 and 52.
+- **The cause.** DLI is two members, each running its own routed search with its own widening restart. A query's
+  DLI work is their sum, so two admitted restarts add up past the bound.
+- **The change.** For a multi-member arm, the restart exception's bound (< 30) applies to each member's own work
+  drop (`plans[].work`), not to the summed drop. Single-index arms are unchanged.
+- **Disclosure.** This amendment was made after seeing the data, by the author's decision. Under it, all DLI drops
+  are admitted: the largest per-member drop is 28. No reported number changes, only the gate's verdict: the curves
+  and summaries in `analysis.json` and `analysis-A2.json` are identical.

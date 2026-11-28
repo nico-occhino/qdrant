@@ -3,8 +3,6 @@
 Updated 2026-11-27. Branch `research/uniform-questions-20261127` (worktree `~/work/qdrant-uniform`).
 
 ## Author actions
-- **Q7 Amendment A2 decision:** apply the widening-restart exception per DLI member (proposed; the gate passes
-  under it, and no number changes), or keep the gate failure. See [RESULTS_Q7.md](RESULTS_Q7.md) §5.
 - Trigger V2 is skipped (author, 2026-11-28).
 - Otherwise none. MetaCentrum Kerberos is valid; if it expires, the `kinit` is written here.
 
@@ -15,8 +13,8 @@ Updated 2026-11-27. Branch `research/uniform-questions-20261127` (worktree `~/wo
 - **Q4(c)/(c′)**: done. Archived as `Research-Results/2026-11-28-uniform-q4c/`.
 
 ## Finished jobs
-- `26076922` **Q7: completed; the monotone-work gate FAILED** (DLI at 1%, summed member restarts); provisional
-  results in [RESULTS_Q7.md](RESULTS_Q7.md); archived on C:.
+- `26076922` **Q7: complete.** The frozen monotone gate failed (summed DLI member restarts); it passes under
+  Amendment A2 (author, after the data). Results in [RESULTS_Q7.md](RESULTS_Q7.md); archived on C:.
 - `26075075` **Q5 S2: validated.** Verdict not met (recovery 0.213); archived on C:.
 - `26075094` **Q5 I1: validated.** No firing; E1T = E1; archived on C:.
 - `26053393` **Q5 S1: validated.** See [RESULTS_Q5.md](RESULTS_Q5.md); it is archived on C:.
@@ -82,9 +80,9 @@ Updated 2026-11-27. Branch `research/uniform-questions-20261127` (worktree `~/wo
   exact shortfall is a gold tie; 24 widening restarts.
 - **The preregistration is FROZEN** at `e85c176f7`. Job `26076922` is running (staging `native-q7-e85c176f72a7`).
 - **Addendum A1** (`a6b067075`, before any result) defines the descriptive exact-vs-routed switch point.
-- **Result (provisional, gate failed).** Qdrant routed (pre-filtered `RoutedIntersect`) never scores more than
+- **Result (A2 applied; gate passes).** Qdrant routed (pre-filtered `RoutedIntersect`) never scores more than
   exact search, so its switch is below 0.1%. PostgreSQL's (post-filtered) switch is ≈ 12,326 qualifying vectors
-  (≈ 20.5%). Proposed A2 awaits the author.
+  (≈ 20.5%).
 
 ## Inputs prepared locally (`~/research-admin/experiments/2026-11-27-uniform/`)
 - **The S1 plan** `plans/S1-shift-20261121/`: copied from PostgreSQL R3 job 25910367's plan. Its 205 file hashes
