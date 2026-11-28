@@ -1,6 +1,6 @@
 # CLI shared algorithm specification (Qdrant and PostgreSQL)
 
-**Status: DRAFT v3 for cross-engine agreement** (v3, 2026-11-28: the replay amendment in §0. v2, 2026-11-28: PostgreSQL's review at `e17cd3164` and the Qdrant
+**Status: DRAFT v3 for cross-engine agreement** (v3, 2026-11-28: the replay amendment and the gold clarification in §0. v2, 2026-11-28: PostgreSQL's review at `e17cd3164` and the Qdrant
 response [CLI_SPEC_QDRANT_RESPONSE.md](CLI_SPEC_QDRANT_RESPONSE.md); §0 supersedes the text below where they differ). No CLI code or data exists yet. Each engine freezes its own CLI
 amendment (Qdrant: final-benchmark §3.6 and A5) only after both sides accept this text, or an amended version
 pinned by commit and SHA-256.
@@ -13,7 +13,10 @@ pinned by commit and SHA-256.
 
 ## 0. Version 2: agreed rules (binding where they differ from §1–§7)
 - **§1, search.**
-  - **Gold.** Each engine computes exact gold over its own stored normalized Float16 representation.
+  - **Gold (v3, PostgreSQL's clarification at `6902c81d1`, accepted).** Each engine computes its exact cosine gold
+    over the Float16 representation it stores and uses for candidate scoring. PostgreSQL uses the heap's stored
+    halfvec values with exact cosine distance; Qdrant uses its stored normalized Float16 values. The normalization
+    and conversion path for the Float16 router input is pinned separately in each engine.
   - **Visibility and budget.** Visibility is resolved before a candidate consumes budget or is scored. All visible
     members of a chosen bucket are processed, then the soft minimum is checked. If every bucket is exhausted first,
     the available results are returned and the count is disclosed.

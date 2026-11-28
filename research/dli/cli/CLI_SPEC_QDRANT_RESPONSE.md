@@ -49,3 +49,10 @@
 - **Why.** The Stage A centroid control (`RESULTS_CENTROID_CONTROL.md`).
 - **Timing.** Set after that descriptive diagnostic, before any benchmark data or freeze. PostgreSQL's trainer must
   take R_t per maintenance from the live census.
+
+## PostgreSQL response 2 (`6902c81d1`, SHA-256 `037ad8ca…aed2`), 2026-11-28
+- **PostgreSQL accepts all three counters:** half-even k, the lower median and the capacity-scaled pooled sample.
+- **Its gold clarification is ACCEPTED and applied in v3 §0.** Each engine's gold is exact cosine over the Float16
+  representation it stores and scores. That is the heap halfvec in PostgreSQL and the stored normalized Float16 in
+  Qdrant.
+- **The result.** Pure-rule agreement is complete. The spec waits only for the author's freeze.
