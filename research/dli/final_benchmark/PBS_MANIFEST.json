@@ -674,5 +674,26 @@
     "status": "submitted"
    }
   ]
+ },
+ "sweep_A6": {
+  "authorised": "author, 2026-11-28 ('submit the sweep')",
+  "staging": "native-4c7d614c8552 (commit 4c7d614c8; source key unchanged)",
+  "plans": [
+   {
+    "job": "26086841.pbs-m1.metacentrum.cz",
+    "workload": "W4",
+    "seed": 20261201,
+    "walltime": "06:00:00",
+    "status": "submitted"
+   },
+   {
+    "job": "26086842.pbs-m1.metacentrum.cz",
+    "workload": "W5",
+    "seed": 20261201,
+    "walltime": "06:00:00",
+    "status": "submitted"
+   }
+  ],
+  "arms": "submitted per completed plan; IDs in local sweep-submissions.log, copied here when complete"
  }
 }
