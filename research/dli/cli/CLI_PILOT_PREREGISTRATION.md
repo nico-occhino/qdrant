@@ -3,7 +3,7 @@
 **Status: FROZEN (2026-11-28; the author asked for the pilot after freezing spec v3)**, at the commit that adds this
 line, before any pilot job runs.
 
-- **The algorithm.** [CLI_SHARED_SPEC.md](CLI_SHARED_SPEC.md), frozen v3 (`a2261ddde`, SHA-256 `8ad6afc0…`).
+- **The algorithm.** [CLI_SHARED_SPEC.md](CLI_SHARED_SPEC.md), frozen v3 (`2261ddded`, SHA-256 `8ad6afc0…`).
 - **The parent protocol.** The final benchmark's §8 selection pilot (`research/dli/final_benchmark/PREREGISTRATION.md`)
   and its amendment A5 (CLI enters later on the same seeds and panels).
 
@@ -66,3 +66,17 @@ and peak memory.
 - **Its pilot.** It mirrors §3–§5. The same three workloads and three b_max candidates, the same choice rule and gates,
   nine jobs with `ROUTING=centroid`. Its b_max is chosen independently of CLI's.
 - **What stays.** The MLP pilot (§3) is unchanged. Its jobs are already running from staging `21cf4eaa1`.
+
+## 8. Result: the CLI b_max choice (2026-11-28; validation data only, rule as §4)
+- **The choice: CLI b_max = 500.** Mean validation W@0.90 (G1) on W1 batches 1–20, with every candidate attaining in
+  every batch: 500 → **11,783**, 1,000 → 12,674, 2,000 → 18,641.
+  - **The jobs.** 26082635, 26082637 and 26082639, all gates passing.
+  - **The analysis.** `evidence/pilot-mlp-selection.json`, from `analyze_pilot.py` over the 8 completed runs.
+- **An edge-of-grid limitation.** 500 is the smallest candidate. The grid is not extended, as the static arms were
+  not (final-benchmark A1.2); this is reported as a limitation.
+- **Bracketing and runtime.** All 8 completed runs (W1, W2, and W3 at 1,000 and 2,000) bracket 0.90 in every batch
+  and panel. Stage A wall time is 0.04–0.65 h per run. W3 at 500 (26082645) is still running; it adds bracketing
+  and runtime evidence only, and cannot change the choice, which depends on W1 alone.
+- **CLI-I** uses b_max = 500. C-CLI takes its own choice from the addendum-A1 pilot.
+- **Erratum.** §1's spec pin read `a2261ddde`, a transcription error. The frozen spec commit is
+  `2261ddded71a438baccd1aa1858d6ebe5a80a382`, and its SHA-256 `8ad6afc0…` is unchanged.
