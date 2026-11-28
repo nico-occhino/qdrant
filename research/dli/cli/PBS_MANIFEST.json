@@ -90,5 +90,89 @@
    "submitted_utc": "2026-11-28",
    "status": "submitted"
   }
- ]
+ ],
+ "ccli_pilot": {
+  "addendum": "CLI_PILOT_PREREGISTRATION.md \u00a77 (A1), commit 878a8b3c7",
+  "authorised": "author, 2026-11-28 ('submit the sweep and centroid pilot')",
+  "staging": {
+   "dir": "/storage/budejovice1/home/nico/lmi-metacentrum/cli-20261128/native-878a8b3c78ef",
+   "commit": "878a8b3c78eff7d26364ee8956aa257db699c778",
+   "source_bundle_sha256": "b61bfdd23b0b5010202676296e2f8ac7e9f2f3b658afae579c7da57454bad378",
+   "cli_pbs_sha256": "245d46d5546de45eaf1f0acf958f861fa1502776ae5077546371bab8ce095974"
+  },
+  "jobs": [
+   {
+    "job": "26086853.pbs-m1.metacentrum.cz",
+    "workload": "W1",
+    "b_max": 500,
+    "routing": "centroid",
+    "walltime": "24:00:00",
+    "status": "submitted"
+   },
+   {
+    "job": "26086854.pbs-m1.metacentrum.cz",
+    "workload": "W1",
+    "b_max": 1000,
+    "routing": "centroid",
+    "walltime": "24:00:00",
+    "status": "submitted"
+   },
+   {
+    "job": "26086855.pbs-m1.metacentrum.cz",
+    "workload": "W1",
+    "b_max": 2000,
+    "routing": "centroid",
+    "walltime": "24:00:00",
+    "status": "submitted"
+   },
+   {
+    "job": "26086856.pbs-m1.metacentrum.cz",
+    "workload": "W2",
+    "b_max": 500,
+    "routing": "centroid",
+    "walltime": "24:00:00",
+    "status": "submitted"
+   },
+   {
+    "job": "26086857.pbs-m1.metacentrum.cz",
+    "workload": "W2",
+    "b_max": 1000,
+    "routing": "centroid",
+    "walltime": "24:00:00",
+    "status": "submitted"
+   },
+   {
+    "job": "26086858.pbs-m1.metacentrum.cz",
+    "workload": "W2",
+    "b_max": 2000,
+    "routing": "centroid",
+    "walltime": "24:00:00",
+    "status": "submitted"
+   },
+   {
+    "job": "26086859.pbs-m1.metacentrum.cz",
+    "workload": "W3",
+    "b_max": 500,
+    "routing": "centroid",
+    "walltime": "24:00:00",
+    "status": "submitted"
+   },
+   {
+    "job": "26086860.pbs-m1.metacentrum.cz",
+    "workload": "W3",
+    "b_max": 1000,
+    "routing": "centroid",
+    "walltime": "24:00:00",
+    "status": "submitted"
+   },
+   {
+    "job": "26086861.pbs-m1.metacentrum.cz",
+    "workload": "W3",
+    "b_max": 2000,
+    "routing": "centroid",
+    "walltime": "24:00:00",
+    "status": "submitted"
+   }
+  ]
+ }
 }
