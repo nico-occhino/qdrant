@@ -1,0 +1,94 @@
+{
+ "study": "research/dli/cli selection pilot (CLI_PILOT_PREREGISTRATION.md, frozen at 21cf4eaa1)",
+ "authorised": "author, 2026-11-28 ('freeze spec v3, push, and start the CLI selection pilot')",
+ "staging": {
+  "dir": "/storage/budejovice1/home/nico/lmi-metacentrum/cli-20261128/native-21cf4eaa1b88",
+  "commit": "21cf4eaa1b8847091f1675c8981126086dab5edf",
+  "source_bundle_sha256": "fceb502fa2422092c66f42c899f36353cfeab00d13ac8fce18906270658357f8",
+  "cli_pbs_sha256": "0318ea80ac6b2730b8436971d253c2c798cf1cbac48f7e95f3dab002c227ec7b",
+  "vendor": "copied from final-benchmark native-30271d364902 (Cargo.lock unchanged), hashes verified"
+ },
+ "jobs": [
+  {
+   "job": "26082635.pbs-m1.metacentrum.cz",
+   "workload": "W1",
+   "b_max": 500,
+   "seed": 20261202,
+   "walltime": "24:00:00",
+   "submitted_utc": "2026-11-28",
+   "status": "submitted"
+  },
+  {
+   "job": "26082637.pbs-m1.metacentrum.cz",
+   "workload": "W1",
+   "b_max": 1000,
+   "seed": 20261202,
+   "walltime": "24:00:00",
+   "submitted_utc": "2026-11-28",
+   "status": "submitted"
+  },
+  {
+   "job": "26082639.pbs-m1.metacentrum.cz",
+   "workload": "W1",
+   "b_max": 2000,
+   "seed": 20261202,
+   "walltime": "24:00:00",
+   "submitted_utc": "2026-11-28",
+   "status": "submitted"
+  },
+  {
+   "job": "26082640.pbs-m1.metacentrum.cz",
+   "workload": "W2",
+   "b_max": 500,
+   "seed": 20261202,
+   "walltime": "24:00:00",
+   "submitted_utc": "2026-11-28",
+   "status": "submitted"
+  },
+  {
+   "job": "26082642.pbs-m1.metacentrum.cz",
+   "workload": "W2",
+   "b_max": 1000,
+   "seed": 20261202,
+   "walltime": "24:00:00",
+   "submitted_utc": "2026-11-28",
+   "status": "submitted"
+  },
+  {
+   "job": "26082643.pbs-m1.metacentrum.cz",
+   "workload": "W2",
+   "b_max": 2000,
+   "seed": 20261202,
+   "walltime": "24:00:00",
+   "submitted_utc": "2026-11-28",
+   "status": "submitted"
+  },
+  {
+   "job": "26082645.pbs-m1.metacentrum.cz",
+   "workload": "W3",
+   "b_max": 500,
+   "seed": 20261202,
+   "walltime": "24:00:00",
+   "submitted_utc": "2026-11-28",
+   "status": "submitted"
+  },
+  {
+   "job": "26082646.pbs-m1.metacentrum.cz",
+   "workload": "W3",
+   "b_max": 1000,
+   "seed": 20261202,
+   "walltime": "24:00:00",
+   "submitted_utc": "2026-11-28",
+   "status": "submitted"
+  },
+  {
+   "job": "26082648.pbs-m1.metacentrum.cz",
+   "workload": "W3",
+   "b_max": 2000,
+   "seed": 20261202,
+   "walltime": "24:00:00",
+   "submitted_utc": "2026-11-28",
+   "status": "submitted"
+  }
+ ]
+}
